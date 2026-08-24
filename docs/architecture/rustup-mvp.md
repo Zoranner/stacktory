@@ -79,10 +79,10 @@ name = "company-nexus"
 base_url = "https://pkg.example.internal/repository/rustup-group"
 
 [[rustup.upstreams]]
-# 仅在受信任内网上游尚未提供 TLS 时显式启用。
+# 仅在受信任内网上游尚未提供 TLS 时显式关闭 HTTPS 要求。
 name = "legacy-internal-nexus"
 base_url = "http://nexus.internal/repository/rustup-group"
-allow_insecure_http = true
+require_https = false
 
 [[rustup.upstreams]]
 name = "rust-lang"
@@ -91,10 +91,10 @@ base_url = "https://static.rust-lang.org"
 
 上游顺序就是回退顺序。`refresh_interval_secs` 控制服务内的 channel manifest
 定时刷新周期，必须为正整数。上游 URL 只能使用 `https` 或 `http`，且不能包含
-凭据、查询或片段；HTTP 上游必须在该条目设置 `allow_insecure_http = true`，
-HTTPS 上游不需要该设置。这个开关不接受客户端输入，也不允许服务访问未在配置
-中声明的地址。Rustup manifest 和制品只允许解析为相对 `dist/**` 路径。生产配置
-应关闭 `allow_anonymous` 并由环境变量提供 token；token 不进入版本库。
+凭据、查询或片段；上游默认 `require_https = true`，HTTP 上游必须在该条目显式
+设置 `require_https = false`。这个开关不接受客户端输入，也不允许服务访问未在
+配置中声明的地址。Rustup manifest 和制品只允许解析为相对 `dist/**` 路径。生产
+配置应关闭 `allow_anonymous` 并由环境变量提供 token；token 不进入版本库。
 
 ## 请求与状态流
 

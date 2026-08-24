@@ -45,12 +45,12 @@ fn accepts_explicit_local_anonymous_development_configuration() {
 fn accepts_explicit_http_upstream() {
     let configuration = LOCAL_DEVELOPMENT
         .replace(
-        "https://pkg.example.internal/repository/rustup-group",
-        "http://nexus.internal/repository/rustup-group",
-    )
+            "https://pkg.example.internal/repository/rustup-group",
+            "http://nexus.internal/repository/rustup-group",
+        )
         .replace(
             "base_url = \"http://nexus.internal/repository/rustup-group\"",
-            "base_url = \"http://nexus.internal/repository/rustup-group\"\nallow_insecure_http = true",
+            "base_url = \"http://nexus.internal/repository/rustup-group\"\nrequire_https = false",
         );
 
     let config = Config::from_toml(&configuration).expect("configured HTTP upstream");
@@ -67,7 +67,7 @@ fn rejects_http_upstream_without_explicit_opt_in() {
 
     let error = Config::from_toml(&configuration).expect_err("HTTP must require opt-in");
 
-    assert!(error.to_string().contains("allow_insecure_http"));
+    assert!(error.to_string().contains("require_https"));
 }
 
 #[test]

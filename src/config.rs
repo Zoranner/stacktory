@@ -32,8 +32,8 @@ pub struct RustupConfig {
 pub struct UpstreamConfig {
     pub name: String,
     pub base_url: Url,
-    #[serde(default)]
-    pub allow_insecure_http: bool,
+    #[serde(default = "requires_https")]
+    pub require_https: bool,
 }
 
 #[derive(Debug, Error)]
@@ -56,7 +56,7 @@ pub enum ConfigError {
         "rustup upstream `{0}` must use http or https with a host and without credentials, query, or fragment"
     )]
     InvalidUpstream(String),
-    #[error("rustup upstream `{0}` uses http; set allow_insecure_http = true to opt in")]
+    #[error("rustup upstream `{0}` uses http; set require_https = false to opt in")]
     InsecureHttpUpstream(String),
 }
 
@@ -99,7 +99,7 @@ impl Config {
             {
                 return Err(ConfigError::InvalidUpstream(upstream.name.clone()));
             }
-            if upstream.base_url.scheme() == "http" && !upstream.allow_insecure_http {
+            if upstream.base_url.scheme() == "http" && upstream.require_https {
                 return Err(ConfigError::InsecureHttpUpstream(upstream.name.clone()));
             }
         }
@@ -112,6 +112,10 @@ impl Config {
             rustup: raw.rustup,
         })
     }
+}
+
+const fn requires_https() -> bool {
+    true
 }
 
 fn is_localhost(url: &Url) -> bool {
