@@ -1,6 +1,11 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::BTreeMap,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use thiserror::Error;
+use tokio::sync::Mutex;
 
 use crate::{
     Config,
@@ -18,6 +23,7 @@ pub struct RustupService {
     upstream: UpstreamClient,
     snapshots: SnapshotStore,
     cache: ArtifactCache,
+    refresh_locks: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
 }
 
 #[derive(Debug, Error)]
@@ -54,6 +60,7 @@ impl RustupService {
             upstream: UpstreamClient::new(bases)?,
             snapshots: SnapshotStore::new(config.data_dir.clone()),
             cache: ArtifactCache::new(config.data_dir),
+            refresh_locks: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -74,6 +81,10 @@ impl RustupService {
         &self,
         channel: &str,
     ) -> Result<StoredSnapshot, ServiceError> {
+        self.ensure_channel(channel)?;
+        let refresh_lock = self.refresh_lock(channel).await;
+        let _guard = refresh_lock.lock().await;
+
         match self.manifest(channel) {
             Ok(snapshot) if self.is_snapshot_stale(&snapshot) => {
                 match self.refresh(channel).await {
@@ -88,6 +99,14 @@ impl RustupService {
             }
             Err(error) => Err(error),
         }
+    }
+
+    async fn refresh_lock(&self, channel: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.refresh_locks.lock().await;
+        locks
+            .entry(channel.to_owned())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 
     fn is_snapshot_stale(&self, snapshot: &StoredSnapshot) -> bool {

@@ -5,6 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 use axum::{Router, response::IntoResponse, routing::get};
@@ -195,6 +196,23 @@ async fn manifest_request_returns_an_expired_snapshot_when_refresh_fails() {
     assert_eq!(stale.checksum, before_failure.checksum);
 }
 
+#[tokio::test]
+async fn concurrent_manifest_requests_share_one_initial_refresh() {
+    let refreshes = Arc::new(AtomicUsize::new(0));
+    let (upstream, _) = start_refresh_upstream(refreshes.clone()).await;
+    let data_dir = tempdir().expect("temporary directory");
+    let service = service_for(upstream, data_dir.path().to_path_buf());
+
+    let (first, second) = tokio::join!(
+        service.manifest_for_request("stable"),
+        service.manifest_for_request("stable"),
+    );
+
+    first.expect("first manifest request");
+    second.expect("second manifest request");
+    assert_eq!(refreshes.load(Ordering::SeqCst), 1);
+}
+
 async fn start_artifact_upstream(
     artifact: Vec<u8>,
     expected_hash: String,
@@ -269,6 +287,7 @@ async fn start_refresh_upstream(refreshes: Arc<AtomicUsize>) -> (Url, Arc<Atomic
                 let refreshes = manifest_refreshes.clone();
                 async move {
                     refreshes.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(50));
                     if available.load(Ordering::SeqCst) {
                         (axum::http::StatusCode::OK, manifest).into_response()
                     } else {
