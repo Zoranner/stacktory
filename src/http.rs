@@ -8,7 +8,11 @@ use axum::{
     routing::get,
 };
 
-use crate::service::RustupService;
+use crate::{
+    rustup::DistPath,
+    service::{RustupService, ServiceError},
+    storage::StorageError,
+};
 
 pub fn router() -> Router {
     Router::new().route("/healthz", get(health))
@@ -29,17 +33,43 @@ async fn rustup_dist(
     State(service): State<Arc<RustupService>>,
     Path(path): Path<String>,
 ) -> impl IntoResponse {
-    let Some((channel, checksum)) = channel_request(&path) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-
-    match service.manifest_for_request(channel).await {
-        Ok(snapshot) if checksum => {
-            format!("{}  channel-rust-{channel}.toml\n", snapshot.checksum).into_response()
-        }
-        Ok(snapshot) => snapshot.manifest.into_response(),
-        Err(_) => StatusCode::BAD_GATEWAY.into_response(),
+    if let Some((channel, checksum)) = channel_request(&path) {
+        return match service.manifest_for_request(channel).await {
+            Ok(snapshot) if checksum => {
+                format!("{}  channel-rust-{channel}.toml\n", snapshot.checksum).into_response()
+            }
+            Ok(snapshot) => snapshot.manifest.into_response(),
+            Err(error) => service_error_response(&error),
+        };
     }
+
+    let path = match DistPath::parse(&path) {
+        Ok(path) => path,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    match service.artifact_for_request(&path).await {
+        Ok(contents) => contents.into_response(),
+        Err(error) => service_error_response(&error),
+    }
+}
+
+fn service_error_response(error: &ServiceError) -> axum::response::Response {
+    let status = match error {
+        ServiceError::UnconfiguredChannel(_) | ServiceError::UnknownArtifact(_) => {
+            StatusCode::NOT_FOUND
+        }
+        ServiceError::NoPublishedSnapshots
+        | ServiceError::Storage(StorageError::MissingSnapshot(_)) => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        ServiceError::Upstream(_)
+        | ServiceError::Rewrite(_)
+        | ServiceError::Storage(StorageError::ArtifactHashMismatch(_)) => StatusCode::BAD_GATEWAY,
+        ServiceError::Storage(_) | ServiceError::ConflictingArtifactHash(_) => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    };
+    status.into_response()
 }
 
 fn channel_request(path: &str) -> Option<(&str, bool)> {

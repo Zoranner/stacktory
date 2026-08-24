@@ -2,8 +2,8 @@ use thiserror::Error;
 
 use crate::{
     Config,
-    rustup::{ManifestPolicy, RustupError, rewrite_manifest},
-    storage::{SnapshotStore, StorageError, StoredSnapshot},
+    rustup::{DistPath, ManifestPolicy, RustupError, rewrite_manifest},
+    storage::{ArtifactCache, SnapshotStore, StorageError, StoredSnapshot},
     upstream::{UpstreamClient, UpstreamError},
 };
 
@@ -14,6 +14,7 @@ pub struct RustupService {
     policy: ManifestPolicy,
     upstream: UpstreamClient,
     snapshots: SnapshotStore,
+    cache: ArtifactCache,
 }
 
 #[derive(Debug, Error)]
@@ -26,6 +27,12 @@ pub enum ServiceError {
     Rewrite(#[from] RustupError),
     #[error(transparent)]
     Storage(#[from] StorageError),
+    #[error("no published rustup snapshots are available")]
+    NoPublishedSnapshots,
+    #[error("artifact `{0}` is not referenced by a published rustup manifest")]
+    UnknownArtifact(DistPath),
+    #[error("artifact `{0}` has conflicting SHA-256 values across published rustup manifests")]
+    ConflictingArtifactHash(DistPath),
 }
 
 impl RustupService {
@@ -41,7 +48,8 @@ impl RustupService {
             public_base: config.public_base_url,
             policy: ManifestPolicy::new(bases.clone()),
             upstream: UpstreamClient::new(bases)?,
-            snapshots: SnapshotStore::new(config.data_dir),
+            snapshots: SnapshotStore::new(config.data_dir.clone()),
+            cache: ArtifactCache::new(config.data_dir),
         })
     }
 
@@ -70,6 +78,54 @@ impl RustupService {
             }
             Err(error) => Err(error),
         }
+    }
+
+    pub async fn artifact_for_request(&self, path: &DistPath) -> Result<Vec<u8>, ServiceError> {
+        let expected_checksum = self.artifact_checksum(path)?;
+        if let Some(contents) = self.cache.get_verified(path, &expected_checksum)? {
+            return Ok(contents);
+        }
+
+        let contents = self
+            .upstream
+            .fetch_dist_artifact(path, &expected_checksum)
+            .await?;
+        self.cache
+            .publish_verified(path, &contents, &expected_checksum)?;
+        Ok(contents)
+    }
+
+    fn artifact_checksum(&self, path: &DistPath) -> Result<String, ServiceError> {
+        let mut expected_checksum = None;
+        let mut has_snapshot = false;
+
+        for channel in &self.channels {
+            match self.snapshots.current(channel) {
+                Ok(snapshot) => {
+                    has_snapshot = true;
+                    let Some(checksum) = snapshot.artifact_hashes.get(path) else {
+                        continue;
+                    };
+                    if let Some(previous) = &expected_checksum {
+                        if previous != checksum {
+                            return Err(ServiceError::ConflictingArtifactHash(path.clone()));
+                        }
+                    } else {
+                        expected_checksum = Some(checksum.clone());
+                    }
+                }
+                Err(StorageError::MissingSnapshot(_)) => continue,
+                Err(error) => return Err(ServiceError::Storage(error)),
+            }
+        }
+
+        expected_checksum.ok_or_else(|| {
+            if has_snapshot {
+                ServiceError::UnknownArtifact(path.clone())
+            } else {
+                ServiceError::NoPublishedSnapshots
+            }
+        })
     }
 
     fn ensure_channel(&self, channel: &str) -> Result<(), ServiceError> {

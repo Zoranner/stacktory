@@ -92,12 +92,19 @@ impl UpstreamClient {
         Err(UpstreamError::AllUpstreamsFailed(failures.join("; ")))
     }
 
-    pub async fn fetch_dist_artifact(&self, path: &DistPath) -> Result<Vec<u8>, UpstreamError> {
+    pub async fn fetch_dist_artifact(
+        &self,
+        path: &DistPath,
+        expected_checksum: &str,
+    ) -> Result<Vec<u8>, UpstreamError> {
         let mut failures = Vec::new();
         for base in &self.bases {
             let url = dist_url(base, path.as_str());
             match self.fetch_success_bytes(&url).await {
-                Ok(contents) => return Ok(contents),
+                Ok(contents) if checksum(&contents) == expected_checksum => return Ok(contents),
+                Ok(_) => failures.push(format!(
+                    "{url}: checksum does not match expected artifact hash"
+                )),
                 Err(error) => failures.push(format!("{url}: {error}")),
             }
         }

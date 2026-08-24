@@ -61,6 +61,31 @@ async fn rejects_an_upstream_manifest_with_a_mismatched_checksum() {
     assert!(error.to_string().contains("checksum"));
 }
 
+#[tokio::test]
+async fn fetches_an_artifact_from_the_next_upstream_when_the_first_hash_does_not_match() {
+    let path = stacktory::rustup::DistPath::parse("2026-08-20/rustc.tar.xz").expect("dist path");
+    let expected = b"verified artifact";
+    let expected_checksum = format!("{:x}", Sha256::digest(expected));
+    let invalid = start_server(Router::new().route(
+        "/dist/2026-08-20/rustc.tar.xz",
+        get(|| async { "tampered artifact" }),
+    ))
+    .await;
+    let valid = start_server(Router::new().route(
+        "/dist/2026-08-20/rustc.tar.xz",
+        get(move || async move { expected }),
+    ))
+    .await;
+    let client = UpstreamClient::new(vec![invalid, valid]).expect("HTTP client");
+
+    let artifact = client
+        .fetch_dist_artifact(&path, &expected_checksum)
+        .await
+        .expect("fallback artifact");
+
+    assert_eq!(artifact, expected);
+}
+
 async fn start_server(router: Router) -> Url {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
