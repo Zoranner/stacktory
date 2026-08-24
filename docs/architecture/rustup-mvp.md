@@ -21,7 +21,7 @@ VS Code 等静态安装包分发。Unity 的未来适配范围仅为官方 UPM R
 | `RustupAdapter` | 识别 Rustup 原生路径；刷新、读取并重写 channel manifest；为 dist 请求构造受限制品键。 |
 | `UpstreamClient` | 仅向配置中声明的上游发起请求；按顺序回退；不接受 HTTP 请求中的上游地址。 |
 | `SnapshotStore` | 将已校验的原始与重写 manifest 放入版本化快照目录，并用当前指针切换公开版本。 |
-| `ArtifactCache` | 以 dist 相对路径定位磁盘文件；下载到临时文件、流式计算 SHA-256、核对 manifest 哈希后才发布。 |
+| `ArtifactCache` | 以 dist 相对路径定位磁盘文件；核对 manifest 哈希后才原子发布。 |
 | `AccessGate` | 从配置的环境变量读取只读 Bearer token；未配置时仅允许显式开发模式匿名访问。 |
 | `AuditSink` | 对 manifest 发布、缓存命中、缓存写入、上游回退和拒绝请求写入结构化 JSONL。 |
 
@@ -120,7 +120,7 @@ channel 的并发刷新请求；刷新成功后发布新快照。刷新失败但
 旧快照，没有任何快照才返回上游失败。刷新时，先从每个上游依次取得 manifest 及 `.sha256`，验证原始 manifest
 散列，解析并拒绝不属于已配置上游 `dist/**` 的 URL，重写 URL 后计算新的
 manifest SHA-256。完整 manifest、匹配 checksum 和提取出的制品哈希一同写入
-新的版本化快照目录；目录完成后原子替换 `current.json` 指针。读取请求始终先
+新的版本化快照目录；目录完成后原子替换 `current.toml` 指针。读取请求始终先
 读取指针再读取同一快照，因此不会观察到不配对的公开 manifest/checksum。
 
 ## 错误与安全边界

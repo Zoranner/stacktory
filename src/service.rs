@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 
 use crate::{
     Config,
+    audit::AuditSink,
     rustup::{DistPath, ManifestPolicy, RustupError, rewrite_manifest},
     storage::{ArtifactCache, SnapshotStore, StorageError, StoredSnapshot},
     upstream::{UpstreamClient, UpstreamError},
@@ -23,6 +24,7 @@ pub struct RustupService {
     upstream: UpstreamClient,
     snapshots: SnapshotStore,
     cache: ArtifactCache,
+    audit: AuditSink,
     refresh_locks: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
 }
 
@@ -59,7 +61,8 @@ impl RustupService {
             policy: ManifestPolicy::new(bases.clone()),
             upstream: UpstreamClient::new(bases)?,
             snapshots: SnapshotStore::new(config.data_dir.clone()),
-            cache: ArtifactCache::new(config.data_dir),
+            cache: ArtifactCache::new(config.data_dir.clone()),
+            audit: AuditSink::new(config.data_dir),
             refresh_locks: Mutex::new(BTreeMap::new()),
         })
     }
@@ -69,12 +72,17 @@ impl RustupService {
         let source = self.upstream.fetch_channel_manifest(channel).await?;
         let rewritten = rewrite_manifest(&source, &self.policy, &self.public_base)?;
         self.snapshots.publish(channel, rewritten)?;
+        self.record_audit("manifest_published", channel, "success");
         Ok(())
     }
 
     pub fn manifest(&self, channel: &str) -> Result<StoredSnapshot, ServiceError> {
         self.ensure_channel(channel)?;
         Ok(self.snapshots.current(channel)?)
+    }
+
+    pub fn audit_request_denied(&self, path: &str) {
+        self.record_audit("request_denied", path, "unauthorized");
     }
 
     pub async fn manifest_for_request(
@@ -122,6 +130,7 @@ impl RustupService {
     pub async fn artifact_for_request(&self, path: &DistPath) -> Result<Vec<u8>, ServiceError> {
         let expected_checksum = self.artifact_checksum(path)?;
         if let Some(contents) = self.cache.get_verified(path, &expected_checksum)? {
+            self.record_audit("artifact_cache_hit", path.as_str(), "success");
             return Ok(contents);
         }
 
@@ -131,6 +140,7 @@ impl RustupService {
             .await?;
         self.cache
             .publish_verified(path, &contents, &expected_checksum)?;
+        self.record_audit("artifact_cached", path.as_str(), "success");
         Ok(contents)
     }
 
@@ -172,6 +182,12 @@ impl RustupService {
             Ok(())
         } else {
             Err(ServiceError::UnconfiguredChannel(channel.to_owned()))
+        }
+    }
+
+    fn record_audit(&self, event: &str, target: &str, outcome: &str) {
+        if let Err(error) = self.audit.record(event, target, outcome) {
+            eprintln!("Stacktory audit write failed: {error}");
         }
     }
 }

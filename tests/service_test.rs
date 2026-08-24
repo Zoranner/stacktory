@@ -80,6 +80,11 @@ async fn refresh_publishes_a_rewritten_manifest_snapshot() {
             .manifest
             .contains("/mirror/rustup/dist/2026-08-20/rustc-")
     );
+    assert!(
+        std::fs::read_to_string(directory.path().join("audit/events.jsonl"))
+            .expect("audit log")
+            .contains("manifest_published")
+    );
 }
 
 #[tokio::test]
@@ -105,6 +110,10 @@ async fn artifact_request_fetches_a_published_artifact_and_reuses_the_verified_c
     assert_eq!(first, artifact);
     assert_eq!(second, artifact);
     assert_eq!(requests.load(Ordering::SeqCst), 1);
+    let audit =
+        std::fs::read_to_string(data_dir.path().join("audit/events.jsonl")).expect("audit log");
+    assert!(audit.contains("artifact_cached"));
+    assert!(audit.contains("artifact_cache_hit"));
 }
 
 #[tokio::test]

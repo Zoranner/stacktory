@@ -3,12 +3,13 @@ use std::sync::Arc;
 use axum::{
     Router,
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::get,
 };
 
 use crate::{
+    access::AccessGate,
     rustup::DistPath,
     service::{RustupService, ServiceError},
     storage::StorageError,
@@ -18,11 +19,11 @@ pub fn router() -> Router {
     Router::new().route("/healthz", get(health))
 }
 
-pub fn router_with_rustup(service: Arc<RustupService>) -> Router {
+pub fn router_with_rustup(service: Arc<RustupService>, access: Arc<AccessGate>) -> Router {
     Router::new()
         .route("/healthz", get(health))
         .route("/mirror/rustup/dist/{*path}", get(rustup_dist))
-        .with_state(service)
+        .with_state((service, access))
 }
 
 async fn health() -> StatusCode {
@@ -30,9 +31,15 @@ async fn health() -> StatusCode {
 }
 
 async fn rustup_dist(
-    State(service): State<Arc<RustupService>>,
+    State((service, access)): State<(Arc<RustupService>, Arc<AccessGate>)>,
     Path(path): Path<String>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
+    if !access.authorizes(&headers) {
+        service.audit_request_denied(&path);
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
     if let Some((channel, checksum)) = channel_request(&path) {
         return match service.manifest_for_request(channel).await {
             Ok(snapshot) if checksum => {
