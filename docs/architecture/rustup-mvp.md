@@ -90,9 +90,9 @@ name = "rust-lang"
 base_url = "https://static.rust-lang.org"
 ```
 
-上游顺序就是回退顺序。`channels` 是服务定时刷新并可供给制品哈希的唯一 channel
-集合，必须至少包含一项；`refresh_interval_secs` 控制服务内的 channel manifest
-定时刷新周期，必须为正整数。上游 URL 只能使用 `https` 或 `http`，且不能包含
+上游顺序就是回退顺序。`channels` 是服务允许刷新并可供给制品哈希的唯一 channel
+集合，必须至少包含一项；`refresh_interval_secs` 是 manifest 重新校验间隔，必须为
+正整数。上游 URL 只能使用 `https` 或 `http`，且不能包含
 凭据、查询或片段；上游默认 `require_https = true`，HTTP 上游必须在该条目显式
 设置 `require_https = false`。这个开关不接受客户端输入，也不允许服务访问未在
 配置中声明的地址。Rustup manifest 和制品只允许解析为相对 `dist/**` 路径。生产
@@ -103,7 +103,7 @@ base_url = "https://static.rust-lang.org"
 ```text
 rustup
   -> GET /mirror/rustup/dist/channel-rust-{channel}.toml(.sha256)
-  -> 当前快照（由服务按配置周期刷新）
+  -> 当前快照新鲜则直接返回；缺失或过期时由该请求触发刷新
   -> 重写 manifest 中全部受支持 dist URL 为 /mirror/rustup/dist/{path}
   -> 返回重写 manifest 或其 SHA-256
 
@@ -115,7 +115,9 @@ rustup
   -> 返回文件；所有失败保留为协议错误，不产生半成品缓存
 ```
 
-刷新时，先从每个上游依次取得 manifest 及 `.sha256`，验证原始 manifest
+刷新不是常驻任务。首次请求或快照超过 `refresh_interval_secs` 时，服务合并同一
+channel 的并发刷新请求；刷新成功后发布新快照。刷新失败但已有旧快照时继续返回
+旧快照，没有任何快照才返回上游失败。刷新时，先从每个上游依次取得 manifest 及 `.sha256`，验证原始 manifest
 散列，解析并拒绝不属于已配置上游 `dist/**` 的 URL，重写 URL 后计算新的
 manifest SHA-256。完整 manifest、匹配 checksum 和提取出的制品哈希一同写入
 新的版本化快照目录；目录完成后原子替换 `current.json` 指针。读取请求始终先
@@ -135,7 +137,8 @@ manifest SHA-256。完整 manifest、匹配 checksum 和提取出的制品哈希
 ## 验证策略
 
 单元测试覆盖配置校验、路径白名单、manifest URL 重写、散列计算和缓存发布
-规则。集成测试使用本地 HTTP 模拟两个上游，验证第一个上游失败时回退、被重写
+规则。集成测试使用本地 HTTP 模拟两个上游，验证第一个上游失败时回退、首次和
+过期 manifest 请求触发刷新、被重写
 的 manifest 与 checksum 配对、首次 dist 请求缓存且第二次不访问上游、散列不符
 时返回失败并且磁盘没有可命中的文件。每次 Rust 代码改动执行 `cargo fmt --all`、
 `cargo clippy --all-targets --all-features -- -D warnings` 和完整测试。
