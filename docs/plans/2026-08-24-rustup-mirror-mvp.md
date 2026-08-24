@@ -6,6 +6,8 @@
 
 **Architecture:** HTTP 路由只将已验证的 Rustup 原生路径传入适配器；适配器从配置顺序的固定上游获取数据，并把快照和制品分别交给本地存储。URL、散列和访问控制均在协议边界验证，公共层不代理客户端指定地址。
 
+**Out of scope:** 官网和 `/docs/{stack}` 使用教程属于后续只读文档站，不在本 Rustup 代理 MVP 内实现。
+
 **Tech Stack:** Rust 2024、Axum、Tokio、Reqwest、Serde/TOML、SHA-256、Tempfile。
 
 ---
