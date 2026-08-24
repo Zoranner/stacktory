@@ -1,0 +1,171 @@
+name: Release Stacktory
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: stacktory-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify Stacktory
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-targets --all-features
+          cargo build --release --locked
+
+  prepare:
+    name: Prepare Release
+    needs: verify
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      image: ${{ steps.version.outputs.image }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: version
+        name: Validate release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#v}"
+          [[ "$tag_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          package_version="$(awk -F '"' '/^version = / { print $2; exit }' Cargo.toml)"
+          test "$tag_version" = "$package_version"
+          echo "version=$tag_version" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/zoranner/stacktory" >> "$GITHUB_OUTPUT"
+
+  build-image:
+    name: Build image (${{ matrix.platform }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux/amd64
+            archive_suffix: linux-amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            archive_suffix: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          provenance: false
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+
+      - name: Export offline image
+        shell: bash
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          ARCHIVE_SUFFIX: ${{ matrix.archive_suffix }}
+        run: |
+          set -euo pipefail
+          archive="stacktory-${VERSION}-${ARCHIVE_SUFFIX}.tar"
+          docker pull "$IMAGE@$DIGEST"
+          image_id="$(docker image inspect --format '{{.Id}}' "$IMAGE@$DIGEST")"
+          docker image tag "$image_id" "$IMAGE:$VERSION"
+          docker image save --output "$archive" "$IMAGE:$VERSION"
+          sha256sum "$archive" > "$archive.sha256"
+          mkdir -p digests
+          touch "digests/${DIGEST#sha256:}"
+
+      - name: Upload image artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: stacktory-${{ matrix.archive_suffix }}
+          path: |
+            stacktory-${{ needs.prepare.outputs.version }}-${{ matrix.archive_suffix }}.tar
+            stacktory-${{ needs.prepare.outputs.version }}-${{ matrix.archive_suffix }}.tar.sha256
+            digests/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish Release
+    needs: [prepare, build-image]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: stacktory-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create multi-platform image
+        shell: bash
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          mapfile -t digest_files < <(find artifacts -type f -path '*/digests/*' -o -type f -path 'artifacts/digests/*' | sort)
+          test "${#digest_files[@]}" -eq 2
+          references=()
+          for digest_file in "${digest_files[@]}"; do
+            references+=("$IMAGE@sha256:$(basename "$digest_file")")
+          done
+          docker buildx imagetools create \
+            --tag "$IMAGE:$VERSION" \
+            "${references[@]}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: Stacktory ${{ needs.prepare.outputs.version }}
+          body: |
+            Image: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.version }}
+            Offline images: stacktory-${{ needs.prepare.outputs.version }}-linux-amd64.tar, stacktory-${{ needs.prepare.outputs.version }}-linux-arm64.tar
+            Each offline image has a same-name .sha256 file for integrity verification.
+          files: |
+            artifacts/*.tar
+            artifacts/*.tar.sha256
+          fail_on_unmatched_files: true
+          overwrite_files: true
