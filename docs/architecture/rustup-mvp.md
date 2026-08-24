@@ -31,23 +31,25 @@ VS Code 等静态安装包分发。Unity 的未来适配范围仅为官方 UPM R
 
 ## 路由命名空间
 
-客户端协议路由按生态占用一级前缀。Rustup 的公开根固定为 `/rustup`，因此
-开发机设置 `RUSTUP_DIST_SERVER=https://stacktory.internal/rustup` 后，Rustup
-请求会自然落到 Stacktory；重写后的制品 URL 也必须从同一根生成。首期公开
-路由如下：
+所有镜像协议统一位于 `/mirror/{生态}` 命名空间。Rustup 的公开根固定为
+`/mirror/rustup`，因此开发机设置
+`RUSTUP_DIST_SERVER=https://stacktory.internal/mirror/rustup` 后，Rustup 请求
+会自然落到 Stacktory；重写后的制品 URL 也必须从同一根生成。首期公开路由
+如下：
 
 | 路由 | 用途 |
 | --- | --- |
-| `GET /rustup/dist/channel-rust-{channel}.toml` | 返回当前重写后的 channel manifest。 |
-| `GET /rustup/dist/channel-rust-{channel}.toml.sha256` | 返回与当前 manifest 配对的 SHA-256。 |
-| `GET /rustup/dist/{path}` | 返回经过路径限制、上游校验和缓存的 Rustup 制品。 |
+| `GET /mirror/rustup/dist/channel-rust-{channel}.toml` | 返回当前重写后的 channel manifest。 |
+| `GET /mirror/rustup/dist/channel-rust-{channel}.toml.sha256` | 返回与当前 manifest 配对的 SHA-256。 |
+| `GET /mirror/rustup/dist/{path}` | 返回经过路径限制、上游校验和缓存的 Rustup 制品。 |
 | `GET /healthz` | 服务存活检查，不暴露上游、缓存或配置细节。 |
 
 MVP 不提供管理页面或管理 HTTP API。配置文件是唯一配置来源，服务器在启动时
-加载它；更新配置后通过受控重启生效。未来适配器使用自己的一级协议前缀，如
-`/cargo`、`/npm`、`/pypi`、`/nuget`、`/oci`、`/apt`、`/yum`、`/winget`、
-`/vscode` 和 `/upm`。每个前缀内部仍由对应原生协议决定，不能用全局兜底路由
-把未知路径或 URL 转发到上游。
+加载它；更新配置后通过受控重启生效。未来路由使用 `/mirror/cargo`、
+`/mirror/npm`、`/mirror/pypi`、`/mirror/nuget`、`/mirror/oci`、`/mirror/apt`、
+`/mirror/yum`、`/mirror/winget`、`/mirror/vscode` 和 `/mirror/upm` 等前缀。
+每个生态前缀内部仍由对应原生协议决定，不能用全局兜底路由把未知路径或 URL
+转发到上游。
 
 官网和文档是后续独立交付的只读用户界面：`/` 展示 Stacktory 产品入口，
 `/docs/{stack}` 提供各技术栈的配置、使用和排障教程，例如
@@ -90,13 +92,13 @@ base_url = "https://static.rust-lang.org"
 
 ```text
 rustup
-  -> GET /rustup/dist/channel-rust-{channel}.toml(.sha256)
+  -> GET /mirror/rustup/dist/channel-rust-{channel}.toml(.sha256)
   -> 当前快照（由服务按配置周期刷新）
-  -> 重写 manifest 中全部受支持 dist URL 为 /rustup/dist/{path}
+  -> 重写 manifest 中全部受支持 dist URL 为 /mirror/rustup/dist/{path}
   -> 返回重写 manifest 或其 SHA-256
 
 rustup
-  -> GET /rustup/dist/{path}
+  -> GET /mirror/rustup/dist/{path}
   -> 严格路径解析，拒绝编码绕过、.. 和非 dist 路径
   -> 已校验缓存命中则返回
   -> 按固定上游顺序下载，SHA-256 与当前 manifest 记录相同才发布缓存

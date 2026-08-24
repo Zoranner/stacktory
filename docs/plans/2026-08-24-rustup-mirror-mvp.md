@@ -66,7 +66,7 @@ fn rejects_encoded_parent_segment() {
 #[test]
 fn rewrites_only_configured_dist_urls() {
     let rewritten = rewrite_manifest(SOURCE, &policy, &public_base).unwrap();
-    assert!(rewritten.contains("/rustup/dist/rust-std-"));
+    assert!(rewritten.contains("/mirror/rustup/dist/rust-std-"));
 }
 ```
 
@@ -145,8 +145,8 @@ Run: `cargo test --test http_test dist_request_falls_back_and_uses_cached_verifi
 
 ```rust
 GET /healthz
-GET /rustup/dist/channel-rust-{channel}.toml{.sha256}
-GET /rustup/dist/{*path}
+GET /mirror/rustup/dist/channel-rust-{channel}.toml{.sha256}
+GET /mirror/rustup/dist/{*path}
 ```
 
 - [ ] **Step 4: 执行完整验证并提交 MVP**
