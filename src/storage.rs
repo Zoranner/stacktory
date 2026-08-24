@@ -25,6 +25,7 @@ pub struct ArtifactCache {
 pub struct StoredSnapshot {
     pub manifest: String,
     pub checksum: String,
+    pub published_at_unix_secs: u64,
     pub artifact_hashes: BTreeMap<DistPath, String>,
 }
 
@@ -51,6 +52,7 @@ pub enum StorageError {
 #[derive(Deserialize, Serialize)]
 struct CurrentPointer {
     revision: String,
+    published_at_unix_secs: u64,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -92,6 +94,7 @@ impl SnapshotStore {
 
         let pointer = toml::to_string(&CurrentPointer {
             revision: snapshot.checksum,
+            published_at_unix_secs: unix_timestamp()?,
         })?;
         atomic_write(
             &self.snapshot_root(channel).join("current.toml"),
@@ -141,6 +144,7 @@ impl SnapshotStore {
         Ok(StoredSnapshot {
             manifest,
             checksum,
+            published_at_unix_secs: pointer.published_at_unix_secs,
             artifact_hashes,
         })
     }
@@ -148,6 +152,13 @@ impl SnapshotStore {
     fn snapshot_root(&self, channel: &str) -> PathBuf {
         self.data_dir.join("rustup").join("snapshots").join(channel)
     }
+}
+
+fn unix_timestamp() -> Result<u64, StorageError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| StorageError::Io(io::Error::other(error)))
+        .map(|duration| duration.as_secs())
 }
 
 impl ArtifactCache {

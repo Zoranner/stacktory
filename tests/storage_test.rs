@@ -37,6 +37,7 @@ fn current_snapshot_keeps_manifest_and_checksum_from_the_same_publication() {
         current.checksum,
         "2222222222222222222222222222222222222222222222222222222222222222"
     );
+    assert!(current.published_at_unix_secs > 0);
 }
 
 fn snapshot(manifest: &str, checksum: &str) -> RewrittenManifest {
