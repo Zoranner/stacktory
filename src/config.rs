@@ -32,6 +32,8 @@ pub struct RustupConfig {
 pub struct UpstreamConfig {
     pub name: String,
     pub base_url: Url,
+    #[serde(default)]
+    pub allow_insecure_http: bool,
 }
 
 #[derive(Debug, Error)]
@@ -50,8 +52,12 @@ pub enum ConfigError {
     MissingUpstream,
     #[error("rustup.refresh_interval_secs must be greater than zero")]
     InvalidRustupRefreshInterval,
-    #[error("rustup upstream `{0}` must use https without query or fragment")]
+    #[error(
+        "rustup upstream `{0}` must use http or https with a host and without credentials, query, or fragment"
+    )]
     InvalidUpstream(String),
+    #[error("rustup upstream `{0}` uses http; set allow_insecure_http = true to opt in")]
+    InsecureHttpUpstream(String),
 }
 
 #[derive(Deserialize)]
@@ -84,11 +90,17 @@ impl Config {
             return Err(ConfigError::InvalidRustupRefreshInterval);
         }
         for upstream in &raw.rustup.upstreams {
-            if upstream.base_url.scheme() != "https"
+            if !matches!(upstream.base_url.scheme(), "http" | "https")
+                || upstream.base_url.host_str().is_none()
+                || !upstream.base_url.username().is_empty()
+                || upstream.base_url.password().is_some()
                 || upstream.base_url.query().is_some()
                 || upstream.base_url.fragment().is_some()
             {
                 return Err(ConfigError::InvalidUpstream(upstream.name.clone()));
+            }
+            if upstream.base_url.scheme() == "http" && !upstream.allow_insecure_http {
+                return Err(ConfigError::InsecureHttpUpstream(upstream.name.clone()));
             }
         }
 
