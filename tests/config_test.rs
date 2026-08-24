@@ -10,6 +10,7 @@ allow_anonymous = true
 
 [rustup]
 refresh_interval_secs = 3600
+channels = ["stable", "beta"]
 
 [[rustup.upstreams]]
 name = "company-nexus"
@@ -26,6 +27,7 @@ allow_anonymous = true
 
 [rustup]
 refresh_interval_secs = 3600
+channels = ["stable", "beta"]
 
 [[rustup.upstreams]]
 name = "company-nexus"
@@ -38,6 +40,7 @@ fn accepts_explicit_local_anonymous_development_configuration() {
 
     assert_eq!(config.listen.port(), 18081);
     assert_eq!(config.rustup.refresh_interval_secs, 3600);
+    assert_eq!(config.rustup.channels, ["stable", "beta"]);
     assert_eq!(config.rustup.upstreams.len(), 1);
 }
 
@@ -78,6 +81,16 @@ fn rejects_zero_rustup_refresh_interval() {
     let error = Config::from_toml(&configuration).expect_err("zero refresh interval must fail");
 
     assert!(error.to_string().contains("refresh_interval_secs"));
+}
+
+#[test]
+fn rejects_empty_rustup_channel_set() {
+    let configuration =
+        LOCAL_DEVELOPMENT.replace("channels = [\"stable\", \"beta\"]", "channels = []");
+
+    let error = Config::from_toml(&configuration).expect_err("empty channel set must fail");
+
+    assert!(error.to_string().contains("channels"));
 }
 
 #[test]

@@ -25,6 +25,7 @@ pub struct AccessConfig {
 #[derive(Debug, Deserialize)]
 pub struct RustupConfig {
     pub refresh_interval_secs: u64,
+    pub channels: Vec<String>,
     pub upstreams: Vec<UpstreamConfig>,
 }
 
@@ -50,6 +51,10 @@ pub enum ConfigError {
     MissingReadTokenEnvironment,
     #[error("rustup.upstreams must contain at least one upstream")]
     MissingUpstream,
+    #[error("rustup.channels must contain at least one channel")]
+    MissingRustupChannel,
+    #[error("rustup channel `{0}` is invalid")]
+    InvalidRustupChannel(String),
     #[error("rustup.refresh_interval_secs must be greater than zero")]
     InvalidRustupRefreshInterval,
     #[error(
@@ -89,6 +94,14 @@ impl Config {
         if raw.rustup.refresh_interval_secs == 0 {
             return Err(ConfigError::InvalidRustupRefreshInterval);
         }
+        if raw.rustup.channels.is_empty() {
+            return Err(ConfigError::MissingRustupChannel);
+        }
+        for channel in &raw.rustup.channels {
+            if !is_valid_channel(channel) {
+                return Err(ConfigError::InvalidRustupChannel(channel.clone()));
+            }
+        }
         for upstream in &raw.rustup.upstreams {
             if !matches!(upstream.base_url.scheme(), "http" | "https")
                 || upstream.base_url.host_str().is_none()
@@ -116,6 +129,13 @@ impl Config {
 
 const fn requires_https() -> bool {
     true
+}
+
+fn is_valid_channel(channel: &str) -> bool {
+    !channel.is_empty()
+        && channel
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
 }
 
 fn is_localhost(url: &Url) -> bool {

@@ -73,6 +73,7 @@ allow_anonymous = true
 
 [rustup]
 refresh_interval_secs = 3600
+channels = ["stable", "beta", "nightly"]
 
 [[rustup.upstreams]]
 name = "company-nexus"
@@ -89,7 +90,8 @@ name = "rust-lang"
 base_url = "https://static.rust-lang.org"
 ```
 
-上游顺序就是回退顺序。`refresh_interval_secs` 控制服务内的 channel manifest
+上游顺序就是回退顺序。`channels` 是服务定时刷新并可供给制品哈希的唯一 channel
+集合，必须至少包含一项；`refresh_interval_secs` 控制服务内的 channel manifest
 定时刷新周期，必须为正整数。上游 URL 只能使用 `https` 或 `http`，且不能包含
 凭据、查询或片段；上游默认 `require_https = true`，HTTP 上游必须在该条目显式
 设置 `require_https = false`。这个开关不接受客户端输入，也不允许服务访问未在
