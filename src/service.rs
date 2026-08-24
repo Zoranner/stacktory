@@ -58,6 +58,20 @@ impl RustupService {
         Ok(self.snapshots.current(channel)?)
     }
 
+    pub async fn manifest_for_request(
+        &self,
+        channel: &str,
+    ) -> Result<StoredSnapshot, ServiceError> {
+        match self.manifest(channel) {
+            Ok(snapshot) => Ok(snapshot),
+            Err(ServiceError::Storage(StorageError::MissingSnapshot(_))) => {
+                self.refresh(channel).await?;
+                self.manifest(channel)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     fn ensure_channel(&self, channel: &str) -> Result<(), ServiceError> {
         if self.channels.iter().any(|configured| configured == channel) {
             Ok(())
