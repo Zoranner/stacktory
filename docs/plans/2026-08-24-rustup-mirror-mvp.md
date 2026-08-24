@@ -145,7 +145,7 @@ Run: `cargo test --test http_test dist_request_falls_back_and_uses_cached_verifi
 ```rust
 GET /healthz
 POST /api/v1/rustup/refresh/{channel}
-GET /rustup/channel-rust-{channel}.toml{.sha256}
+GET /rustup/dist/channel-rust-{channel}.toml{.sha256}
 GET /rustup/dist/{*path}
 ```
 

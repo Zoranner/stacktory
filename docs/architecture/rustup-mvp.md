@@ -38,8 +38,8 @@ VS Code 等静态安装包分发。Unity 的未来适配范围仅为官方 UPM R
 
 | 路由 | 用途 |
 | --- | --- |
-| `GET /rustup/channel-rust-{channel}.toml` | 返回当前重写后的 channel manifest。 |
-| `GET /rustup/channel-rust-{channel}.toml.sha256` | 返回与当前 manifest 配对的 SHA-256。 |
+| `GET /rustup/dist/channel-rust-{channel}.toml` | 返回当前重写后的 channel manifest。 |
+| `GET /rustup/dist/channel-rust-{channel}.toml.sha256` | 返回与当前 manifest 配对的 SHA-256。 |
 | `GET /rustup/dist/{path}` | 返回经过路径限制、上游校验和缓存的 Rustup 制品。 |
 | `GET /healthz` | 服务存活检查，不暴露上游、缓存或配置细节。 |
 
@@ -80,7 +80,7 @@ Rustup manifest 和制品只允许解析为相对 `dist/**` 路径。生产配�
 
 ```text
 rustup
-  -> GET /rustup/channel-rust-{channel}.toml(.sha256)
+  -> GET /rustup/dist/channel-rust-{channel}.toml(.sha256)
   -> 当前快照（不存在或过期时由管理刷新触发）
   -> 重写 manifest 中全部受支持 dist URL 为 /rustup/dist/{path}
   -> 返回重写 manifest 或其 SHA-256
