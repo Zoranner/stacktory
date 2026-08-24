@@ -972,6 +972,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "toml",
+ "tower",
  "url",
 ]
 
