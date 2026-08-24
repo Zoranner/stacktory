@@ -2,6 +2,7 @@
 
 mod config;
 pub mod rustup;
+pub mod service;
 pub mod storage;
 pub mod upstream;
 
