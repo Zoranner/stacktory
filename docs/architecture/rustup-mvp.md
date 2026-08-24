@@ -29,6 +29,26 @@ VS Code 等静态安装包分发。Unity 的未来适配范围仅为官方 UPM R
 请求路径、上游根地址、元数据转换、制品键的语义、完整性来源和权限动作。
 公共缓存只接收已经由适配器解析出的制品键和预期散列，不接收 URL。
 
+## 路由命名空间
+
+客户端协议路由按生态占用一级前缀。Rustup 的公开根固定为 `/rustup`，因此
+开发机设置 `RUSTUP_DIST_SERVER=https://stacktory.internal/rustup` 后，Rustup
+请求会自然落到 Stacktory；重写后的制品 URL 也必须从同一根生成。首期公开
+路由如下：
+
+| 路由 | 用途 |
+| --- | --- |
+| `GET /rustup/channel-rust-{channel}.toml` | 返回当前重写后的 channel manifest。 |
+| `GET /rustup/channel-rust-{channel}.toml.sha256` | 返回与当前 manifest 配对的 SHA-256。 |
+| `GET /rustup/dist/{path}` | 返回经过路径限制、上游校验和缓存的 Rustup 制品。 |
+| `GET /healthz` | 服务存活检查，不暴露上游、缓存或配置细节。 |
+
+管理接口预留在 `/api/v1`，例如 `POST /api/v1/rustup/refresh/{channel}`；它与
+客户端镜像路由分离并要求管理权限。未来适配器使用自己的一级协议前缀，如
+`/cargo`、`/npm`、`/pypi`、`/nuget`、`/oci`、`/apt`、`/yum`、`/winget`、
+`/vscode` 和 `/upm`。每个前缀内部仍由对应原生协议决定，不能用全局兜底
+路由把未知路径或 URL 转发到上游。
+
 ## 配置模型
 
 配置使用 TOML，运行时仅加载一个本地文件：
