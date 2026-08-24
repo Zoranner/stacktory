@@ -1,0 +1,17 @@
+# Build outputs
+target/
+dist/
+build/
+out/
+
+# Dependency caches
+node_modules/
+.venv/
+__pycache__/
+
+# Local configuration and editor state
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
