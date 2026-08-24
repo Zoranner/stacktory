@@ -69,7 +69,13 @@ impl RustupService {
 
     pub async fn refresh(&self, channel: &str) -> Result<(), ServiceError> {
         self.ensure_channel(channel)?;
-        let source = self.upstream.fetch_channel_manifest(channel).await?;
+        let source = match self.upstream.fetch_channel_manifest(channel).await {
+            Ok(source) => source,
+            Err(error) => {
+                self.record_audit("manifest_refresh_failed", channel, "upstream_failed");
+                return Err(error.into());
+            }
+        };
         let rewritten = rewrite_manifest(&source, &self.policy, &self.public_base)?;
         self.snapshots.publish(channel, rewritten)?;
         self.record_audit("manifest_published", channel, "success");
@@ -134,10 +140,17 @@ impl RustupService {
             return Ok(contents);
         }
 
-        let contents = self
+        let contents = match self
             .upstream
             .fetch_dist_artifact(path, &expected_checksum)
-            .await?;
+            .await
+        {
+            Ok(contents) => contents,
+            Err(error) => {
+                self.record_audit("artifact_fetch_failed", path.as_str(), "upstream_failed");
+                return Err(error.into());
+            }
+        };
         self.cache
             .publish_verified(path, &contents, &expected_checksum)?;
         self.record_audit("artifact_cached", path.as_str(), "success");

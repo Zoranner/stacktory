@@ -138,6 +138,11 @@ async fn artifact_request_rejects_content_that_does_not_match_the_manifest_hash(
     assert!(error.to_string().contains("does not match"));
     assert_eq!(requests.load(Ordering::SeqCst), 1);
     assert!(
+        std::fs::read_to_string(data_dir.path().join("audit/events.jsonl"))
+            .expect("audit log")
+            .contains("artifact_fetch_failed")
+    );
+    assert!(
         !data_dir
             .path()
             .join("rustup/artifacts")
@@ -203,6 +208,11 @@ async fn manifest_request_returns_an_expired_snapshot_when_refresh_fails() {
 
     assert_eq!(refreshes.load(Ordering::SeqCst), 2);
     assert_eq!(stale.checksum, before_failure.checksum);
+    assert!(
+        std::fs::read_to_string(data_dir.path().join("audit/events.jsonl"))
+            .expect("audit log")
+            .contains("manifest_refresh_failed")
+    );
 }
 
 #[tokio::test]

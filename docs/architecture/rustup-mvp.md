@@ -23,7 +23,7 @@ VS Code 等静态安装包分发。Unity 的未来适配范围仅为官方 UPM R
 | `SnapshotStore` | 将已校验的原始与重写 manifest 放入版本化快照目录，并用当前指针切换公开版本。 |
 | `ArtifactCache` | 以 dist 相对路径定位磁盘文件；核对 manifest 哈希后才原子发布。 |
 | `AccessGate` | 从配置的环境变量读取只读 Bearer token；未配置时仅允许显式开发模式匿名访问。 |
-| `AuditSink` | 对 manifest 发布、缓存命中、缓存写入、上游回退和拒绝请求写入结构化 JSONL。 |
+| `AuditSink` | 对 manifest 发布、缓存命中、缓存写入、上游失败和拒绝请求写入结构化 JSONL。 |
 
 适配器是未来扩展点，而不是万能代理。每个生态适配器独立声明：可接受的
 请求路径、上游根地址、元数据转换、制品键的语义、完整性来源和权限动作。
