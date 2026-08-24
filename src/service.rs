@@ -1,3 +1,5 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use thiserror::Error;
 
 use crate::{
@@ -10,6 +12,7 @@ use crate::{
 #[derive(Debug)]
 pub struct RustupService {
     channels: Vec<String>,
+    refresh_interval_secs: u64,
     public_base: url::Url,
     policy: ManifestPolicy,
     upstream: UpstreamClient,
@@ -45,6 +48,7 @@ impl RustupService {
             .collect();
         Ok(Self {
             channels: config.rustup.channels,
+            refresh_interval_secs: config.rustup.refresh_interval_secs,
             public_base: config.public_base_url,
             policy: ManifestPolicy::new(bases.clone()),
             upstream: UpstreamClient::new(bases)?,
@@ -71,6 +75,12 @@ impl RustupService {
         channel: &str,
     ) -> Result<StoredSnapshot, ServiceError> {
         match self.manifest(channel) {
+            Ok(snapshot) if self.is_snapshot_stale(&snapshot) => {
+                match self.refresh(channel).await {
+                    Ok(()) => self.manifest(channel),
+                    Err(_) => Ok(snapshot),
+                }
+            }
             Ok(snapshot) => Ok(snapshot),
             Err(ServiceError::Storage(StorageError::MissingSnapshot(_))) => {
                 self.refresh(channel).await?;
@@ -78,6 +88,16 @@ impl RustupService {
             }
             Err(error) => Err(error),
         }
+    }
+
+    fn is_snapshot_stale(&self, snapshot: &StoredSnapshot) -> bool {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .is_ok_and(|now| {
+                now.as_secs()
+                    .saturating_sub(snapshot.published_at_unix_secs)
+                    >= self.refresh_interval_secs
+            })
     }
 
     pub async fn artifact_for_request(&self, path: &DistPath) -> Result<Vec<u8>, ServiceError> {

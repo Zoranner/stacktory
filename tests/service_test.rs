@@ -3,11 +3,11 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
-use axum::{Router, routing::get};
+use axum::{Router, response::IntoResponse, routing::get};
 use sha2::{Digest, Sha256};
 use stacktory::{
     AccessConfig, Config, RustupConfig, UpstreamConfig, rustup::DistPath, service::RustupService,
@@ -157,6 +157,44 @@ async fn artifact_request_rejects_paths_not_referenced_by_a_published_manifest()
     assert_eq!(requests.load(Ordering::SeqCst), 0);
 }
 
+#[tokio::test]
+async fn manifest_request_refreshes_an_expired_snapshot() {
+    let refreshes = Arc::new(AtomicUsize::new(0));
+    let (upstream, _) = start_refresh_upstream(refreshes.clone()).await;
+    let data_dir = tempdir().expect("temporary directory");
+    let service = service_for(upstream, data_dir.path().to_path_buf());
+
+    service.refresh("stable").await.expect("initial refresh");
+    expire_current_snapshot(data_dir.path(), "stable", &service);
+    let refreshed = service
+        .manifest_for_request("stable")
+        .await
+        .expect("expired snapshot refresh");
+
+    assert_eq!(refreshes.load(Ordering::SeqCst), 2);
+    assert!(refreshed.published_at_unix_secs > 0);
+}
+
+#[tokio::test]
+async fn manifest_request_returns_an_expired_snapshot_when_refresh_fails() {
+    let refreshes = Arc::new(AtomicUsize::new(0));
+    let (upstream, available) = start_refresh_upstream(refreshes.clone()).await;
+    let data_dir = tempdir().expect("temporary directory");
+    let service = service_for(upstream, data_dir.path().to_path_buf());
+
+    service.refresh("stable").await.expect("initial refresh");
+    let before_failure = service.manifest("stable").expect("snapshot");
+    expire_current_snapshot(data_dir.path(), "stable", &service);
+    available.store(false, Ordering::SeqCst);
+    let stale = service
+        .manifest_for_request("stable")
+        .await
+        .expect("stale fallback");
+
+    assert_eq!(refreshes.load(Ordering::SeqCst), 2);
+    assert_eq!(stale.checksum, before_failure.checksum);
+}
+
 async fn start_artifact_upstream(
     artifact: Vec<u8>,
     expected_hash: String,
@@ -208,6 +246,74 @@ async fn start_artifact_upstream(
         Url::parse(&format!("http://{address}")).expect("upstream URL"),
         path,
     )
+}
+
+async fn start_refresh_upstream(refreshes: Arc<AtomicUsize>) -> (Url, Arc<AtomicBool>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let manifest = SOURCE_MANIFEST.replace("PORT", &address.port().to_string());
+    let checksum = format!(
+        "{:x}  channel-rust-stable.toml\n",
+        Sha256::digest(manifest.as_bytes())
+    );
+    let available = Arc::new(AtomicBool::new(true));
+    let manifest_available = available.clone();
+    let manifest_refreshes = refreshes.clone();
+    let checksum_available = available.clone();
+    let router = Router::new()
+        .route(
+            "/dist/channel-rust-stable.toml",
+            get(move || {
+                let manifest = manifest.clone();
+                let available = manifest_available.clone();
+                let refreshes = manifest_refreshes.clone();
+                async move {
+                    refreshes.fetch_add(1, Ordering::SeqCst);
+                    if available.load(Ordering::SeqCst) {
+                        (axum::http::StatusCode::OK, manifest).into_response()
+                    } else {
+                        axum::http::StatusCode::BAD_GATEWAY.into_response()
+                    }
+                }
+            }),
+        )
+        .route(
+            "/dist/channel-rust-stable.toml.sha256",
+            get(move || {
+                let checksum = checksum.clone();
+                let available = checksum_available.clone();
+                async move {
+                    if available.load(Ordering::SeqCst) {
+                        (axum::http::StatusCode::OK, checksum).into_response()
+                    } else {
+                        axum::http::StatusCode::BAD_GATEWAY.into_response()
+                    }
+                }
+            }),
+        );
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.expect("server");
+    });
+
+    (
+        Url::parse(&format!("http://{address}")).expect("upstream URL"),
+        available,
+    )
+}
+
+fn expire_current_snapshot(data_dir: &std::path::Path, channel: &str, service: &RustupService) {
+    let snapshot = service.manifest(channel).expect("snapshot");
+    std::fs::write(
+        data_dir
+            .join("rustup/snapshots")
+            .join(channel)
+            .join("current.toml"),
+        format!(
+            "revision = \"{}\"\npublished_at_unix_secs = 0\n",
+            snapshot.checksum
+        ),
+    )
+    .expect("expire current snapshot");
 }
 
 fn service_for(upstream: Url, data_dir: PathBuf) -> RustupService {
