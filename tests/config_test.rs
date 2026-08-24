@@ -34,6 +34,8 @@ name = "company-nexus"
 base_url = "https://pkg.example.internal/repository/rustup-group"
 "#;
 
+const DEPLOYMENT_CONFIG: &str = include_str!("../deploy/app/config.example.toml");
+
 #[test]
 fn accepts_explicit_local_anonymous_development_configuration() {
     let config = Config::from_toml(LOCAL_DEVELOPMENT).expect("local development configuration");
@@ -91,6 +93,13 @@ fn rejects_empty_rustup_channel_set() {
     let error = Config::from_toml(&configuration).expect_err("empty channel set must fail");
 
     assert!(error.to_string().contains("channels"));
+}
+
+#[test]
+fn deployment_config_matches_the_runtime_schema() {
+    let config = Config::from_toml(DEPLOYMENT_CONFIG).expect("deployment config");
+
+    assert_eq!(config.data_dir, std::path::PathBuf::from("/app/data"));
 }
 
 #[test]

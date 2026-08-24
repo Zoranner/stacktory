@@ -1,0 +1,7 @@
+.git/
+target/
+deploy/.env
+deploy/data/
+.env
+.env.*
+!.env.example
