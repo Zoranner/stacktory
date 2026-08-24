@@ -16,7 +16,6 @@
 - Create: `Cargo.toml`
 - Create: `src/lib.rs`
 - Create: `src/config.rs`
-- Create: `src/main.rs`
 - Create: `tests/config_test.rs`
 
 - [ ] **Step 1: 写出失败的配置测试**
@@ -140,11 +139,10 @@ async fn dist_request_falls_back_and_uses_cached_verified_file() { /* two local 
 
 Run: `cargo test --test http_test dist_request_falls_back_and_uses_cached_verified_file`
 
-- [ ] **Step 3: 实现固定上游客户端、刷新入口和三类 Rustup 路由**
+- [ ] **Step 3: 实现固定上游客户端、配置驱动的刷新任务和三类 Rustup 路由**
 
 ```rust
 GET /healthz
-POST /api/v1/rustup/refresh/{channel}
 GET /rustup/dist/channel-rust-{channel}.toml{.sha256}
 GET /rustup/dist/{*path}
 ```

@@ -43,11 +43,11 @@ VS Code 等静态安装包分发。Unity 的未来适配范围仅为官方 UPM R
 | `GET /rustup/dist/{path}` | 返回经过路径限制、上游校验和缓存的 Rustup 制品。 |
 | `GET /healthz` | 服务存活检查，不暴露上游、缓存或配置细节。 |
 
-管理接口预留在 `/api/v1`，例如 `POST /api/v1/rustup/refresh/{channel}`；它与
-客户端镜像路由分离并要求管理权限。未来适配器使用自己的一级协议前缀，如
+MVP 不提供管理页面或管理 HTTP API。配置文件是唯一配置来源，服务器在启动时
+加载它；更新配置后通过受控重启生效。未来适配器使用自己的一级协议前缀，如
 `/cargo`、`/npm`、`/pypi`、`/nuget`、`/oci`、`/apt`、`/yum`、`/winget`、
-`/vscode` 和 `/upm`。每个前缀内部仍由对应原生协议决定，不能用全局兜底
-路由把未知路径或 URL 转发到上游。
+`/vscode` 和 `/upm`。每个前缀内部仍由对应原生协议决定，不能用全局兜底路由
+把未知路径或 URL 转发到上游。
 
 ## 配置模型
 
@@ -63,6 +63,9 @@ public_base_url = "http://127.0.0.1:18081"
 allow_anonymous = true
 # read_token_env = "STACKTORY_RUSTUP_READ_TOKEN"
 
+[rustup]
+refresh_interval_secs = 3600
+
 [[rustup.upstreams]]
 name = "company-nexus"
 base_url = "https://pkg.example.internal/repository/rustup-group"
@@ -72,8 +75,9 @@ name = "rust-lang"
 base_url = "https://static.rust-lang.org"
 ```
 
-上游顺序就是回退顺序。所有上游 URL 必须为 `https`，不能包含查询或片段；
-Rustup manifest 和制品只允许解析为相对 `dist/**` 路径。生产配置应关闭
+上游顺序就是回退顺序。`refresh_interval_secs` 控制服务内的 channel manifest
+定时刷新周期，必须为正整数。所有上游 URL 必须为 `https`，不能包含查询或
+片段；Rustup manifest 和制品只允许解析为相对 `dist/**` 路径。生产配置应关闭
 `allow_anonymous` 并由环境变量提供 token；token 不进入版本库。
 
 ## 请求与状态流
@@ -81,7 +85,7 @@ Rustup manifest 和制品只允许解析为相对 `dist/**` 路径。生产配�
 ```text
 rustup
   -> GET /rustup/dist/channel-rust-{channel}.toml(.sha256)
-  -> 当前快照（不存在或过期时由管理刷新触发）
+  -> 当前快照（由服务按配置周期刷新）
   -> 重写 manifest 中全部受支持 dist URL 为 /rustup/dist/{path}
   -> 返回重写 manifest 或其 SHA-256
 

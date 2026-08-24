@@ -24,6 +24,7 @@ pub struct AccessConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct RustupConfig {
+    pub refresh_interval_secs: u64,
     pub upstreams: Vec<UpstreamConfig>,
 }
 
@@ -47,6 +48,8 @@ pub enum ConfigError {
     MissingReadTokenEnvironment,
     #[error("rustup.upstreams must contain at least one upstream")]
     MissingUpstream,
+    #[error("rustup.refresh_interval_secs must be greater than zero")]
+    InvalidRustupRefreshInterval,
     #[error("rustup upstream `{0}` must use https without query or fragment")]
     InvalidUpstream(String),
 }
@@ -76,6 +79,9 @@ impl Config {
         }
         if raw.rustup.upstreams.is_empty() {
             return Err(ConfigError::MissingUpstream);
+        }
+        if raw.rustup.refresh_interval_secs == 0 {
+            return Err(ConfigError::InvalidRustupRefreshInterval);
         }
         for upstream in &raw.rustup.upstreams {
             if upstream.base_url.scheme() != "https"
