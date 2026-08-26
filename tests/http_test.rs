@@ -15,8 +15,7 @@ use axum::{
 };
 use sha2::{Digest, Sha256};
 use stacktory::{
-    AccessConfig, Config, RustupConfig, UpstreamConfig,
-    access::AccessGate,
+    Config, RustupConfig, UpstreamConfig,
     http::{router, router_with_rustup},
     service::RustupService,
 };
@@ -40,62 +39,7 @@ async fn health_route_reports_service_availability() {
 }
 
 #[tokio::test]
-async fn rustup_routes_require_the_configured_bearer_token() {
-    let data_dir = tempdir().expect("temporary directory");
-    let service = RustupService::new(Config {
-        listen: "127.0.0.1:18081".parse::<SocketAddr>().expect("address"),
-        data_dir: data_dir.path().to_path_buf(),
-        public_base_url: Url::parse("http://127.0.0.1:18081").expect("public URL"),
-        access: AccessConfig {
-            allow_anonymous: true,
-            read_token_env: None,
-        },
-        rustup: RustupConfig {
-            refresh_interval_secs: 3600,
-            channels: vec!["stable".to_owned()],
-            upstreams: vec![UpstreamConfig {
-                name: "test".to_owned(),
-                base_url: Url::parse("http://127.0.0.1:18082").expect("upstream URL"),
-                require_https: false,
-            }],
-        },
-    })
-    .expect("service");
-    let router = router_with_rustup(
-        Arc::new(service),
-        Arc::new(AccessGate::with_bearer_token("read-token")),
-    );
-
-    let unauthorized = router
-        .clone()
-        .oneshot(
-            Request::get("/mirror/rustup/dist/channel-rust-stable.toml")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
-    let authorized = router
-        .oneshot(
-            Request::get("/mirror/rustup/dist/channel-rust-stable.toml")
-                .header("authorization", "Bearer read-token")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("response");
-
-    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(authorized.status(), StatusCode::BAD_GATEWAY);
-    assert!(
-        std::fs::read_to_string(data_dir.path().join("audit/events.jsonl"))
-            .expect("audit log")
-            .contains("request_denied")
-    );
-}
-
-#[tokio::test]
-async fn rustup_artifact_route_serves_only_a_verified_published_artifact() {
+async fn public_rustup_artifact_route_serves_only_a_verified_published_artifact() {
     let artifact = b"verified artifact".to_vec();
     let artifact_hash = format!("{:x}", Sha256::digest(&artifact));
     let artifact_requests = Arc::new(AtomicUsize::new(0));
@@ -147,10 +91,6 @@ async fn rustup_artifact_route_serves_only_a_verified_published_artifact() {
         listen: "127.0.0.1:18081".parse::<SocketAddr>().expect("address"),
         data_dir: PathBuf::from(data_dir.path()),
         public_base_url: Url::parse("http://127.0.0.1:18081").expect("public URL"),
-        access: AccessConfig {
-            allow_anonymous: true,
-            read_token_env: None,
-        },
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
             channels: vec!["stable".to_owned()],
@@ -164,7 +104,7 @@ async fn rustup_artifact_route_serves_only_a_verified_published_artifact() {
     .expect("service");
     service.refresh("stable").await.expect("refresh");
 
-    let response = router_with_rustup(Arc::new(service), Arc::new(AccessGate::anonymous()))
+    let response = router_with_rustup(Arc::new(service))
         .oneshot(
             Request::get("/mirror/rustup/dist/2026-08-20/rustc-x86_64-pc-windows-msvc.tar.xz")
                 .body(Body::empty())

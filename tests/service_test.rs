@@ -10,9 +10,7 @@ use std::{
 
 use axum::{Router, response::IntoResponse, routing::get};
 use sha2::{Digest, Sha256};
-use stacktory::{
-    AccessConfig, Config, RustupConfig, UpstreamConfig, rustup::DistPath, service::RustupService,
-};
+use stacktory::{Config, RustupConfig, UpstreamConfig, rustup::DistPath, service::RustupService};
 use tempfile::tempdir;
 use tokio::net::TcpListener;
 use url::Url;
@@ -56,10 +54,6 @@ async fn refresh_publishes_a_rewritten_manifest_snapshot() {
         listen: "127.0.0.1:18081".parse::<SocketAddr>().expect("address"),
         data_dir: PathBuf::from(directory.path()),
         public_base_url: Url::parse("http://127.0.0.1:18081").expect("public URL"),
-        access: AccessConfig {
-            allow_anonymous: true,
-            read_token_env: None,
-        },
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
             channels: vec!["stable".to_owned()],
@@ -359,10 +353,6 @@ fn service_for(upstream: Url, data_dir: PathBuf) -> RustupService {
         listen: "127.0.0.1:18081".parse::<SocketAddr>().expect("address"),
         data_dir,
         public_base_url: Url::parse("http://127.0.0.1:18081").expect("public URL"),
-        access: AccessConfig {
-            allow_anonymous: true,
-            read_token_env: None,
-        },
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
             channels: vec!["stable".to_owned()],

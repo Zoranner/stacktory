@@ -10,10 +10,6 @@ node_modules/
 __pycache__/
 
 # Local configuration and editor state
-.env
-.env.*
-!.env.example
-deploy/.env
 deploy/app/config.toml
 deploy/data/
 .idea/

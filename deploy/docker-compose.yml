@@ -3,8 +3,6 @@ services:
     image: ghcr.io/zoranner/stacktory:0.1.0
     container_name: stacktory
     restart: always
-    env_file:
-      - .env
     ports:
       - "18081:18081"
     volumes:

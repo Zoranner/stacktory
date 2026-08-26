@@ -87,10 +87,6 @@ impl RustupService {
         Ok(self.snapshots.current(channel)?)
     }
 
-    pub fn audit_request_denied(&self, path: &str) {
-        self.record_audit("request_denied", path, "unauthorized");
-    }
-
     pub async fn manifest_for_request(
         &self,
         channel: &str,

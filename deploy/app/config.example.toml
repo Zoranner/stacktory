@@ -2,10 +2,6 @@ listen = "0.0.0.0:18081"
 data_dir = "/app/data"
 public_base_url = "https://stacktory.example.internal"
 
-[access]
-allow_anonymous = false
-read_token_env = "STACKTORY_RUSTUP_READ_TOKEN"
-
 [rustup]
 refresh_interval_secs = 3600
 channels = ["stable", "beta", "nightly"]

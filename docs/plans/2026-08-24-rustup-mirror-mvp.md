@@ -24,9 +24,9 @@
 
 ```rust
 #[test]
-fn rejects_anonymous_production_configuration() {
-    let error = Config::from_toml(PRODUCTION_ANONYMOUS).unwrap_err();
-    assert!(error.to_string().contains("allow_anonymous"));
+fn accepts_public_production_configuration() {
+    let config = Config::from_toml(PUBLIC_PRODUCTION).unwrap();
+    assert_eq!(config.listen.ip().to_string(), "0.0.0.0");
 }
 ```
 

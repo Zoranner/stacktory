@@ -22,8 +22,7 @@ VS Code 等静态安装包分发。Unity 的未来适配范围仅为官方 UPM R
 | `UpstreamClient` | 仅向配置中声明的上游发起请求；按顺序回退；不接受 HTTP 请求中的上游地址。 |
 | `SnapshotStore` | 将已校验的原始与重写 manifest 放入版本化快照目录，并用当前指针切换公开版本。 |
 | `ArtifactCache` | 以 dist 相对路径定位磁盘文件；核对 manifest 哈希后才原子发布。 |
-| `AccessGate` | 从配置的环境变量读取只读 Bearer token；未配置时仅允许显式开发模式匿名访问。 |
-| `AuditSink` | 对 manifest 发布、缓存命中、缓存写入、上游失败和拒绝请求写入结构化 JSONL。 |
+| `AuditSink` | 对 manifest 发布、缓存命中、缓存写入和上游失败写入结构化 JSONL。 |
 
 适配器是未来扩展点，而不是万能代理。每个生态适配器独立声明：可接受的
 请求路径、上游根地址、元数据转换、制品键的语义、完整性来源和权限动作。
@@ -66,11 +65,6 @@ listen = "127.0.0.1:18081"
 data_dir = "./var/stacktory"
 public_base_url = "http://127.0.0.1:18081"
 
-[access]
-# 未设置时只允许明确的开发匿名模式。
-allow_anonymous = true
-# read_token_env = "STACKTORY_RUSTUP_READ_TOKEN"
-
 [rustup]
 refresh_interval_secs = 3600
 channels = ["stable", "beta", "nightly"]
@@ -96,7 +90,7 @@ base_url = "https://static.rust-lang.org"
 凭据、查询或片段；上游默认 `require_https = true`，HTTP 上游必须在该条目显式
 设置 `require_https = false`。这个开关不接受客户端输入，也不允许服务访问未在
 配置中声明的地址。Rustup manifest 和制品只允许解析为相对 `dist/**` 路径。生产
-配置应关闭 `allow_anonymous` 并由环境变量提供 token；token 不进入版本库。
+Stacktory 对内网公开提供镜像响应，不要求客户端凭据。
 
 ## 请求与状态流
 
@@ -125,14 +119,12 @@ manifest SHA-256。完整 manifest、匹配 checksum 和提取出的制品哈希
 
 ## 错误与安全边界
 
-请求路径不匹配或包含编码路径穿越时返回 404；认证缺失或错误返回 401；
-已知但无权限的动作预留 403；没有可用快照返回 503；所有上游失败或完整性
-不匹配返回 502，且审计中带有上游及失败类别。上游响应的 URL 不会被直接跟随
+请求路径不匹配或包含编码路径穿越时返回 404；没有可用快照返回 503；所有上游失败
+或完整性不匹配返回 502，且审计中带有失败类别。上游响应的 URL 不会被直接跟随
 为任意地址：每个 URL 都须再次匹配已配置根地址和 `dist/**` 约束。
 
-日志不记录 Bearer token、请求授权头或上游响应正文。MVP 的 JSONL 审计为
-本地可追加记录；集中审计、组织/角色模型和令牌轮换是平台公共能力，后续由
-`AccessGate` 与 `AuditSink` 接口替换，不改变 Rustup 协议层。
+日志不记录上游响应正文。MVP 的 JSONL 审计为本地可追加记录；集中审计和组织/角色
+模型是平台公共能力，后续可在不改变 Rustup 协议层的前提下接入。
 
 ## 验证策略
 

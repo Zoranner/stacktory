@@ -5,9 +5,6 @@ listen = "127.0.0.1:18081"
 data_dir = "./var/stacktory"
 public_base_url = "http://127.0.0.1:18081"
 
-[access]
-allow_anonymous = true
-
 [rustup]
 refresh_interval_secs = 3600
 channels = ["stable", "beta"]
@@ -17,13 +14,10 @@ name = "company-nexus"
 base_url = "https://pkg.example.internal/repository/rustup-group"
 "#;
 
-const ANONYMOUS_PRODUCTION: &str = r#"
+const PUBLIC_PRODUCTION: &str = r#"
 listen = "0.0.0.0:18081"
 data_dir = "./var/stacktory"
 public_base_url = "https://rustup.stacktory.internal"
-
-[access]
-allow_anonymous = true
 
 [rustup]
 refresh_interval_secs = 3600
@@ -37,7 +31,7 @@ base_url = "https://pkg.example.internal/repository/rustup-group"
 const DEPLOYMENT_CONFIG: &str = include_str!("../deploy/app/config.example.toml");
 
 #[test]
-fn accepts_explicit_local_anonymous_development_configuration() {
+fn accepts_local_development_configuration() {
     let config = Config::from_toml(LOCAL_DEVELOPMENT).expect("local development configuration");
 
     assert_eq!(config.listen.port(), 18081);
@@ -103,9 +97,8 @@ fn deployment_config_matches_the_runtime_schema() {
 }
 
 #[test]
-fn rejects_anonymous_production_configuration() {
-    let error =
-        Config::from_toml(ANONYMOUS_PRODUCTION).expect_err("anonymous production must fail");
+fn accepts_public_production_configuration() {
+    let config = Config::from_toml(PUBLIC_PRODUCTION).expect("public production configuration");
 
-    assert!(error.to_string().contains("allow_anonymous"));
+    assert_eq!(config.listen.ip().to_string(), "0.0.0.0");
 }

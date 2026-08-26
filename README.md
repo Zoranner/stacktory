@@ -20,22 +20,21 @@ channel manifest 缺失或过期时由请求触发刷新。同一 channel 的并
 失败但已有旧快照时继续返回旧快照。制品按 manifest 中的 SHA-256 校验后原子写入
 `data_dir/rustup/artifacts/`，未知或非法路径不会触发上游请求。
 
-启用 Bearer token 后，`/mirror/rustup/**` 必须携带匹配的 `Authorization` 请求头；
-`/healthz` 不需要认证。运行审计追加到 `data_dir/audit/events.jsonl`，记录 manifest
-发布、制品缓存和拒绝请求，但不记录 token、授权头或上游响应正文。
+Rustup 路由无需认证。运行审计追加到 `data_dir/audit/events.jsonl`，记录 manifest
+发布、制品缓存和上游失败，但不记录上游响应正文。
 
 ## 部署
 
 部署模板位于 `deploy/`：实际配置为 `deploy/app/config.toml`，运行数据为
 `deploy/data/`，两者均不会提交。先从 `deploy/app/config.example.toml` 创建实际配置，
-并从 `deploy/.env.example` 创建运行环境文件；随后在 `deploy/` 下启动 Compose。
+随后在 `deploy/` 下启动 Compose。
 
 ```text
 docker compose up -d
 ```
 
-生产配置必须使用 HTTPS 的 `public_base_url` 且关闭匿名访问。各 Rustup 上游默认要求
-HTTPS；仅在明确需要时，对对应条目设置 `require_https = false`。
+生产配置必须使用 HTTPS 的 `public_base_url`。各 Rustup 上游默认要求 HTTPS；仅在
+明确需要时，对对应条目设置 `require_https = false`。
 
 内网开发机将 Rustup 分发服务器设置为：
 
