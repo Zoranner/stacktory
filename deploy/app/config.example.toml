@@ -1,4 +1,4 @@
-listen = "0.0.0.0:18081"
+listen = "0.0.0.0:18761"
 data_dir = "/app/data"
 public_base_url = "https://stacktory.example.internal"
 

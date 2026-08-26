@@ -61,9 +61,9 @@ Rustup MVP 只保留这些路由空间，不实现官网或文档站。
 配置使用 TOML，运行时仅加载一个本地文件：
 
 ```toml
-listen = "127.0.0.1:18081"
+listen = "127.0.0.1:18761"
 data_dir = "./var/stacktory"
-public_base_url = "http://127.0.0.1:18081"
+public_base_url = "http://127.0.0.1:18761"
 
 [rustup]
 refresh_interval_secs = 3600

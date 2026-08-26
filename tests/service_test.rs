@@ -51,9 +51,9 @@ async fn refresh_publishes_a_rewritten_manifest_snapshot() {
 
     let directory = tempdir().expect("temporary directory");
     let service = RustupService::new(Config {
-        listen: "127.0.0.1:18081".parse::<SocketAddr>().expect("address"),
+        listen: "127.0.0.1:18761".parse::<SocketAddr>().expect("address"),
         data_dir: PathBuf::from(directory.path()),
-        public_base_url: Url::parse("http://127.0.0.1:18081").expect("public URL"),
+        public_base_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
             channels: vec!["stable".to_owned()],
@@ -350,9 +350,9 @@ fn expire_current_snapshot(data_dir: &std::path::Path, channel: &str, service: &
 
 fn service_for(upstream: Url, data_dir: PathBuf) -> RustupService {
     RustupService::new(Config {
-        listen: "127.0.0.1:18081".parse::<SocketAddr>().expect("address"),
+        listen: "127.0.0.1:18761".parse::<SocketAddr>().expect("address"),
         data_dir,
-        public_base_url: Url::parse("http://127.0.0.1:18081").expect("public URL"),
+        public_base_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
             channels: vec!["stable".to_owned()],

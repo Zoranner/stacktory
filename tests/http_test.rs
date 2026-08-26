@@ -88,9 +88,9 @@ async fn public_rustup_artifact_route_serves_only_a_verified_published_artifact(
 
     let data_dir = tempdir().expect("temporary directory");
     let service = RustupService::new(Config {
-        listen: "127.0.0.1:18081".parse::<SocketAddr>().expect("address"),
+        listen: "127.0.0.1:18761".parse::<SocketAddr>().expect("address"),
         data_dir: PathBuf::from(data_dir.path()),
-        public_base_url: Url::parse("http://127.0.0.1:18081").expect("public URL"),
+        public_base_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
             channels: vec!["stable".to_owned()],

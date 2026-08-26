@@ -1,9 +1,9 @@
 use stacktory::Config;
 
 const LOCAL_DEVELOPMENT: &str = r#"
-listen = "127.0.0.1:18081"
+listen = "127.0.0.1:18761"
 data_dir = "./var/stacktory"
-public_base_url = "http://127.0.0.1:18081"
+public_base_url = "http://127.0.0.1:18761"
 
 [rustup]
 refresh_interval_secs = 3600
@@ -15,7 +15,7 @@ base_url = "https://pkg.example.internal/repository/rustup-group"
 "#;
 
 const PUBLIC_PRODUCTION: &str = r#"
-listen = "0.0.0.0:18081"
+listen = "0.0.0.0:18761"
 data_dir = "./var/stacktory"
 public_base_url = "https://rustup.stacktory.internal"
 
@@ -34,7 +34,7 @@ const DEPLOYMENT_CONFIG: &str = include_str!("../deploy/app/config.example.toml"
 fn accepts_local_development_configuration() {
     let config = Config::from_toml(LOCAL_DEVELOPMENT).expect("local development configuration");
 
-    assert_eq!(config.listen.port(), 18081);
+    assert_eq!(config.listen.port(), 18761);
     assert_eq!(config.rustup.refresh_interval_secs, 3600);
     assert_eq!(config.rustup.channels, ["stable", "beta"]);
     assert_eq!(config.rustup.upstreams.len(), 1);
@@ -94,6 +94,7 @@ fn deployment_config_matches_the_runtime_schema() {
     let config = Config::from_toml(DEPLOYMENT_CONFIG).expect("deployment config");
 
     assert_eq!(config.data_dir, std::path::PathBuf::from("/app/data"));
+    assert_eq!(config.listen.port(), 18761);
 }
 
 #[test]
