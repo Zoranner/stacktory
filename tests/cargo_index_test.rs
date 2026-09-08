@@ -1,0 +1,64 @@
+use stacktory::cargo::{
+    CargoIndexError, parse_index_lines, rewrite_crate_download_url, rewrite_index_lines,
+};
+use url::Url;
+
+#[test]
+fn parses_json_lines_index_and_keeps_checksums() {
+    let source = concat!(
+        r#"{"name":"serde","vers":"1.0.0","deps":[],"cksum":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","features":{},"yanked":false}"#,
+        "\n",
+        r#"{"name":"serde","vers":"1.0.1","deps":[],"cksum":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","features":{},"yanked":false}"#,
+        "\n"
+    );
+
+    let records = parse_index_lines(source).expect("index records");
+
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].name, "serde");
+    assert_eq!(
+        records[1].checksum,
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    );
+}
+
+#[test]
+fn rejects_index_record_without_sha256_checksum() {
+    let error = parse_index_lines(
+        r#"{"name":"serde","vers":"1.0.0","deps":[],"features":{},"yanked":false}"#,
+    )
+    .expect_err("checksum is required");
+
+    assert!(matches!(error, CargoIndexError::MissingChecksum { .. }));
+}
+
+#[test]
+fn rewrites_crate_download_url_to_stacktory_entry() {
+    let root = Url::parse("http://127.0.0.1:18761/base").expect("root URL");
+
+    let rewritten =
+        rewrite_crate_download_url(&root, "team", "serde", "1.0.0").expect("download URL");
+
+    assert_eq!(
+        rewritten.as_str(),
+        "http://127.0.0.1:18761/base/mirror/cargo/team/crates/serde/1.0.0.crate"
+    );
+}
+
+#[test]
+fn rewrites_index_records_without_exposing_upstream_urls() {
+    let source = concat!(
+        r#"{"name":"serde","vers":"1.0.0","deps":[],"cksum":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","features":{},"yanked":false}"#,
+        "\n"
+    );
+    let root = Url::parse("http://127.0.0.1:18761").expect("root URL");
+
+    let rewritten = rewrite_index_lines(source, &root, "team").expect("rewritten index");
+
+    assert_eq!(rewritten, source.as_bytes());
+    assert!(
+        !rewritten
+            .windows(b"crates.io".len())
+            .any(|window| window == b"crates.io")
+    );
+}

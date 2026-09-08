@@ -9,9 +9,10 @@ use axum::{
 };
 
 use crate::{
+    cargo::CargoAdapter,
     rustup::DistPath,
     service::{RustupService, ServiceError},
-    sources::registry::AdapterRegistry,
+    sources::{SourcePool, registry::AdapterRegistry},
     storage::StorageError,
 };
 
@@ -29,6 +30,25 @@ pub fn router_with_rustup(service: Arc<RustupService>) -> Router {
 pub fn router_with_registry(registry: AdapterRegistry) -> Router {
     Router::new()
         .route("/healthz", get(health))
+        .merge(registry_routes(registry))
+}
+
+pub fn router_with_rustup_and_cargo(
+    rustup: Arc<RustupService>,
+    cargo: Option<(Arc<CargoAdapter>, Arc<SourcePool>)>,
+) -> Router {
+    let rustup_router = router_with_rustup(rustup);
+    let Some((adapter, pool)) = cargo else {
+        return rustup_router;
+    };
+    let registry = AdapterRegistry::new()
+        .with_adapter("cargo", pool, adapter)
+        .expect("cargo adapter and source pool must share their ecosystem");
+    rustup_router.merge(registry_routes(registry))
+}
+
+fn registry_routes(registry: AdapterRegistry) -> Router {
+    Router::new()
         .route("/mirror/{ecosystem}/{name}/{*path}", get(named_source))
         .with_state(registry)
 }

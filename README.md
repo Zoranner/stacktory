@@ -4,9 +4,9 @@ Stacktory 是面向公司内网开发机的研发制品与动态工具链供应�
 配置化的上游顺序获取内容，开发机只访问 Stacktory 的内网地址；客户端不能传入任意
 上游 URL。
 
-当前 MVP 实现 Rustup 动态工具链镜像适配器，并提供 Rustup、Cargo 的命名来源配置
-模型。Cargo 协议路由及其他包与制品生态会继续位于统一的 `/mirror/{ecosystem}`
-命名空间，尚未实现的能力标记为后续工作。
+当前 MVP 实现 Rustup 动态工具链镜像适配器和 Cargo Sparse Index/crate 只读代理，
+并提供 Rustup、Cargo 的命名来源配置模型。其他包与制品生态会继续位于统一的
+`/mirror/{ecosystem}` 命名空间，尚未实现的能力标记为后续工作。
 
 ## Rustup 路由
 
@@ -51,7 +51,41 @@ manifest 中的制品 URL 使用当前请求的 `/mirror/rustup/{name}` 根地�
 group 刷新时选中的 proxy 会写入快照，后续 artifact 请求只访问该 proxy，不在
 同一命名入口内混用其他 proxy。
 
-Cargo source 配置已经纳入配置模型，协议路由仍待后续适配器实现。
+## Cargo 路由
+
+| 路由 | 行为 |
+| --- | --- |
+| `GET /mirror/cargo/{name}/config.json` | 返回当前命名入口的 Sparse Registry 配置。 |
+| `GET /mirror/cargo/{name}/index/{path}` | 返回校验过的 Sparse Index JSON Lines。 |
+| `GET /mirror/cargo/{name}/crates/{crate}/{version}.crate` | 返回 index 中声明的 crate 制品。 |
+
+Cargo crate 名称按 Cargo Sparse Index 标准规范化和分层。index 和 crate 下载都通过
+对应的 `proxy` 或显式 `group` 访问；group 按成员顺序回退。index 记录中的
+`cksum` 是 crate 下载的 SHA-256 期望值，校验失败不会写入缓存，并会继续尝试
+group 的下一个 proxy。
+
+Cargo 缓存只使用文件系统，目录按生态、命名入口和协议角色隔离：
+`data_dir/cargo/metadata/{name}/index/` 保存 index，`data_dir/cargo/artifacts/{name}/crates/`
+保存 crate。客户端拿到的 `dl` 只指向 Stacktory 当前命名入口，不暴露 Cargo 上游地址。
+
+Cargo source 示例：
+
+```toml
+[cargo]
+
+[[cargo.sources]]
+name = "crates-io"
+type = "proxy"
+base_url = "https://pkg.example.internal/repository/cargo"
+
+[[cargo.sources]]
+name = "group"
+type = "group"
+members = ["crates-io"]
+```
+
+首期只实现 Sparse Index 和 crate 下载，不实现 Cargo Git Index、publish、push 或
+其他生态协议。
 
 ## 发布
 

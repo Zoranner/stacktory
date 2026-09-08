@@ -142,3 +142,41 @@ fn accepts_public_production_configuration() {
 
     assert_eq!(config.listen_address.to_string(), "0.0.0.0");
 }
+
+#[test]
+fn accepts_cargo_source_graph() {
+    let configuration = format!(
+        "{LOCAL_DEVELOPMENT}\n\
+\n\
+[cargo]\n\
+\n\
+[[cargo.sources]]\n\
+name = \"cargo-group\"\n\
+type = \"group\"\n\
+members = [\"cargo-primary\", \"cargo-fallback\"]\n\
+\n\
+[[cargo.sources]]\n\
+name = \"cargo-primary\"\n\
+type = \"proxy\"\n\
+base_url = \"https://primary.example.internal\"\n\
+\n\
+[[cargo.sources]]\n\
+name = \"cargo-fallback\"\n\
+type = \"proxy\"\n\
+base_url = \"https://fallback.example.internal\"\n"
+    );
+
+    let config = Config::from_toml(&configuration).expect("cargo configuration");
+    let cargo = config.cargo.expect("cargo configuration");
+
+    assert_eq!(
+        cargo
+            .sources
+            .proxy_members("cargo-group")
+            .expect("cargo group")
+            .into_iter()
+            .map(|source| source.name.as_str())
+            .collect::<Vec<_>>(),
+        ["cargo-primary", "cargo-fallback"]
+    );
+}
