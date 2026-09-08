@@ -305,6 +305,56 @@ async fn unauthorized_forbidden_and_missing_do_not_fallback() {
     assert_eq!(fallback_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
+#[tokio::test]
+async fn request_timeout_and_rate_limit_do_not_fallback() {
+    let fallback_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let first = start_server(
+        Router::new()
+            .route("/timeout", get(|| async { StatusCode::REQUEST_TIMEOUT }))
+            .route(
+                "/rate-limit",
+                get(|| async { StatusCode::TOO_MANY_REQUESTS }),
+            ),
+    )
+    .await;
+    let second = start_server({
+        let fallback_hits = fallback_hits.clone();
+        Router::new().route(
+            "/{*path}",
+            get(move || {
+                let fallback_hits = fallback_hits.clone();
+                async move {
+                    fallback_hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    "must not be requested"
+                }
+            }),
+        )
+    })
+    .await;
+    let pool = SourcePool::new(
+        "rustup",
+        SourceGraph::new(vec![
+            proxy("first", first.as_str()),
+            proxy("second", second.as_str()),
+            group("fallbacks", &["first", "second"]),
+        ])
+        .expect("source graph"),
+    )
+    .expect("source pool");
+
+    for request_key in ["timeout", "rate-limit"] {
+        let result = pool
+            .fetch("fallbacks", request_key, FetchOperation::Get)
+            .await;
+        assert!(matches!(
+            result,
+            Err(SourcePoolError::TerminalSourceError { source_name, .. })
+                if source_name == "first"
+        ));
+    }
+    assert_eq!(fallback_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
 fn proxy(name: &str, base_url: &str) -> SourceConfig {
     SourceConfig {
         name: name.to_owned(),

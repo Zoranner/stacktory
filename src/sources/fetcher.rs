@@ -52,12 +52,7 @@ impl FetchError {
     pub(crate) fn is_retryable(&self) -> bool {
         match self {
             Self::ClientBuild(_) | Self::Request(_, _) | Self::ResponseBody(_, _) => true,
-            Self::HttpStatus(_, status) => {
-                status.is_redirection()
-                    || status.is_server_error()
-                    || *status == reqwest::StatusCode::REQUEST_TIMEOUT
-                    || *status == reqwest::StatusCode::TOO_MANY_REQUESTS
-            }
+            Self::HttpStatus(_, status) => status.is_redirection() || status.is_server_error(),
         }
     }
 }

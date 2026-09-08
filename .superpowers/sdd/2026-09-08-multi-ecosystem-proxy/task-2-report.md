@@ -169,3 +169,60 @@ cargo build --release --locked
   内容解析和完整性策略，后续如需新增网络动作应扩展受控 operation，而不是重新
   暴露 `HttpFetcher` 或原始 URL。
 - 用户已有未提交改动和其他未跟踪文档继续保留，未纳入本次修复提交。
+
+## Scoped Re-review 修复追加
+
+### 修复内容
+
+- `FetchError::is_retryable` 现在只将连接失败、响应读取失败、3xx 和 5xx
+  归为可回退错误。
+- 所有 4xx 状态码，包括 401、403、404、408 和 429，均归为 terminal；
+  `SourcePool` 返回 `TerminalSourceError`，不再访问 group 后续 source。
+- `tests/sources_test.rs` 增加 408/429 回归测试，使用后续 source 访问计数证明
+  两种状态均不会继续回退。
+
+### 本轮 TDD 输出
+
+新增测试先运行：
+
+```text
+cargo test --test sources_test --test route_test
+```
+
+结果：失败。`request_timeout_and_rate_limit_do_not_fallback` 未得到
+`TerminalSourceError`，原因是原实现把 408 和 429 标记为 retryable，继续访问了
+后续 source。
+
+修复后运行：
+
+```text
+cargo test --test sources_test --test route_test
+```
+
+结果：
+
+```text
+route_test: 4 passed; 0 failed
+sources_test: 9 passed; 0 failed
+```
+
+### 本轮完整检查
+
+```text
+cargo fmt --all
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
+cargo build --release --locked
+```
+
+- `cargo fmt --all`：退出码 0。
+- `cargo clippy --all-targets --all-features -- -D warnings`：退出码 0，无警告。
+- `cargo test --all-targets --all-features`：43 个测试通过，0 个失败。
+- `cargo build --release --locked`：release 构建成功，退出码 0。
+- `git diff --check`：退出码 0。
+
+### 本轮 concerns
+
+- 本轮只修正 4xx 错误分类，未改变来源池、fetcher、registry 或 Rustup/Cargo
+  其他边界。
+- Rustup 旧协议路由和 `legacy_upstream_bases()` 继续留给 Task 3。
