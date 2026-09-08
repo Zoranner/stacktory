@@ -8,4 +8,6 @@ pub mod service;
 pub mod storage;
 pub mod upstream;
 
-pub use config::{Config, ConfigError, RustupConfig, UpstreamConfig};
+pub use config::{
+    CargoConfig, Config, ConfigError, RustupConfig, SourceConfig, SourceGraph, SourceType,
+};

@@ -1,5 +1,4 @@
 use std::{
-    net::SocketAddr,
     path::PathBuf,
     sync::{
         Arc,
@@ -10,7 +9,10 @@ use std::{
 
 use axum::{Router, response::IntoResponse, routing::get};
 use sha2::{Digest, Sha256};
-use stacktory::{Config, RustupConfig, UpstreamConfig, rustup::DistPath, service::RustupService};
+use stacktory::{
+    Config, RustupConfig, SourceConfig, SourceGraph, SourceType, rustup::DistPath,
+    service::RustupService,
+};
 use tempfile::tempdir;
 use tokio::net::TcpListener;
 use url::Url;
@@ -51,18 +53,23 @@ async fn refresh_publishes_a_rewritten_manifest_snapshot() {
 
     let directory = tempdir().expect("temporary directory");
     let service = RustupService::new(Config {
-        listen: "127.0.0.1:18761".parse::<SocketAddr>().expect("address"),
+        listen_address: "127.0.0.1".parse().expect("address"),
+        listen_port: 18761,
         data_dir: PathBuf::from(directory.path()),
-        public_base_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+        root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
             channels: vec!["stable".to_owned()],
-            upstreams: vec![UpstreamConfig {
+            sources: SourceGraph::new(vec![SourceConfig {
                 name: "test".to_owned(),
-                base_url: Url::parse(&format!("http://{address}")).expect("upstream"),
+                source_type: SourceType::Proxy,
+                base_url: Some(Url::parse(&format!("http://{address}")).expect("upstream")),
                 require_https: false,
-            }],
+                members: vec![],
+            }])
+            .expect("source graph"),
         },
+        cargo: None,
     })
     .expect("service");
 
@@ -350,18 +357,23 @@ fn expire_current_snapshot(data_dir: &std::path::Path, channel: &str, service: &
 
 fn service_for(upstream: Url, data_dir: PathBuf) -> RustupService {
     RustupService::new(Config {
-        listen: "127.0.0.1:18761".parse::<SocketAddr>().expect("address"),
+        listen_address: "127.0.0.1".parse().expect("address"),
+        listen_port: 18761,
         data_dir,
-        public_base_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+        root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
             channels: vec!["stable".to_owned()],
-            upstreams: vec![UpstreamConfig {
+            sources: SourceGraph::new(vec![SourceConfig {
                 name: "test".to_owned(),
-                base_url: upstream,
+                source_type: SourceType::Proxy,
+                base_url: Some(upstream.clone()),
                 require_https: false,
-            }],
+                members: vec![],
+            }])
+            .expect("source graph"),
         },
+        cargo: None,
     })
     .expect("service")
 }

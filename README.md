@@ -4,17 +4,18 @@ Stacktory 是面向公司内网开发机的研发制品与动态工具链供应�
 配置化的上游顺序获取内容，开发机只访问 Stacktory 的内网地址；客户端不能传入任意
 上游 URL。
 
-当前 MVP 实现 Rustup 动态工具链镜像适配器。后续包与制品生态会继续位于统一的
-`/mirror/{ecosystem}` 命名空间，但不在本阶段实现。
+当前 MVP 实现 Rustup 动态工具链镜像适配器，并提供 Rustup、Cargo 的命名来源配置
+模型。Cargo 协议路由及其他包与制品生态会继续位于统一的 `/mirror/{ecosystem}`
+命名空间，尚未实现的能力标记为后续工作。
 
 ## Rustup 路由
 
 | 路由 | 行为 |
 | --- | --- |
 | `GET /healthz` | 服务存活检查。 |
-| `GET /mirror/rustup/dist/channel-rust-{channel}.toml` | 返回当前内部化的 channel manifest。 |
-| `GET /mirror/rustup/dist/channel-rust-{channel}.toml.sha256` | 返回同一快照 manifest 的 SHA-256。 |
-| `GET /mirror/rustup/dist/{path}` | 仅返回已发布 manifest 引用、上游内容摘要校验通过的 Rustup 制品。 |
+| `GET /mirror/rustup/dist/channel-rust-{channel}.toml` | 当前实现返回内部化的 channel manifest。 |
+| `GET /mirror/rustup/dist/channel-rust-{channel}.toml.sha256` | 当前实现返回同一快照 manifest 的 SHA-256。 |
+| `GET /mirror/rustup/dist/{path}` | 当前实现仅返回已发布 manifest 引用且校验通过的 Rustup 制品。 |
 
 channel manifest 缺失或过期时由请求触发刷新。同一 channel 的并发刷新会合并；刷新
 失败但已有旧快照时继续返回旧快照。制品按 manifest 中的 SHA-256 校验后原子写入
@@ -33,7 +34,7 @@ Rustup 路由无需认证。运行审计追加到 `data_dir/audit/events.jsonl`�
 docker compose up -d
 ```
 
-生产配置必须使用 HTTPS 的 `public_base_url`。各 Rustup 上游默认要求 HTTPS；仅在
+生产配置必须使用 HTTPS 的 `root_url`。各 Rustup 上游默认要求 HTTPS；仅在
 明确需要时，对对应条目设置 `require_https = false`。
 
 内网开发机将 Rustup 分发服务器设置为：
@@ -41,6 +42,18 @@ docker compose up -d
 ```text
 RUSTUP_DIST_SERVER=https://stacktory.example.internal/mirror/rustup
 ```
+
+配置中的每个生态都使用命名 `sources`。`type = "proxy"` 声明一个上游地址，
+`type = "group"` 按 `members` 顺序组合已声明的 proxy；未配置的生态保持禁用。
+Task 3 的目标路由和客户端配置如下，当前尚未由 `src/http.rs` 和 manifest 重写器接线：
+
+```text
+/mirror/rustup/{source}/dist/...
+RUSTUP_DIST_SERVER=https://stacktory.example.internal/mirror/rustup/{source}
+```
+
+Cargo source 配置已经纳入配置模型，协议路由仍待后续适配器实现；Rustup 命名入口
+路由也由后续 Task 3 实现。
 
 ## 发布
 

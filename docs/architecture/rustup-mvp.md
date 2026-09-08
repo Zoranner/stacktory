@@ -7,7 +7,7 @@ Rustup 动态工具链镜像适配器：开发机只访问 Stacktory 的内网�
 Stacktory 从受信任的固定上游取得 Rust channel manifest 及其制品，并在
 本地提供兼容 Rustup 的响应。
 
-本期不实现 Cargo、npm/Bun、PyPI、NuGet、OCI、APT、YUM/DNF、Winget、
+本期不实现 Cargo 协议路由、npm/Bun、PyPI、NuGet、OCI、APT、YUM/DNF、Winget、
 VS Code 扩展或 Unity UPM，也不承担 Python、Node.js、.NET SDK、Bun、
 VS Code 等静态安装包分发。Unity 的未来适配范围仅为官方 UPM Registry
 和 OpenUPM。本期不接收任意 URL，也不写入或访问生产 Nexus 配置。
@@ -30,11 +30,10 @@ VS Code 等静态安装包分发。Unity 的未来适配范围仅为官方 UPM R
 
 ## 路由命名空间
 
-所有镜像协议统一位于 `/mirror/{生态}` 命名空间。Rustup 的公开根固定为
-`/mirror/rustup`，因此开发机设置
-`RUSTUP_DIST_SERVER=https://stacktory.internal/mirror/rustup` 后，Rustup 请求
-会自然落到 Stacktory；重写后的制品 URL 也必须从同一根生成。首期公开路由
-如下：
+当前 Rustup 实现仍使用 `/mirror/rustup` 命名空间，开发机设置
+`RUSTUP_DIST_SERVER=https://stacktory.internal/mirror/rustup` 后，Rustup 请求会自然
+落到 Stacktory。Task 3 的目标是迁移到 `/mirror/{生态}/{source}`，但本任务不提前
+接线路由或 manifest 重写。当前公开路由如下：
 
 | 路由 | 用途 |
 | --- | --- |
@@ -42,6 +41,10 @@ VS Code 等静态安装包分发。Unity 的未来适配范围仅为官方 UPM R
 | `GET /mirror/rustup/dist/channel-rust-{channel}.toml.sha256` | 返回与当前 manifest 配对的 SHA-256。 |
 | `GET /mirror/rustup/dist/{path}` | 返回经过路径限制、上游校验和缓存的 Rustup 制品。 |
 | `GET /healthz` | 服务存活检查，不暴露上游、缓存或配置细节。 |
+
+Task 3 的目标路由为 `/mirror/rustup/{source}/dist/...`，目标客户端配置为
+`RUSTUP_DIST_SERVER=https://stacktory.internal/mirror/rustup/{source}`；当前尚未
+实现。
 
 MVP 不提供管理页面或管理 HTTP API。配置文件是唯一配置来源，服务器在启动时
 加载它；更新配置后通过受控重启生效。未来路由使用 `/mirror/cargo`、
@@ -61,27 +64,36 @@ Rustup MVP 只保留这些路由空间，不实现官网或文档站。
 配置使用 TOML，运行时仅加载一个本地文件：
 
 ```toml
-listen = "127.0.0.1:18761"
+listen_address = "127.0.0.1"
+listen_port = 18761
 data_dir = "./var/stacktory"
-public_base_url = "http://127.0.0.1:18761"
+root_url = "http://127.0.0.1:18761"
 
 [rustup]
 refresh_interval_secs = 3600
 channels = ["stable", "beta", "nightly"]
 
-[[rustup.upstreams]]
+[[rustup.sources]]
 name = "company-nexus"
+type = "proxy"
 base_url = "https://pkg.example.internal/repository/rustup-group"
 
-[[rustup.upstreams]]
-# 仅在受信任内网上游尚未提供 TLS 时显式关闭 HTTPS 要求。
-name = "legacy-internal-nexus"
-base_url = "http://nexus.internal/repository/rustup-group"
-require_https = false
-
-[[rustup.upstreams]]
+[[rustup.sources]]
 name = "rust-lang"
+type = "proxy"
 base_url = "https://static.rust-lang.org"
+
+[[rustup.sources]]
+name = "group"
+type = "group"
+members = ["company-nexus", "rust-lang"]
+
+[cargo]
+
+[[cargo.sources]]
+name = "crates-io"
+type = "proxy"
+base_url = "https://crates.io"
 ```
 
 上游顺序就是回退顺序。`channels` 是服务允许刷新并可供给制品哈希的唯一 channel

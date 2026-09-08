@@ -19,7 +19,7 @@ use crate::{
 pub struct RustupService {
     channels: Vec<String>,
     refresh_interval_secs: u64,
-    public_base: url::Url,
+    root_url: url::Url,
     policy: ManifestPolicy,
     upstream: UpstreamClient,
     snapshots: SnapshotStore,
@@ -48,16 +48,11 @@ pub enum ServiceError {
 
 impl RustupService {
     pub fn new(config: Config) -> Result<Self, ServiceError> {
-        let bases: Vec<url::Url> = config
-            .rustup
-            .upstreams
-            .iter()
-            .map(|upstream| upstream.base_url.clone())
-            .collect();
+        let bases = config.rustup.legacy_upstream_bases();
         Ok(Self {
             channels: config.rustup.channels,
             refresh_interval_secs: config.rustup.refresh_interval_secs,
-            public_base: config.public_base_url,
+            root_url: config.root_url,
             policy: ManifestPolicy::new(bases.clone()),
             upstream: UpstreamClient::new(bases)?,
             snapshots: SnapshotStore::new(config.data_dir.clone()),
@@ -76,7 +71,7 @@ impl RustupService {
                 return Err(error.into());
             }
         };
-        let rewritten = rewrite_manifest(&source, &self.policy, &self.public_base)?;
+        let rewritten = rewrite_manifest(&source, &self.policy, &self.root_url)?;
         self.snapshots.publish(channel, rewritten)?;
         self.record_audit("manifest_published", channel, "success");
         Ok(())

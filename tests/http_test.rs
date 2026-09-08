@@ -1,5 +1,4 @@
 use std::{
-    net::SocketAddr,
     path::PathBuf,
     sync::{
         Arc,
@@ -15,7 +14,7 @@ use axum::{
 };
 use sha2::{Digest, Sha256};
 use stacktory::{
-    Config, RustupConfig, UpstreamConfig,
+    Config, RustupConfig, SourceConfig, SourceGraph, SourceType,
     http::{router, router_with_rustup},
     service::RustupService,
 };
@@ -88,18 +87,23 @@ async fn public_rustup_artifact_route_serves_only_a_verified_published_artifact(
 
     let data_dir = tempdir().expect("temporary directory");
     let service = RustupService::new(Config {
-        listen: "127.0.0.1:18761".parse::<SocketAddr>().expect("address"),
+        listen_address: "127.0.0.1".parse().expect("address"),
+        listen_port: 18761,
         data_dir: PathBuf::from(data_dir.path()),
-        public_base_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+        root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
             channels: vec!["stable".to_owned()],
-            upstreams: vec![UpstreamConfig {
+            sources: SourceGraph::new(vec![SourceConfig {
                 name: "test".to_owned(),
-                base_url: Url::parse(&format!("http://{address}")).expect("upstream URL"),
+                source_type: SourceType::Proxy,
+                base_url: Some(Url::parse(&format!("http://{address}")).expect("upstream URL")),
                 require_https: false,
-            }],
+                members: vec![],
+            }])
+            .expect("source graph"),
         },
+        cargo: None,
     })
     .expect("service");
     service.refresh("stable").await.expect("refresh");

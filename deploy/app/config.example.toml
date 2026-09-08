@@ -1,11 +1,25 @@
-listen = "0.0.0.0:18761"
+listen_address = "0.0.0.0"
+listen_port = 18761
 data_dir = "/app/data"
-public_base_url = "https://stacktory.example.internal"
+root_url = "https://stacktory.example.internal"
 
 [rustup]
 refresh_interval_secs = 3600
 channels = ["stable", "beta", "nightly"]
 
-[[rustup.upstreams]]
+[[rustup.sources]]
 name = "rust-lang"
+type = "proxy"
 base_url = "https://static.rust-lang.org"
+
+[[rustup.sources]]
+name = "group"
+type = "group"
+members = ["rust-lang"]
+
+[cargo]
+
+[[cargo.sources]]
+name = "crates-io"
+type = "proxy"
+base_url = "https://crates.io"
