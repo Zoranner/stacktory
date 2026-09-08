@@ -94,13 +94,69 @@ cargo build --release --locked
 - locked release build：退出码 0，成功生成 release 二进制。
 - `git diff --check`：退出码 0。
 
-## Concerns
+## 原始 Task 3 Concerns
 
-- artifact API 不携带 channel；当同一命名入口的多个当前 channel 都引用相同
-  artifact 时，服务按配置 channel 顺序采用第一个可用快照中的 SHA-256 和实际
-  proxy。不同 channel 若引用不同 SHA-256，仍返回冲突错误。
+- artifact API 不携带 channel 的问题已由本轮“审查修复追加”解决；原始交付时
+  该问题仍存在。
 - `src/upstream.rs` 及其独立测试仍保留为旧的底层通用实现，但 Rustup service
   已不再使用它；本任务只按简报要求移除 `legacy_upstream_bases()` 和旧 Rustup
   service 路径，未扩大到删除该独立模块。
+
+## 审查修复追加
+
+### Findings
+
+- Important 1：artifact 请求原先扫描 `self.channels` 查找首个 hash，无法表达
+  manifest 所属 channel 和实际 proxy。现改为 manifest URL 使用
+  `/mirror/rustup/{name}/dist/{channel}/{path}`，artifact service 显式接收
+  `entry_name`、`channel` 和 `DistPath`，只读取对应快照记录的 hash/source。
+- Important 2：artifact checksum 查询前新增 source entry 校验。未知 source 返回
+  404，已配置但没有该 channel 快照仍返回 503。
+- Important 3：补充成功 artifact、正确 proxy 命中和 cache 隔离测试；cache 路径
+  现在按 `entry/channel/proxy/path` 隔离。
+
+### TDD 与验证
+
+先加入审查回归后运行：
+
+```text
+cargo test --test http_test --test manifest_test --test service_test
+```
+
+结果为预期红灯：编译器报告 `rewrite_manifest` 尚未接受 channel 参数，
+`artifact_for_request` 尚未接受 channel 参数；这证明新测试确实约束了旧实现
+无法表达的来源绑定模型。
+
+补齐测试支撑后再次运行，仍因生产接口未迁移失败；随后实现 channel 绑定、source
+entry 前置校验和三维 cache 隔离。
+
+修复后的 focused 回归：
+
+```text
+cargo test --test http_test --test manifest_test --test service_test
+```
+
+结果：`http_test` 7 passed、`manifest_test` 2 passed、`service_test` 8 passed，
+共 17 项通过，0 项失败。新增多 channel 成功路径确认 stable 从第一个 proxy
+获取并缓存，beta 从第二个 proxy 获取并缓存，两个 cache 文件路径彼此独立；
+新增 HTTP 回归确认未知 source 为 404、已配置无 snapshot 为 503。
+
+本轮最终检查：
+
+```text
+cargo fmt --all
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
+cargo build --release --locked
+```
+
+结果：
+
+- `cargo fmt --all`：通过。
+- `cargo clippy --all-targets --all-features -- -D warnings`：通过，无 warning。
+- `cargo test --all-targets --all-features`：54 项集成测试通过，0 项失败。
+- `cargo build --release --locked`：通过，生成 release 二进制。
+
+本轮修复不引入数据库，不改变 SourcePool 或配置边界，不恢复旧路由。
 - 工作树中用户已有的 `src/main.rs`、`docs/plans/2026-08-24-rustup-mirror-mvp.md`
   改动，以及未跟踪的设计、计划和评审文档未纳入本次提交，按要求保留。

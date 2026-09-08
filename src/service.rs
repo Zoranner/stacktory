@@ -37,12 +37,8 @@ pub enum ServiceError {
     Rewrite(#[from] RustupError),
     #[error(transparent)]
     Storage(#[from] StorageError),
-    #[error("no published rustup snapshots are available")]
-    NoPublishedSnapshots,
     #[error("artifact `{0}` is not referenced by a published rustup manifest")]
     UnknownArtifact(DistPath),
-    #[error("artifact `{0}` has conflicting SHA-256 values across published rustup manifests")]
-    ConflictingArtifactHash(DistPath),
 }
 
 impl RustupService {
@@ -138,14 +134,26 @@ impl RustupService {
 
     pub async fn artifact_for_request(
         &self,
-        source_name: &str,
+        entry_name: &str,
+        channel: &str,
         path: &DistPath,
     ) -> Result<Vec<u8>, ServiceError> {
-        let (selected_source, expected_checksum) = self.artifact_checksum(source_name, path)?;
-        if let Some(contents) =
-            self.cache
-                .get_verified(&selected_source, path, &expected_checksum)?
-        {
+        self.ensure_entry(entry_name)?;
+        self.ensure_channel(channel)?;
+        let snapshot = self.snapshots.current(entry_name, channel)?;
+        let expected_checksum = snapshot
+            .artifact_hashes
+            .get(path)
+            .cloned()
+            .ok_or_else(|| ServiceError::UnknownArtifact(path.clone()))?;
+        let selected_source = snapshot.source_name;
+        if let Some(contents) = self.cache.get_verified(
+            entry_name,
+            channel,
+            &selected_source,
+            path,
+            &expected_checksum,
+        )? {
             self.record_audit("artifact_cache_hit", path.as_str(), "success");
             return Ok(contents);
         }
@@ -171,47 +179,16 @@ impl RustupService {
                 return Err(error.into());
             }
         };
-        self.cache
-            .publish_verified(&selected_source, path, &contents, &expected_checksum)?;
+        self.cache.publish_verified(
+            entry_name,
+            channel,
+            &selected_source,
+            path,
+            &contents,
+            &expected_checksum,
+        )?;
         self.record_audit("artifact_cached", path.as_str(), "success");
         Ok(contents)
-    }
-
-    fn artifact_checksum(
-        &self,
-        source_name: &str,
-        path: &DistPath,
-    ) -> Result<(String, String), ServiceError> {
-        let mut expected = None;
-        let mut has_snapshot = false;
-
-        for channel in &self.channels {
-            match self.snapshots.current(source_name, channel) {
-                Ok(snapshot) => {
-                    has_snapshot = true;
-                    let Some(checksum) = snapshot.artifact_hashes.get(path) else {
-                        continue;
-                    };
-                    if let Some((_previous_source, previous_hash)) = &expected {
-                        if previous_hash != checksum {
-                            return Err(ServiceError::ConflictingArtifactHash(path.clone()));
-                        }
-                    } else {
-                        expected = Some((snapshot.source_name.clone(), checksum.clone()));
-                    }
-                }
-                Err(StorageError::MissingSnapshot(_)) => continue,
-                Err(error) => return Err(ServiceError::Storage(error)),
-            }
-        }
-
-        expected.ok_or_else(|| {
-            if has_snapshot {
-                ServiceError::UnknownArtifact(path.clone())
-            } else {
-                ServiceError::NoPublishedSnapshots
-            }
-        })
     }
 
     fn ensure_channel(&self, channel: &str) -> Result<(), ServiceError> {
@@ -220,6 +197,14 @@ impl RustupService {
         } else {
             Err(ServiceError::UnconfiguredChannel(channel.to_owned()))
         }
+    }
+
+    fn ensure_entry(&self, entry_name: &str) -> Result<(), ServiceError> {
+        self.sources
+            .proxy_members(entry_name)
+            .is_some()
+            .then_some(())
+            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()).into())
     }
 
     async fn fetch_and_rewrite_manifest(
@@ -288,7 +273,7 @@ impl RustupService {
                 .as_ref()
                 .expect("validated proxy source must have a base URL");
             let policy = ManifestPolicy::new(vec![base_url.clone()]);
-            match rewrite_manifest(&manifest, &policy, &entry_root) {
+            match rewrite_manifest(&manifest, &policy, &entry_root, channel) {
                 Ok(rewritten) => return Ok((member.name, rewritten)),
                 Err(error) => failures.push(format!("{}: {error}", member.name)),
             }

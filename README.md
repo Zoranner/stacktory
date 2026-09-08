@@ -19,7 +19,8 @@ Stacktory 是面向公司内网开发机的研发制品与动态工具链供应�
 
 channel manifest 缺失或过期时由请求触发刷新。同一 channel 的并发刷新会合并；刷新
 失败但已有旧快照时继续返回旧快照。制品按 manifest 中的 SHA-256 校验后原子写入
-`data_dir/rustup/artifacts/{name}/`，未知或非法路径不会触发上游请求。
+`data_dir/rustup/artifacts/{name}/{channel}/{proxy}/`，未知或非法路径不会触发
+上游请求。
 
 Rustup 路由无需认证。运行审计追加到 `data_dir/audit/events.jsonl`，记录 manifest
 发布、制品缓存和上游失败，但不记录上游响应正文。
@@ -45,7 +46,8 @@ RUSTUP_DIST_SERVER=https://stacktory.example.internal/mirror/rustup/group
 
 配置中的每个生态都使用命名 `sources`。`type = "proxy"` 声明一个上游地址，
 `type = "group"` 按 `members` 顺序组合已声明的 proxy；未配置的生态保持禁用。
-manifest 中的制品 URL 使用当前请求的 `/mirror/rustup/{name}` 根地址。
+manifest 中的制品 URL 使用当前请求的 `/mirror/rustup/{name}` 根地址，并将 channel
+作为 artifact URL 的绑定路径段。
 group 刷新时选中的 proxy 会写入快照，后续 artifact 请求只访问该 proxy，不在
 同一命名入口内混用其他 proxy。
 

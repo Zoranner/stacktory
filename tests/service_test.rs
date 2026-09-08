@@ -79,7 +79,7 @@ async fn refresh_publishes_a_rewritten_manifest_snapshot() {
     assert!(
         snapshot
             .manifest
-            .contains("/mirror/rustup/test/dist/2026-08-20/rustc-")
+            .contains("/mirror/rustup/test/dist/stable/2026-08-20/rustc-")
     );
     assert!(
         std::fs::read_to_string(directory.path().join("audit/events.jsonl"))
@@ -100,11 +100,11 @@ async fn artifact_request_fetches_a_published_artifact_and_reuses_the_verified_c
 
     service.refresh("test", "stable").await.expect("refresh");
     let first = service
-        .artifact_for_request("test", &path)
+        .artifact_for_request("test", "stable", &path)
         .await
         .expect("first artifact request");
     let second = service
-        .artifact_for_request("test", &path)
+        .artifact_for_request("test", "stable", &path)
         .await
         .expect("cached artifact request");
 
@@ -132,7 +132,7 @@ async fn artifact_request_rejects_content_that_does_not_match_the_manifest_hash(
 
     service.refresh("test", "stable").await.expect("refresh");
     let error = service
-        .artifact_for_request("test", &path)
+        .artifact_for_request("test", "stable", &path)
         .await
         .expect_err("mismatched artifact must fail");
 
@@ -165,12 +165,197 @@ async fn artifact_request_rejects_paths_not_referenced_by_a_published_manifest()
 
     service.refresh("test", "stable").await.expect("refresh");
     let error = service
-        .artifact_for_request("test", &unknown)
+        .artifact_for_request("test", "stable", &unknown)
         .await
         .expect_err("unknown artifact must fail");
 
     assert!(error.to_string().contains("not referenced"));
     assert_eq!(requests.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn artifacts_follow_each_channel_snapshot_source_and_keep_separate_caches() {
+    let stable_artifact = b"stable artifact";
+    let beta_artifact = b"beta artifact";
+    let stable_hash = format!("{:x}", Sha256::digest(stable_artifact));
+    let beta_hash = format!("{:x}", Sha256::digest(beta_artifact));
+    let stable_hits = Arc::new(AtomicUsize::new(0));
+    let beta_hits = Arc::new(AtomicUsize::new(0));
+
+    let first_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("first listener");
+    let first_address = first_listener.local_addr().expect("first address");
+    let stable_manifest = format!(
+        "manifest-version = \"2\"\n[pkg.rust.target.x86_64-pc-windows-msvc]\nurl = \"http://{first_address}/dist/2026-08-20/rustc.tar.xz\"\nhash = \"{stable_hash}\"\n"
+    );
+    let stable_checksum = format!(
+        "{:x}  channel-rust-stable.toml\n",
+        Sha256::digest(stable_manifest.as_bytes())
+    );
+    let first_stable_hits = stable_hits.clone();
+    let first = Router::new()
+        .route(
+            "/dist/channel-rust-stable.toml",
+            get({
+                let stable_manifest = stable_manifest.clone();
+                move || {
+                    let stable_manifest = stable_manifest.clone();
+                    async move { stable_manifest }
+                }
+            }),
+        )
+        .route(
+            "/dist/channel-rust-stable.toml.sha256",
+            get({
+                let stable_checksum = stable_checksum.clone();
+                move || {
+                    let stable_checksum = stable_checksum.clone();
+                    async move { stable_checksum }
+                }
+            }),
+        )
+        .route(
+            "/dist/channel-rust-beta.toml",
+            get(|| async { axum::http::StatusCode::BAD_GATEWAY }),
+        )
+        .route(
+            "/dist/2026-08-20/rustc.tar.xz",
+            get(move || {
+                let first_stable_hits = first_stable_hits.clone();
+                async move {
+                    first_stable_hits.fetch_add(1, Ordering::SeqCst);
+                    stable_artifact.to_vec()
+                }
+            }),
+        );
+    tokio::spawn(async move {
+        axum::serve(first_listener, first)
+            .await
+            .expect("first server");
+    });
+
+    let second_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("second listener");
+    let second_address = second_listener.local_addr().expect("second address");
+    let beta_manifest = format!(
+        "manifest-version = \"2\"\n[pkg.rust.target.x86_64-pc-windows-msvc]\nurl = \"http://{second_address}/dist/2026-08-20/rustc.tar.xz\"\nhash = \"{beta_hash}\"\n"
+    );
+    let beta_checksum = format!(
+        "{:x}  channel-rust-beta.toml\n",
+        Sha256::digest(beta_manifest.as_bytes())
+    );
+    let second_beta_hits = beta_hits.clone();
+    let second = Router::new()
+        .route(
+            "/dist/channel-rust-beta.toml",
+            get({
+                let beta_manifest = beta_manifest.clone();
+                move || {
+                    let beta_manifest = beta_manifest.clone();
+                    async move { beta_manifest }
+                }
+            }),
+        )
+        .route(
+            "/dist/channel-rust-beta.toml.sha256",
+            get({
+                let beta_checksum = beta_checksum.clone();
+                move || {
+                    let beta_checksum = beta_checksum.clone();
+                    async move { beta_checksum }
+                }
+            }),
+        )
+        .route(
+            "/dist/2026-08-20/rustc.tar.xz",
+            get(move || {
+                let second_beta_hits = second_beta_hits.clone();
+                async move {
+                    second_beta_hits.fetch_add(1, Ordering::SeqCst);
+                    beta_artifact.to_vec()
+                }
+            }),
+        );
+    tokio::spawn(async move {
+        axum::serve(second_listener, second)
+            .await
+            .expect("second server");
+    });
+
+    let data_dir = tempdir().expect("temporary directory");
+    let service = RustupService::new(Config {
+        listen_address: "127.0.0.1".parse().expect("address"),
+        listen_port: 18761,
+        data_dir: data_dir.path().to_path_buf(),
+        root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
+        rustup: RustupConfig {
+            refresh_interval_secs: 3600,
+            channels: vec!["stable".to_owned(), "beta".to_owned()],
+            sources: SourceGraph::new(vec![
+                source("first", format!("http://{first_address}")),
+                source("second", format!("http://{second_address}")),
+                group("group", &["first", "second"]),
+            ])
+            .expect("source graph"),
+        },
+        cargo: None,
+    })
+    .expect("service");
+
+    service
+        .refresh("group", "stable")
+        .await
+        .expect("stable refresh");
+    service
+        .refresh("group", "beta")
+        .await
+        .expect("beta refresh");
+
+    let path = DistPath::parse("2026-08-20/rustc.tar.xz").expect("artifact path");
+    assert_eq!(
+        service
+            .artifact_for_request("group", "stable", &path)
+            .await
+            .expect("stable artifact"),
+        stable_artifact
+    );
+    assert_eq!(
+        service
+            .artifact_for_request("group", "stable", &path)
+            .await
+            .expect("cached stable artifact"),
+        stable_artifact
+    );
+    assert_eq!(
+        service
+            .artifact_for_request("group", "beta", &path)
+            .await
+            .expect("beta artifact"),
+        beta_artifact
+    );
+    assert_eq!(
+        service
+            .artifact_for_request("group", "beta", &path)
+            .await
+            .expect("cached beta artifact"),
+        beta_artifact
+    );
+    assert_eq!(stable_hits.load(Ordering::SeqCst), 1);
+    assert_eq!(beta_hits.load(Ordering::SeqCst), 1);
+    assert!(
+        data_dir
+            .path()
+            .join("rustup/artifacts/group/stable/first/2026-08-20/rustc.tar.xz")
+            .exists()
+    );
+    assert!(
+        data_dir
+            .path()
+            .join("rustup/artifacts/group/beta/second/2026-08-20/rustc.tar.xz")
+            .exists()
+    );
 }
 
 #[tokio::test]
@@ -383,4 +568,24 @@ fn service_for(upstream: Url, data_dir: PathBuf) -> RustupService {
         cargo: None,
     })
     .expect("service")
+}
+
+fn source(name: &str, base_url: impl Into<String>) -> SourceConfig {
+    SourceConfig {
+        name: name.to_owned(),
+        source_type: SourceType::Proxy,
+        base_url: Some(Url::parse(&base_url.into()).expect("source URL")),
+        require_https: false,
+        members: vec![],
+    }
+}
+
+fn group(name: &str, members: &[&str]) -> SourceConfig {
+    SourceConfig {
+        name: name.to_owned(),
+        source_type: SourceType::Group,
+        base_url: None,
+        require_https: false,
+        members: members.iter().map(|member| (*member).to_owned()).collect(),
+    }
 }

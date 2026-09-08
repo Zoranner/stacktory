@@ -110,9 +110,11 @@ async fn public_rustup_artifact_route_serves_only_a_verified_published_artifact(
 
     let response = router_with_rustup(Arc::new(service))
         .oneshot(
-            Request::get("/mirror/rustup/test/dist/2026-08-20/rustc-x86_64-pc-windows-msvc.tar.xz")
-                .body(Body::empty())
-                .expect("request"),
+            Request::get(
+                "/mirror/rustup/test/dist/stable/2026-08-20/rustc-x86_64-pc-windows-msvc.tar.xz",
+            )
+            .body(Body::empty())
+            .expect("request"),
         )
         .await
         .expect("response");
@@ -306,7 +308,7 @@ async fn rustup_group_artifact_stays_with_the_manifest_source() {
 
     let artifact_response = router
         .oneshot(
-            Request::get("/mirror/rustup/group/dist/2026-08-20/rustc.tar.xz")
+            Request::get("/mirror/rustup/group/dist/stable/2026-08-20/rustc.tar.xz")
                 .body(Body::empty())
                 .expect("artifact request"),
         )
@@ -367,6 +369,50 @@ async fn rustup_proxy_route_serves_only_its_proxy() {
 
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     assert_eq!(sibling_hits.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn unknown_rustup_artifact_source_returns_not_found_before_snapshot_lookup() {
+    let data_dir = tempdir().expect("temporary directory");
+    let service = RustupService::new(Config {
+        listen_address: "127.0.0.1".parse().expect("address"),
+        listen_port: 18761,
+        data_dir: data_dir.path().to_path_buf(),
+        root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
+        rustup: RustupConfig {
+            refresh_interval_secs: 3600,
+            channels: vec!["stable".to_owned()],
+            sources: SourceGraph::new(vec![source("known", "http://127.0.0.1:1")])
+                .expect("source graph"),
+        },
+        cargo: None,
+    })
+    .expect("service");
+    let router = router_with_rustup(Arc::new(service));
+
+    let unknown = router
+        .clone()
+        .oneshot(
+            Request::get("/mirror/rustup/missing/dist/stable/2026-08-20/rustc.tar.xz")
+                .body(Body::empty())
+                .expect("unknown source request"),
+        )
+        .await
+        .expect("unknown source response");
+    let known_without_snapshot = router
+        .oneshot(
+            Request::get("/mirror/rustup/known/dist/stable/2026-08-20/rustc.tar.xz")
+                .body(Body::empty())
+                .expect("known source request"),
+        )
+        .await
+        .expect("known source response");
+
+    assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        known_without_snapshot.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
 }
 
 #[tokio::test]

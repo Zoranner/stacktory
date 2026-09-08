@@ -192,29 +192,40 @@ impl ArtifactCache {
 
     pub fn publish_verified(
         &self,
+        entry_name: &str,
+        channel: &str,
         source_name: &str,
         path: &DistPath,
         contents: &[u8],
         expected_checksum: &str,
     ) -> Result<(), StorageError> {
+        validate_source_name(entry_name)?;
+        validate_channel(channel)?;
         validate_source_name(source_name)?;
         validate_checksum(expected_checksum)?;
         if checksum(contents) != expected_checksum {
             return Err(StorageError::ArtifactHashMismatch(path.to_string()));
         }
 
-        atomic_write(&self.artifact_path(source_name, path), contents)
+        atomic_write(
+            &self.artifact_path(entry_name, channel, source_name, path),
+            contents,
+        )
     }
 
     pub fn get_verified(
         &self,
+        entry_name: &str,
+        channel: &str,
         source_name: &str,
         path: &DistPath,
         expected_checksum: &str,
     ) -> Result<Option<Vec<u8>>, StorageError> {
+        validate_source_name(entry_name)?;
+        validate_channel(channel)?;
         validate_source_name(source_name)?;
         validate_checksum(expected_checksum)?;
-        let artifact_path = self.artifact_path(source_name, path);
+        let artifact_path = self.artifact_path(entry_name, channel, source_name, path);
         let contents = match fs::read(&artifact_path) {
             Ok(contents) => contents,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -229,10 +240,18 @@ impl ArtifactCache {
         }
     }
 
-    fn artifact_path(&self, source_name: &str, path: &DistPath) -> PathBuf {
+    fn artifact_path(
+        &self,
+        entry_name: &str,
+        channel: &str,
+        source_name: &str,
+        path: &DistPath,
+    ) -> PathBuf {
         self.data_dir
             .join("rustup")
             .join("artifacts")
+            .join(entry_name)
+            .join(channel)
             .join(source_name)
             .join(path.as_str())
     }

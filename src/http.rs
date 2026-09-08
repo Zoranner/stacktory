@@ -71,11 +71,14 @@ async fn rustup_dist(
         };
     }
 
-    let path = match DistPath::parse(path) {
+    let Some((channel, artifact_path)) = path.split_once('/') else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let path = match DistPath::parse(artifact_path) {
         Ok(path) => path,
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
-    match service.artifact_for_request(&name, &path).await {
+    match service.artifact_for_request(&name, channel, &path).await {
         Ok(contents) => contents.into_response(),
         Err(error) => service_error_response(&error),
     }
@@ -89,16 +92,11 @@ fn service_error_response(error: &ServiceError) -> axum::response::Response {
         ServiceError::Source(crate::sources::SourcePoolError::UnknownEntry(_)) => {
             StatusCode::NOT_FOUND
         }
-        ServiceError::NoPublishedSnapshots
-        | ServiceError::Storage(StorageError::MissingSnapshot(_)) => {
-            StatusCode::SERVICE_UNAVAILABLE
-        }
+        ServiceError::Storage(StorageError::MissingSnapshot(_)) => StatusCode::SERVICE_UNAVAILABLE,
         ServiceError::Source(_)
         | ServiceError::Rewrite(_)
         | ServiceError::Storage(StorageError::ArtifactHashMismatch(_)) => StatusCode::BAD_GATEWAY,
-        ServiceError::Storage(_) | ServiceError::ConflictingArtifactHash(_) => {
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
+        ServiceError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     status.into_response()
 }

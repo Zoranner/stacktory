@@ -23,14 +23,14 @@ fn rewrites_configured_dist_urls_and_calculates_matching_checksum() {
     let root_url =
         Url::parse("https://stacktory.internal/mirror/rustup/group").expect("entry root URL");
 
-    let rewritten = rewrite_manifest(SOURCE_MANIFEST, &policy, &root_url)
+    let rewritten = rewrite_manifest(SOURCE_MANIFEST, &policy, &root_url, "stable")
         .expect("configured dist URL should be rewritten");
 
     assert!(rewritten.manifest.contains(
-        "https://stacktory.internal/mirror/rustup/group/dist/2026-08-20/rust-std-x86_64-pc-windows-msvc.tar.gz"
+        "https://stacktory.internal/mirror/rustup/group/dist/stable/2026-08-20/rust-std-x86_64-pc-windows-msvc.tar.gz"
     ));
     assert!(rewritten.manifest.contains(
-        "https://stacktory.internal/mirror/rustup/group/dist/2026-08-20/rust-std-x86_64-pc-windows-msvc.tar.xz"
+        "https://stacktory.internal/mirror/rustup/group/dist/stable/2026-08-20/rust-std-x86_64-pc-windows-msvc.tar.xz"
     ));
     assert_eq!(
         rewritten.checksum,
@@ -48,7 +48,7 @@ fn rejects_manifest_url_outside_configured_upstreams() {
         Url::parse("https://stacktory.internal/mirror/rustup/group").expect("entry root URL");
     let untrusted_manifest = SOURCE_MANIFEST.replace("upstream.internal", "untrusted.example");
 
-    let error = rewrite_manifest(&untrusted_manifest, &policy, &root_url)
+    let error = rewrite_manifest(&untrusted_manifest, &policy, &root_url, "stable")
         .expect_err("unconfigured upstream URL must fail");
 
     assert!(error.to_string().contains("configured upstream"));

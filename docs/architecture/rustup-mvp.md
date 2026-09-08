@@ -107,11 +107,11 @@ Stacktory 对内网公开提供镜像响应，不要求客户端凭据。
 rustup
   -> GET /mirror/rustup/{source}/dist/channel-rust-{channel}.toml(.sha256)
   -> 当前快照新鲜则直接返回；缺失或过期时由该请求触发刷新
-  -> 重写 manifest 中全部受支持 dist URL 为 /mirror/rustup/{source}/dist/{path}
+  -> 重写 manifest 中全部受支持 dist URL 为 /mirror/rustup/{source}/dist/{channel}/{path}
   -> 返回重写 manifest 或其 SHA-256
 
 rustup
-  -> GET /mirror/rustup/{source}/dist/{path}
+  -> GET /mirror/rustup/{source}/dist/{channel}/{path}
   -> 严格路径解析，拒绝编码绕过、.. 和非 dist 路径
   -> 已校验缓存命中则返回
   -> 按该命名入口 manifest 选中的 proxy 下载，SHA-256 与当前 manifest 记录相同才发布缓存
