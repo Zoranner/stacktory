@@ -78,11 +78,31 @@ members = ["internal", "official"]
 
 ### 来源绑定
 
-一次 metadata/index/registration 成功响应必须绑定实际选中的 proxy。适配器
-重写制品链接时，链接仍指向当前 Stacktory 命名入口，但服务端必须从缓存元数据
-或受限的内部引用恢复 `selected_proxy`。后续 artifact 请求优先使用这个
-proxy；只有该来源不可用或完整性校验失败时，才按已声明的 group 顺序回退，并
-重新验证协议摘要。
+来源绑定使用两级文件系统模型，不引入数据库：
+
+```text
+稳定 lookup key
+  -> metadata current + metadata sidecar
+       sidecar.selected_proxy
+       sidecar.integrity / representation / protocol_variant
+  -> artifact object
+```
+
+稳定 lookup key 至少由 ecosystem、命名入口、协议变体、对象键和响应表示组成，
+不由上游 URL 临时决定。metadata 的 `current` 文件保存对客户端可见的当前
+表示，sidecar 保存其来源绑定和完整性信息；两者必须以同一次原子发布产生，不能
+让 current 与 sidecar 指向不同内容。
+
+一次 metadata/index/registration 成功响应必须记录实际选中的 proxy。适配器
+重写制品链接时，链接仍指向当前 Stacktory 命名入口，但 artifact 请求必须先
+读取对应 metadata sidecar 的 `selected_proxy`，再访问该 proxy。group 不能在
+没有绑定的情况下按每次请求重新选择来源并拼接结果。
+
+artifact 请求只有在绑定来源不可用、响应无法使用或完整性校验失败时，才允许按
+已声明的 group 顺序尝试下一个 proxy。回退得到的制品必须先通过 metadata 或
+协议声明的摘要校验，再原子发布 artifact，并更新 sidecar 的
+`selected_proxy`；校验前不得更新绑定。协议没有可验证摘要时，不得把“下载
+成功”当作切换来源的依据，具体适配器必须明确禁止该回退或采用更强的协议证明。
 
 不允许把不同 proxy 的版本集合、registration 或项目索引合并成一个响应。这样
 可以保持 metadata 与 artifact 的来源一致性，并让审计能够复现来源选择。
@@ -205,8 +225,12 @@ Rustup 保留 channel manifest 刷新、URL 重写、dist 路径白名单、SHA-
 ### Cargo
 
 Cargo 当前实现 Sparse Index 和 crate 下载，规范入口为
-`/mirror/cargo/{name}/...`。Cargo Git Index、publish 和写入操作仍不在范围内。
-详细契约见 `cargo-mvp.md`。
+`/mirror/cargo/{name}/...`。但当前 Cargo MVP 仍按请求独立通过 SourcePool 获取
+index 和 crate，尚未实现上述通用的 metadata current/sidecar affinity，也没有
+在 artifact 请求前读取并使用通用 `selected_proxy` 绑定。因此不能把公共 affinity
+契约写成 Cargo 已完成能力；Cargo 后续修订必须补齐该绑定、摘要校验后的回退和
+sidecar 更新。Cargo Git Index、publish 和写入操作仍不在范围内。详细契约见
+`cargo-mvp.md`。
 
 ### npm 与 UPM
 
@@ -241,6 +265,10 @@ source graph、单一 `base_url`、禁止任意 URL、重定向、原子写入�
 本 Task 只形成后续适配器文档，不声称 npm、UPM、PyPI 或 NuGet 已实现，也不为
 未注册生态提供假路由。真实客户端联调、外部 registry 行为和生产部署验证必须
 在对应适配器实现后单独执行。
+
+当前 Cargo 的 affinity 缺口不影响已经完成的 Rustup 绑定语义，但意味着 Cargo、
+npm、UPM、PyPI 和 NuGet 的后续适配交付都必须分别证明两级文件系统绑定、来源
+回退和摘要校验；不能仅凭公共接口存在或单独的缓存测试声称已完成。
 
 ## 官方协议依据
 

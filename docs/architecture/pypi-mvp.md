@@ -69,15 +69,17 @@ Simple API 项目索引至少支持 HTML 表示，并为后续 JSON 表示保留
 边界。客户端通过 `Accept` 协商表示：
 
 - 支持 HTML 时返回 `text/html`，索引链接使用 `<a href="...">`。
-- 支持 PyPI Simple API JSON 时返回 JSON media type，并在协议允许的范围内
-  返回项目文件链接及其 hash。
+- 只有 `Accept` 明确列出 `application/vnd.pypi.simple.v1+json` 且该 media type
+  可接受时，才返回 PyPI Simple API JSON，并在协议允许的范围内返回项目文件
+  链接及其 hash。
 - 无法满足客户端明确要求的表示时返回 `406`，不能静默返回另一种表示。
-- 未带 `Accept` 或声明通配符时使用配置的默认表示，但默认值必须在适配器
-  契约中固定，不能按上游偶然响应变化。
+- 未带 `Accept` 或只声明 `*/*` 时固定返回 HTML；这两个情况不是由上游响应
+  临时决定的默认值。
 
 HTML/JSON 不是两个项目事实。两种表示必须由同一个规范化项目对象和同一个
-selected proxy 生成，只在表示层编码不同。缓存键必须包含 `representation`
-或等价的 media type，防止 HTML 和 JSON 响应互相命中。
+selected proxy 生成，只在表示层编码不同。缓存键必须包含固定的
+`representation`（`html` 或 `json`）以及必要的 media type，防止 HTML 和
+JSON 响应互相命中。
 
 ## 文件链接与完整性
 
@@ -107,7 +109,7 @@ entry_name
 simple-html 或 simple-json
 normalized_project
 file-object-key
-representation
+representation = html 或 json
 selected_proxy
 ```
 

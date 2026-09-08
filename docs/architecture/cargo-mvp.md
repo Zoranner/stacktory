@@ -1,5 +1,19 @@
 # Cargo Sparse Index 与 crate MVP
 
+## 当前实现状态
+
+本文档覆盖 Cargo 协议细节。当前 Cargo MVP 已实现 Sparse Index、crate 下载、
+来源回退、缓存和 checksum 校验，但尚未实现公共架构要求的通用 metadata
+current/sidecar affinity：
+
+- 当前 index 和 crate 请求按请求独立通过 SourcePool 获取。
+- artifact 请求尚未先读取 metadata sidecar 中的 `selected_proxy`。
+- fallback 成功后尚未按“摘要校验通过再更新来源绑定”的规则更新 sidecar。
+
+后续 Cargo 适配必须补齐该 affinity，并与 npm、PyPI、NuGet 的适配共同遵守
+两级文件系统模型；本文件不把当前 Cargo 缓存和 checksum 行为表述为已完成
+通用来源绑定。
+
 ## 范围
 
 Cargo 适配器只提供只读 restore 所需的 Sparse Registry 配置、Sparse Index 和

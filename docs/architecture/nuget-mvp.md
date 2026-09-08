@@ -11,9 +11,11 @@
 
 ## 公共来源契约
 
-每个 NuGet proxy 只配置一个上游 registry 根 `base_url`。service index、其发现
-的 registration 资源和 package content 资源都由这个上游根按 V3 协议访问；不
-拆成独立的 index URL、registration URL 和 nupkg URL 配置。
+每个 NuGet proxy 只配置一个上游 V3 service index JSON `base_url`，并且必须
+使用 `/v3/index.json` 这一规范形态。service index、其发现的 registration、
+package content 和 search 资源都从该文档发现；不拆成独立的 index URL、
+registration URL、nupkg URL 或 search URL 配置。不能把 registry root 或其他
+未定义的 index 形态作为第二种配置写法。
 
 ```toml
 [nuget]
@@ -30,10 +32,13 @@ type = "group"
 members = ["internal", "official"]
 ```
 
-`base_url` 必须是实际 V3 service index 资源地址或经适配器明确支持的 V3 根
-地址，而不是管理页面地址。无论采用哪种配置形式，单个 proxy 的上游事实仍
-只有一个 `base_url`。group 不配置 `base_url`，只按成员顺序回退同一生态的
-proxy；没有 group 时多个 proxy 不自动组合。
+`base_url` 必须是实际的 V3 service index JSON 地址
+`.../v3/index.json`，而不是 registry root、管理页面地址或其他未定义形态。
+适配器从该 JSON 文档读取资源的 `@type` 和 `@id`，校验并重写支持的
+registration、package content 和 search resource 地址。search resource 在本
+MVP 只被发现和安全校验，不注册搜索路由、不转发搜索请求；后续搜索适配必须
+另行定义。group 不配置 `base_url`，只按成员顺序回退同一生态的 proxy；没有
+group 时多个 proxy 不自动组合。
 
 ## 路由与适配职责
 
@@ -51,10 +56,11 @@ GET /mirror/nuget/{name}/package/{id}/{version}/{id}.{version}.nupkg
 
 ### Service index
 
-适配器读取上游 service index，解析 restore 所需资源的 `@type`、`@id` 和可选
-版本信息，只保留支持的 registration 与 package content 资源。返回客户端的
-`@id` 必须重写到当前 `/mirror/nuget/{name}/...` 入口，不能暴露上游 host，
-也不能把 service index 中不支持的资源伪装成已实现。
+适配器读取 `base_url` 指向的 service index JSON，解析资源的 `@type`、`@id`
+和可选版本信息，发现 registration、package content 和 search resource。返回
+客户端的支持资源 `@id` 必须重写到当前 `/mirror/nuget/{name}/...` 入口，
+不能暴露上游 host；search resource 因不在本 MVP 内，可以从客户端 service
+index 中省略或明确标记为不支持，不能伪装成可用搜索服务。
 
 Service index 是 metadata。它选中的 selected proxy 必须绑定到后续 registration
 和 package content 请求。group 不把两个 service index 的资源列表合并；来源
