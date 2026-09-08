@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use axum::{
     Router,
@@ -28,7 +28,7 @@ async fn cargo_group_serves_index_and_crate_with_fallback() {
     let second = start_server(
         Router::new()
             .route(
-                "/index/se/rd/serde",
+                "/se/rd/serde",
                 get({
                     let index_body = index_body.clone();
                     move || {
@@ -74,7 +74,7 @@ async fn cargo_group_serves_index_and_crate_with_fallback() {
 
     let index_response = router
         .clone()
-        .oneshot(get_request("/mirror/cargo/group/index/se/rd/serde"))
+        .oneshot(get_request("/mirror/cargo/group/se/rd/serde"))
         .await
         .expect("index response");
     assert_eq!(index_response.status(), StatusCode::OK);
@@ -84,6 +84,12 @@ async fn cargo_group_serves_index_and_crate_with_fallback() {
             .expect("index body"),
         index_body.as_bytes()
     );
+    let legacy_index_response = router
+        .clone()
+        .oneshot(get_request("/mirror/cargo/group/index/se/rd/serde"))
+        .await
+        .expect("legacy index response");
+    assert_eq!(legacy_index_response.status(), StatusCode::NOT_FOUND);
 
     let crate_response = router
         .oneshot(get_request("/mirror/cargo/group/crates/serde/1.0.0.crate"))
@@ -109,7 +115,7 @@ async fn cargo_crate_hash_mismatch_does_not_publish_cache() {
     let upstream = start_server(
         Router::new()
             .route(
-                "/index/se/rd/serde",
+                "/se/rd/serde",
                 get({
                     let index_body = index_body.clone();
                     move || {
@@ -166,7 +172,7 @@ async fn cargo_config_points_to_named_entry_without_upstream_url() {
             Arc::new(
                 SourcePool::new(
                     "cargo",
-                    SourceGraph::new(vec![proxy("primary", "https://crates.io")])
+                    SourceGraph::new(vec![proxy("primary", "https://index.crates.io")])
                         .expect("source graph"),
                 )
                 .expect("source pool"),
@@ -191,6 +197,88 @@ async fn cargo_config_points_to_named_entry_without_upstream_url() {
     assert!(!body.contains("crates.io"));
 }
 
+#[tokio::test]
+async fn cargo_upstream_not_found_maps_to_not_found() {
+    let upstream =
+        start_server(Router::new().route("/se/rd/serde", get(|| async { StatusCode::NOT_FOUND })))
+            .await;
+    let router = cargo_router(upstream, tempdir().expect("data directory").path());
+
+    let response = router
+        .oneshot(get_request("/mirror/cargo/primary/se/rd/serde"))
+        .await
+        .expect("404 response");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn cargo_upstream_forbidden_preserves_forbidden_status() {
+    let index_body = valid_index_body("expected crate");
+    let upstream = start_server(
+        Router::new()
+            .route(
+                "/se/rd/serde",
+                get({
+                    let index_body = index_body.clone();
+                    move || {
+                        let index_body = index_body.clone();
+                        async move { index_body }
+                    }
+                }),
+            )
+            .route(
+                "/crates/serde/1.0.0.crate",
+                get(|| async { StatusCode::FORBIDDEN }),
+            ),
+    )
+    .await;
+    let router = cargo_router(upstream, tempdir().expect("data directory").path());
+
+    let response = router
+        .oneshot(get_request(
+            "/mirror/cargo/primary/crates/serde/1.0.0.crate",
+        ))
+        .await
+        .expect("403 response");
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn invalid_index_cache_is_deleted_and_refetched() {
+    let index_body = valid_index_body("expected crate");
+    let data_dir = tempdir().expect("data directory");
+    let cache_path = data_dir
+        .path()
+        .join("cargo/metadata/primary/index/se/rd/serde");
+    std::fs::create_dir_all(cache_path.parent().expect("cache parent")).expect("cache directory");
+    std::fs::write(&cache_path, b"invalid index").expect("invalid cache");
+    let upstream = start_server(Router::new().route(
+        "/se/rd/serde",
+        get({
+            let index_body = index_body.clone();
+            move || {
+                let index_body = index_body.clone();
+                async move { index_body }
+            }
+        }),
+    ))
+    .await;
+    let router = cargo_router(upstream, data_dir.path());
+
+    let response = router
+        .oneshot(get_request("/mirror/cargo/primary/se/rd/serde"))
+        .await
+        .expect("refetched index response");
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("refetched index body");
+
+    assert_eq!(body, index_body.as_bytes());
+    assert_eq!(std::fs::read(cache_path).expect("updated cache"), body);
+}
+
 fn get_request(path: &str) -> Request<Body> {
     Request::get(path).body(Body::empty()).expect("request")
 }
@@ -213,6 +301,34 @@ fn group(name: &str, members: &[&str]) -> SourceConfig {
         require_https: false,
         members: members.iter().map(|member| (*member).to_owned()).collect(),
     }
+}
+
+fn cargo_router(upstream: Url, data_dir: &Path) -> axum::Router {
+    let registry = AdapterRegistry::new()
+        .with_adapter(
+            "cargo",
+            Arc::new(
+                SourcePool::new(
+                    "cargo",
+                    SourceGraph::new(vec![proxy("primary", upstream.as_str())])
+                        .expect("source graph"),
+                )
+                .expect("source pool"),
+            ),
+            Arc::new(CargoAdapter::new(
+                Url::parse("http://127.0.0.1:18761").expect("root URL"),
+                data_dir,
+            )),
+        )
+        .expect("registry");
+    router_with_registry(registry)
+}
+
+fn valid_index_body(crate_body: &str) -> String {
+    let checksum = format!("{:x}", Sha256::digest(crate_body.as_bytes()));
+    format!(
+        r#"{{"name":"serde","vers":"1.0.0","deps":[],"cksum":"{checksum}","features":{{}},"yanked":false}}"#
+    )
 }
 
 async fn start_server(router: Router) -> Url {

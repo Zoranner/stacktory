@@ -49,6 +49,13 @@ impl HttpFetcher {
 }
 
 impl FetchError {
+    pub(crate) fn status_code(&self) -> Option<u16> {
+        match self {
+            Self::HttpStatus(_, status) => Some(status.as_u16()),
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_retryable(&self) -> bool {
         match self {
             Self::ClientBuild(_) | Self::Request(_, _) | Self::ResponseBody(_, _) => true,

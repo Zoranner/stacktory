@@ -41,3 +41,11 @@ fn normalizes_crate_name_to_lowercase() {
         "serde_json"
     );
 }
+
+#[test]
+fn accepts_numeric_leading_crate_name() {
+    assert_eq!(
+        sparse_index_path("3d").expect("numeric-leading crate path"),
+        "2/3d"
+    );
+}

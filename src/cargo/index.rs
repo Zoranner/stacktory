@@ -3,7 +3,8 @@ use thiserror::Error;
 use url::Url;
 
 use super::path::{
-    CargoPathError, normalize_crate_name, sparse_index_path, validate_entry_name, validate_version,
+    CargoPathError, normalize_crate_name, sparse_index_path, validate_crate_name,
+    validate_entry_name, validate_version,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,18 +48,10 @@ pub fn parse_index_lines(source: &str) -> Result<Vec<IndexRecord>, CargoIndexErr
             let line = line + 1;
             let raw: RawIndexRecord = serde_json::from_str(contents)
                 .map_err(|error| CargoIndexError::InvalidJson { line, error })?;
-            let name = normalize_crate_name(&raw.name).map_err(|error| {
-                CargoIndexError::InvalidRecord {
-                    line,
-                    error: error.to_string(),
-                }
+            validate_crate_name(&raw.name).map_err(|error| CargoIndexError::InvalidRecord {
+                line,
+                error: error.to_string(),
             })?;
-            if raw.name != name {
-                return Err(CargoIndexError::InvalidRecord {
-                    line,
-                    error: "crate name is not normalized".to_owned(),
-                });
-            }
             validate_version(&raw.version).map_err(|error| CargoIndexError::InvalidRecord {
                 line,
                 error: error.to_string(),
@@ -66,18 +59,18 @@ pub fn parse_index_lines(source: &str) -> Result<Vec<IndexRecord>, CargoIndexErr
             let checksum = raw
                 .checksum
                 .ok_or_else(|| CargoIndexError::MissingChecksum {
-                    name: name.clone(),
+                    name: raw.name.clone(),
                     version: raw.version.clone(),
                 })?;
             if checksum.len() != 64 || !checksum.bytes().all(|byte| byte.is_ascii_hexdigit()) {
                 return Err(CargoIndexError::InvalidChecksum {
-                    name,
-                    version: raw.version,
+                    name: raw.name.clone(),
+                    version: raw.version.clone(),
                 });
             }
 
             Ok(IndexRecord {
-                name,
+                name: raw.name,
                 version: raw.version,
                 checksum,
             })

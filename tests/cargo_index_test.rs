@@ -33,6 +33,38 @@ fn rejects_index_record_without_sha256_checksum() {
 }
 
 #[test]
+fn preserves_case_in_a_valid_index_record_name() {
+    let source = r#"{"name":"Serde","vers":"1.0.0","deps":[],"cksum":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","features":{},"yanked":false}"#;
+
+    let records = parse_index_lines(source).expect("case-preserving record");
+
+    assert_eq!(records[0].name, "Serde");
+}
+
+#[test]
+fn rejects_non_semver_index_versions() {
+    for version in ["abc", "1..0"] {
+        let source = format!(
+            r#"{{"name":"serde","vers":"{version}","deps":[],"cksum":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","features":{{}},"yanked":false}}"#
+        );
+
+        assert!(
+            parse_index_lines(&source).is_err(),
+            "version should be rejected: {version}"
+        );
+    }
+}
+
+#[test]
+fn accepts_semver_prerelease_and_build_metadata() {
+    let source = r#"{"name":"serde","vers":"1.0.0-alpha.1+build.5","deps":[],"cksum":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","features":{},"yanked":false}"#;
+
+    let records = parse_index_lines(source).expect("semver record");
+
+    assert_eq!(records[0].version, "1.0.0-alpha.1+build.5");
+}
+
+#[test]
 fn rewrites_crate_download_url_to_stacktory_entry() {
     let root = Url::parse("http://127.0.0.1:18761/base").expect("root URL");
 

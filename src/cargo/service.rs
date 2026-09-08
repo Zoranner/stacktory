@@ -98,11 +98,8 @@ impl CargoService {
         if path == "config.json" {
             return Ok(("application/json", self.config(entry_name)?));
         }
-        if let Some(index_path) = path.strip_prefix("index/") {
-            let (crate_name, _) = sparse_path_for_request(index_path)?;
-            let body = self
-                .index(entry_name, index_path, &crate_name, pool)
-                .await?;
+        if let Ok((crate_name, _)) = sparse_path_for_request(path) {
+            let body = self.index(entry_name, path, &crate_name, pool).await?;
             return Ok(("application/json", body));
         }
         if let Some(crate_path) = path.strip_prefix("crates/") {
@@ -131,16 +128,19 @@ impl CargoService {
     ) -> Result<Vec<u8>, CargoError> {
         let cache_path = self.metadata_path(entry_name, index_path);
         if let Some(contents) = read_if_present(&cache_path)? {
-            parse_index_lines(std::str::from_utf8(&contents).map_err(|_| {
-                CargoIndexError::InvalidRecord {
+            let valid_cache = std::str::from_utf8(&contents)
+                .map_err(|_| CargoIndexError::InvalidRecord {
                     line: 0,
                     error: "index is not UTF-8".to_owned(),
-                }
-            })?)?;
-            return Ok(contents);
+                })
+                .and_then(|contents| parse_index_lines(contents).map(|_| ()));
+            if valid_cache.is_ok() {
+                return Ok(contents);
+            }
+            fs::remove_file(&cache_path)?;
         }
 
-        let request_key = format!("index/{index_path}");
+        let request_key = index_path.to_owned();
         let mut failures = Vec::new();
         for member in pool
             .proxy_members(entry_name)
@@ -168,7 +168,10 @@ impl CargoService {
                                         error: "index is not UTF-8".to_owned(),
                                     },
                                 )?)?;
-                            if !records.iter().any(|record| record.name == crate_name) {
+                            if !records.iter().any(|record| {
+                                normalize_crate_name(&record.name)
+                                    .is_ok_and(|name| name == crate_name)
+                            }) {
                                 failures.push(format!(
                                     "{}: index does not contain the requested crate",
                                     member.name
@@ -215,7 +218,10 @@ impl CargoService {
         })?)?;
         let expected = records
             .iter()
-            .find(|record| record.name == crate_name && record.version == version)
+            .find(|record| {
+                normalize_crate_name(&record.name).is_ok_and(|name| name == crate_name)
+                    && record.version == version
+            })
             .map(|record| record.checksum.clone())
             .ok_or_else(|| CargoError::MissingVersion {
                 name: crate_name.to_owned(),
@@ -321,6 +327,9 @@ fn cargo_error_response(error: &CargoError) -> Response {
         | CargoError::MissingVersion { .. }
         | CargoError::Index(CargoIndexError::Path(_)) => StatusCode::NOT_FOUND,
         CargoError::Source(SourcePoolError::UnknownEntry(_)) => StatusCode::NOT_FOUND,
+        CargoError::Source(SourcePoolError::TerminalSourceError { status, .. }) => {
+            StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY)
+        }
         CargoError::Source(_) | CargoError::Index(_) => StatusCode::BAD_GATEWAY,
         CargoError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };

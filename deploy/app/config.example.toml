@@ -22,4 +22,4 @@ members = ["rust-lang"]
 [[cargo.sources]]
 name = "crates-io"
 type = "proxy"
-base_url = "https://crates.io"
+base_url = "https://index.crates.io"

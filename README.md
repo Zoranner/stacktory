@@ -56,7 +56,7 @@ group 刷新时选中的 proxy 会写入快照，后续 artifact 请求只访问
 | 路由 | 行为 |
 | --- | --- |
 | `GET /mirror/cargo/{name}/config.json` | 返回当前命名入口的 Sparse Registry 配置。 |
-| `GET /mirror/cargo/{name}/index/{path}` | 返回校验过的 Sparse Index JSON Lines。 |
+| `GET /mirror/cargo/{name}/{sparse-index-path}` | 返回校验过的 Sparse Index JSON Lines。 |
 | `GET /mirror/cargo/{name}/crates/{crate}/{version}.crate` | 返回 index 中声明的 crate 制品。 |
 
 Cargo crate 名称按 Cargo Sparse Index 标准规范化和分层。index 和 crate 下载都通过
@@ -83,6 +83,10 @@ name = "group"
 type = "group"
 members = ["crates-io"]
 ```
+
+Cargo proxy 的 `base_url` 只能配置一个上游根地址，但该根地址必须实际提供
+`config.json`、标准 Sparse Index 相对路径和 crate 下载相对路径。私有或 Nexus
+proxy 不能只填写管理页面地址；应确认其代理资源布局与 Stacktory 适配器约定一致。
 
 首期只实现 Sparse Index 和 crate 下载，不实现 Cargo Git Index、publish、push 或
 其他生态协议。

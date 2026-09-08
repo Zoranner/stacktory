@@ -31,8 +31,12 @@ pub enum SourcePoolError {
     UnknownEntry(String),
     #[error("request key `{0}` is invalid")]
     InvalidRequestKey(String),
-    #[error("source `{source_name}` returned a terminal error: {error}")]
-    TerminalSourceError { source_name: String, error: String },
+    #[error("source `{source_name}` returned HTTP {status}: {error}")]
+    TerminalSourceError {
+        source_name: String,
+        status: u16,
+        error: String,
+    },
     #[error("all sources for entry `{entry_name}` failed for `{request_key}`: {failures}")]
     AllSourcesFailed {
         entry_name: String,
@@ -93,6 +97,7 @@ impl SourcePool {
                 Err(error) => {
                     return Err(SourcePoolError::TerminalSourceError {
                         source_name: source.name,
+                        status: error.status_code().unwrap_or_default(),
                         error: error.to_string(),
                     });
                 }

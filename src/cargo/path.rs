@@ -1,5 +1,6 @@
 use std::fmt;
 
+use semver::Version;
 use thiserror::Error;
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -46,28 +47,23 @@ impl fmt::Display for CargoPath {
 }
 
 pub fn normalize_crate_name(value: &str) -> Result<String, CargoPathError> {
-    if value.is_empty()
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-        || !value
-            .as_bytes()
-            .first()
-            .is_some_and(u8::is_ascii_alphanumeric)
-    {
-        return Err(CargoPathError::InvalidCrateName(value.to_owned()));
-    }
-
+    validate_crate_name(value)?;
     Ok(value.to_ascii_lowercase())
 }
 
 pub(crate) fn validate_version(value: &str) -> Result<(), CargoPathError> {
+    Version::parse(value)
+        .map(|_| ())
+        .map_err(|_| CargoPathError::InvalidVersion(value.to_owned()))
+}
+
+pub(crate) fn validate_crate_name(value: &str) -> Result<(), CargoPathError> {
     if value.is_empty()
         || !value
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+' | b'_'))
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
     {
-        return Err(CargoPathError::InvalidVersion(value.to_owned()));
+        return Err(CargoPathError::InvalidCrateName(value.to_owned()));
     }
     Ok(())
 }

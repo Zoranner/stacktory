@@ -7,7 +7,7 @@ crate 下载：
 
 ```text
 /mirror/cargo/{name}/config.json
-/mirror/cargo/{name}/index/**
+/mirror/cargo/{name}/{sparse-index-path}
 /mirror/cargo/{name}/crates/**
 ```
 
@@ -23,9 +23,14 @@ Cargo 使用配置中的 `sources`。`proxy` 是一个固定上游根地址，`g
 
 ```text
 config.json
-index/{sparse-index-path}
+{sparse-index-path}
 crates/{crate}/{version}.crate
 ```
+
+每个 Cargo proxy 只有一个 `base_url`。该根地址必须实际提供上述三类资源；
+适配器不引入第二个 endpoint，也不把 `base_url` 当作可转发任意 URL 的入口。
+真实私有或 Nexus proxy 的管理地址不一定就是 Cargo registry 根地址，部署前必须
+确认其相对资源布局。
 
 Stacktory 对外的 `config.json` 不转发上游配置，而是生成唯一的 `dl` 模板：
 
@@ -37,8 +42,9 @@ Stacktory 对外的 `config.json` 不转发上游配置，而是生成唯一的 
 
 ## Sparse Index
 
-crate 名称先规范化为 ASCII 小写，并只允许 Cargo 包名使用的字母、数字、`-` 和
-`_`。路径按规范分层：
+crate 名称先规范化为 ASCII 小写。index 的 `name` 字段保留上游提供的合法 Cargo
+package name，不要求它已经是小写；路径使用其规范化结果。当前适配器允许 ASCII
+字母、数字、`-` 和 `_`，不额外限制首字符。路径按规范分层：
 
 ```text
 1/{name}                         # 1 个字符
@@ -64,7 +70,8 @@ data_dir/cargo/metadata/{entry}/index/{object-key}
 data_dir/cargo/artifacts/{entry}/crates/{crate}/{version}.crate
 ```
 
-index 只有在 UTF-8、JSON Lines、crate 名称和 checksum 均通过解析后才会原子写入。
+index 只有在 UTF-8、JSON Lines、合法 crate 名称、严格 SemVer 版本和 checksum 均
+通过解析后才会原子写入。
 crate 请求会先从 index 找到目标版本的 `cksum`，缓存命中也会重新计算 SHA-256。
 上游响应只有在摘要匹配后才会原子写入 artifact 缓存并返回。
 
@@ -100,4 +107,5 @@ Cargo 测试使用本地 HTTP 上游覆盖：
 - group index/crate 回退。
 - checksum 不匹配时不发布 artifact 缓存。
 
-真实 crates.io 联调、Cargo Git Index 和写入操作属于后续独立任务。
+真实 crates.io、目标 Nexus proxy 和 Cargo 客户端联调尚未执行；Cargo Git Index
+和写入操作属于后续独立任务。

@@ -134,6 +134,20 @@ fn deployment_config_matches_the_runtime_schema() {
             .source_type,
         stacktory::SourceType::Proxy
     );
+    assert_eq!(
+        config
+            .cargo
+            .as_ref()
+            .expect("cargo configuration")
+            .sources
+            .get("crates-io")
+            .expect("crates.io source")
+            .base_url
+            .as_ref()
+            .expect("crates.io source URL")
+            .as_str(),
+        "https://index.crates.io/"
+    );
 }
 
 #[test]
