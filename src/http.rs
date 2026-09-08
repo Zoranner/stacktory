@@ -22,7 +22,7 @@ pub fn router() -> Router {
 pub fn router_with_rustup(service: Arc<RustupService>) -> Router {
     Router::new()
         .route("/healthz", get(health))
-        .route("/mirror/rustup/dist/{*path}", get(rustup_dist))
+        .route("/mirror/rustup/{name}/{*path}", get(rustup_dist))
         .with_state(service)
 }
 
@@ -55,10 +55,14 @@ async fn named_source(
 
 async fn rustup_dist(
     State(service): State<Arc<RustupService>>,
-    Path(path): Path<String>,
+    Path((name, path)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    if let Some((channel, checksum)) = channel_request(&path) {
-        return match service.manifest_for_request(channel).await {
+    let Some(path) = path.strip_prefix("dist/") else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+
+    if let Some((channel, checksum)) = channel_request(path) {
+        return match service.manifest_for_request(&name, channel).await {
             Ok(snapshot) if checksum => {
                 format!("{}  channel-rust-{channel}.toml\n", snapshot.checksum).into_response()
             }
@@ -67,11 +71,11 @@ async fn rustup_dist(
         };
     }
 
-    let path = match DistPath::parse(&path) {
+    let path = match DistPath::parse(path) {
         Ok(path) => path,
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
-    match service.artifact_for_request(&path).await {
+    match service.artifact_for_request(&name, &path).await {
         Ok(contents) => contents.into_response(),
         Err(error) => service_error_response(&error),
     }
@@ -82,11 +86,14 @@ fn service_error_response(error: &ServiceError) -> axum::response::Response {
         ServiceError::UnconfiguredChannel(_) | ServiceError::UnknownArtifact(_) => {
             StatusCode::NOT_FOUND
         }
+        ServiceError::Source(crate::sources::SourcePoolError::UnknownEntry(_)) => {
+            StatusCode::NOT_FOUND
+        }
         ServiceError::NoPublishedSnapshots
         | ServiceError::Storage(StorageError::MissingSnapshot(_)) => {
             StatusCode::SERVICE_UNAVAILABLE
         }
-        ServiceError::Upstream(_)
+        ServiceError::Source(_)
         | ServiceError::Rewrite(_)
         | ServiceError::Storage(StorageError::ArtifactHashMismatch(_)) => StatusCode::BAD_GATEWAY,
         ServiceError::Storage(_) | ServiceError::ConflictingArtifactHash(_) => {

@@ -48,11 +48,11 @@ impl ManifestPolicy {
 pub fn rewrite_manifest(
     source: &str,
     policy: &ManifestPolicy,
-    public_base: &Url,
+    root_url: &Url,
 ) -> Result<RewrittenManifest, RustupError> {
     let mut manifest: Value = toml::from_str(source)?;
     let mut artifact_hashes = BTreeMap::new();
-    rewrite_value(&mut manifest, policy, public_base, &mut artifact_hashes)?;
+    rewrite_value(&mut manifest, policy, root_url, &mut artifact_hashes)?;
 
     let manifest = toml::to_string(&manifest)?;
     let checksum = format!("{:x}", Sha256::digest(manifest.as_bytes()));
@@ -67,14 +67,14 @@ pub fn rewrite_manifest(
 fn rewrite_value(
     value: &mut Value,
     policy: &ManifestPolicy,
-    public_base: &Url,
+    root_url: &Url,
     artifact_hashes: &mut BTreeMap<DistPath, String>,
 ) -> Result<(), RustupError> {
     match value {
-        Value::Table(table) => rewrite_table(table, policy, public_base, artifact_hashes),
+        Value::Table(table) => rewrite_table(table, policy, root_url, artifact_hashes),
         Value::Array(values) => {
             for item in values {
-                rewrite_value(item, policy, public_base, artifact_hashes)?;
+                rewrite_value(item, policy, root_url, artifact_hashes)?;
             }
             Ok(())
         }
@@ -85,11 +85,11 @@ fn rewrite_value(
 fn rewrite_table(
     table: &mut Table,
     policy: &ManifestPolicy,
-    public_base: &Url,
+    root_url: &Url,
     artifact_hashes: &mut BTreeMap<DistPath, String>,
 ) -> Result<(), RustupError> {
     for (_, value) in table.iter_mut() {
-        rewrite_value(value, policy, public_base, artifact_hashes)?;
+        rewrite_value(value, policy, root_url, artifact_hashes)?;
     }
 
     let url_fields: Vec<String> = table
@@ -99,7 +99,7 @@ fn rewrite_table(
         .collect();
 
     for url_field in url_fields {
-        rewrite_url_field(table, &url_field, policy, public_base, artifact_hashes)?;
+        rewrite_url_field(table, &url_field, policy, root_url, artifact_hashes)?;
     }
 
     Ok(())
@@ -109,7 +109,7 @@ fn rewrite_url_field(
     table: &mut Table,
     url_field: &str,
     policy: &ManifestPolicy,
-    public_base: &Url,
+    root_url: &Url,
     artifact_hashes: &mut BTreeMap<DistPath, String>,
 ) -> Result<(), RustupError> {
     let source_url = table
@@ -139,7 +139,7 @@ fn rewrite_url_field(
 
     table.insert(
         url_field.to_owned(),
-        Value::String(public_dist_url(public_base, &path).to_string()),
+        Value::String(root_dist_url(root_url, &path).to_string()),
     );
 
     Ok(())
@@ -152,10 +152,10 @@ fn url_field_to_hash_field(url_field: &str) -> String {
     }
 }
 
-fn public_dist_url(public_base: &Url, path: &DistPath) -> Url {
-    let mut url = public_base.clone();
-    let base_path = public_base.path().trim_end_matches('/');
-    url.set_path(&format!("{base_path}/mirror/rustup/dist/{}", path.as_str()));
+fn root_dist_url(root_url: &Url, path: &DistPath) -> Url {
+    let mut url = root_url.clone();
+    let base_path = root_url.path().trim_end_matches('/');
+    url.set_path(&format!("{base_path}/dist/{}", path.as_str()));
     url.set_query(None);
     url.set_fragment(None);
     url

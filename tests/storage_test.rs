@@ -13,6 +13,8 @@ fn current_snapshot_keeps_manifest_and_checksum_from_the_same_publication() {
 
     store
         .publish(
+            "test",
+            "test",
             "stable",
             snapshot(
                 "first manifest",
@@ -22,6 +24,8 @@ fn current_snapshot_keeps_manifest_and_checksum_from_the_same_publication() {
         .expect("first publication");
     store
         .publish(
+            "test",
+            "test",
             "stable",
             snapshot(
                 "second manifest",
@@ -30,7 +34,7 @@ fn current_snapshot_keeps_manifest_and_checksum_from_the_same_publication() {
         )
         .expect("second publication");
 
-    let current = store.current("stable").expect("current snapshot");
+    let current = store.current("test", "stable").expect("current snapshot");
 
     assert_eq!(current.manifest, "second manifest");
     assert_eq!(

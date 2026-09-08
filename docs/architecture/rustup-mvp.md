@@ -19,7 +19,7 @@ VS Code 等静态安装包分发。Unity 的未来适配范围仅为官方 UPM R
 | 组件 | 职责 |
 | --- | --- |
 | `RustupAdapter` | 识别 Rustup 原生路径；刷新、读取并重写 channel manifest；为 dist 请求构造受限制品键。 |
-| `UpstreamClient` | 仅向配置中声明的上游发起请求；按顺序回退；不接受 HTTP 请求中的上游地址。 |
+| `SourcePool` | 仅向当前命名入口解析出的 proxy 发起请求；group 按成员顺序回退，proxy 只访问自身。 |
 | `SnapshotStore` | 将已校验的原始与重写 manifest 放入版本化快照目录，并用当前指针切换公开版本。 |
 | `ArtifactCache` | 以 dist 相对路径定位磁盘文件；核对 manifest 哈希后才原子发布。 |
 | `AuditSink` | 对 manifest 发布、缓存命中、缓存写入和上游失败写入结构化 JSONL。 |
@@ -30,21 +30,18 @@ VS Code 等静态安装包分发。Unity 的未来适配范围仅为官方 UPM R
 
 ## 路由命名空间
 
-当前 Rustup 实现仍使用 `/mirror/rustup` 命名空间，开发机设置
-`RUSTUP_DIST_SERVER=https://stacktory.internal/mirror/rustup` 后，Rustup 请求会自然
-落到 Stacktory。Task 3 的目标是迁移到 `/mirror/{生态}/{source}`，但本任务不提前
-接线路由或 manifest 重写。当前公开路由如下：
+Rustup 使用 `/mirror/rustup/{source}` 命名入口，开发机设置
+`RUSTUP_DIST_SERVER=https://stacktory.internal/mirror/rustup/{source}` 后，Rustup
+请求会落到对应 source。当前公开路由如下：
 
 | 路由 | 用途 |
 | --- | --- |
-| `GET /mirror/rustup/dist/channel-rust-{channel}.toml` | 返回当前重写后的 channel manifest。 |
-| `GET /mirror/rustup/dist/channel-rust-{channel}.toml.sha256` | 返回与当前 manifest 配对的 SHA-256。 |
-| `GET /mirror/rustup/dist/{path}` | 返回经过路径限制、上游校验和缓存的 Rustup 制品。 |
+| `GET /mirror/rustup/{source}/dist/channel-rust-{channel}.toml` | 返回当前命名入口重写后的 channel manifest。 |
+| `GET /mirror/rustup/{source}/dist/channel-rust-{channel}.toml.sha256` | 返回与当前 manifest 配对的 SHA-256。 |
+| `GET /mirror/rustup/{source}/dist/{path}` | 返回经过路径限制、上游校验和缓存的 Rustup 制品。 |
 | `GET /healthz` | 服务存活检查，不暴露上游、缓存或配置细节。 |
 
-Task 3 的目标路由为 `/mirror/rustup/{source}/dist/...`，目标客户端配置为
-`RUSTUP_DIST_SERVER=https://stacktory.internal/mirror/rustup/{source}`；当前尚未
-实现。
+旧 `/mirror/rustup/dist/**` 路由不再注册，也不提供兼容别名。
 
 MVP 不提供管理页面或管理 HTTP API。配置文件是唯一配置来源，服务器在启动时
 加载它；更新配置后通过受控重启生效。未来路由使用 `/mirror/cargo`、
@@ -108,26 +105,30 @@ Stacktory 对内网公开提供镜像响应，不要求客户端凭据。
 
 ```text
 rustup
-  -> GET /mirror/rustup/dist/channel-rust-{channel}.toml(.sha256)
+  -> GET /mirror/rustup/{source}/dist/channel-rust-{channel}.toml(.sha256)
   -> 当前快照新鲜则直接返回；缺失或过期时由该请求触发刷新
-  -> 重写 manifest 中全部受支持 dist URL 为 /mirror/rustup/dist/{path}
+  -> 重写 manifest 中全部受支持 dist URL 为 /mirror/rustup/{source}/dist/{path}
   -> 返回重写 manifest 或其 SHA-256
 
 rustup
-  -> GET /mirror/rustup/dist/{path}
+  -> GET /mirror/rustup/{source}/dist/{path}
   -> 严格路径解析，拒绝编码绕过、.. 和非 dist 路径
   -> 已校验缓存命中则返回
-  -> 按固定上游顺序下载，SHA-256 与当前 manifest 记录相同才发布缓存
+  -> 按该命名入口 manifest 选中的 proxy 下载，SHA-256 与当前 manifest 记录相同才发布缓存
   -> 返回文件；所有失败保留为协议错误，不产生半成品缓存
 ```
 
 刷新不是常驻任务。首次请求或快照超过 `refresh_interval_secs` 时，服务合并同一
 channel 的并发刷新请求；刷新成功后发布新快照。刷新失败但已有旧快照时继续返回
-旧快照，没有任何快照才返回上游失败。刷新时，先从每个上游依次取得 manifest 及 `.sha256`，验证原始 manifest
+旧快照，没有任何快照才返回上游失败。刷新时，按命名入口解析出的 proxy 顺序取得
+manifest 及 `.sha256`，验证原始 manifest
 散列，解析并拒绝不属于已配置上游 `dist/**` 的 URL，重写 URL 后计算新的
 manifest SHA-256。完整 manifest、匹配 checksum 和提取出的制品哈希一同写入
-新的版本化快照目录；目录完成后原子替换 `current.toml` 指针。读取请求始终先
-读取指针再读取同一快照，因此不会观察到不配对的公开 manifest/checksum。
+新的命名入口版本化快照目录；快照同时记录实际选中的 proxy，制品缓存按 proxy
+隔离，目录完成后原子替换
+`current.toml` 指针。读取请求始终先读取入口指针再读取同一快照，因此不会观察到
+不配对的公开 manifest/checksum；artifact 请求沿用该快照记录的 proxy，不回退到
+该 group 的其他成员。
 
 ## 错误与安全边界
 

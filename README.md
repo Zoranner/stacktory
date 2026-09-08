@@ -13,13 +13,13 @@ Stacktory 是面向公司内网开发机的研发制品与动态工具链供应�
 | 路由 | 行为 |
 | --- | --- |
 | `GET /healthz` | 服务存活检查。 |
-| `GET /mirror/rustup/dist/channel-rust-{channel}.toml` | 当前实现返回内部化的 channel manifest。 |
-| `GET /mirror/rustup/dist/channel-rust-{channel}.toml.sha256` | 当前实现返回同一快照 manifest 的 SHA-256。 |
-| `GET /mirror/rustup/dist/{path}` | 当前实现仅返回已发布 manifest 引用且校验通过的 Rustup 制品。 |
+| `GET /mirror/rustup/{name}/dist/channel-rust-{channel}.toml` | 返回指定命名入口的内部化 channel manifest。 |
+| `GET /mirror/rustup/{name}/dist/channel-rust-{channel}.toml.sha256` | 返回同一快照 manifest 的 SHA-256。 |
+| `GET /mirror/rustup/{name}/dist/{path}` | 返回指定命名入口已发布 manifest 引用且校验通过的 Rustup 制品。 |
 
 channel manifest 缺失或过期时由请求触发刷新。同一 channel 的并发刷新会合并；刷新
 失败但已有旧快照时继续返回旧快照。制品按 manifest 中的 SHA-256 校验后原子写入
-`data_dir/rustup/artifacts/`，未知或非法路径不会触发上游请求。
+`data_dir/rustup/artifacts/{name}/`，未知或非法路径不会触发上游请求。
 
 Rustup 路由无需认证。运行审计追加到 `data_dir/audit/events.jsonl`，记录 manifest
 发布、制品缓存和上游失败，但不记录上游响应正文。
@@ -40,20 +40,16 @@ docker compose up -d
 内网开发机将 Rustup 分发服务器设置为：
 
 ```text
-RUSTUP_DIST_SERVER=https://stacktory.example.internal/mirror/rustup
+RUSTUP_DIST_SERVER=https://stacktory.example.internal/mirror/rustup/group
 ```
 
 配置中的每个生态都使用命名 `sources`。`type = "proxy"` 声明一个上游地址，
 `type = "group"` 按 `members` 顺序组合已声明的 proxy；未配置的生态保持禁用。
-Task 3 的目标路由和客户端配置如下，当前尚未由 `src/http.rs` 和 manifest 重写器接线：
+manifest 中的制品 URL 使用当前请求的 `/mirror/rustup/{name}` 根地址。
+group 刷新时选中的 proxy 会写入快照，后续 artifact 请求只访问该 proxy，不在
+同一命名入口内混用其他 proxy。
 
-```text
-/mirror/rustup/{source}/dist/...
-RUSTUP_DIST_SERVER=https://stacktory.example.internal/mirror/rustup/{source}
-```
-
-Cargo source 配置已经纳入配置模型，协议路由仍待后续适配器实现；Rustup 命名入口
-路由也由后续 Task 3 实现。
+Cargo source 配置已经纳入配置模型，协议路由仍待后续适配器实现。
 
 ## 发布
 

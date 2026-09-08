@@ -73,13 +73,13 @@ async fn refresh_publishes_a_rewritten_manifest_snapshot() {
     })
     .expect("service");
 
-    service.refresh("stable").await.expect("refresh");
-    let snapshot = service.manifest("stable").expect("snapshot");
+    service.refresh("test", "stable").await.expect("refresh");
+    let snapshot = service.manifest("test", "stable").expect("snapshot");
 
     assert!(
         snapshot
             .manifest
-            .contains("/mirror/rustup/dist/2026-08-20/rustc-")
+            .contains("/mirror/rustup/test/dist/2026-08-20/rustc-")
     );
     assert!(
         std::fs::read_to_string(directory.path().join("audit/events.jsonl"))
@@ -98,13 +98,13 @@ async fn artifact_request_fetches_a_published_artifact_and_reuses_the_verified_c
     let data_dir = tempdir().expect("temporary directory");
     let service = service_for(upstream, data_dir.path().to_path_buf());
 
-    service.refresh("stable").await.expect("refresh");
+    service.refresh("test", "stable").await.expect("refresh");
     let first = service
-        .artifact_for_request(&path)
+        .artifact_for_request("test", &path)
         .await
         .expect("first artifact request");
     let second = service
-        .artifact_for_request(&path)
+        .artifact_for_request("test", &path)
         .await
         .expect("cached artifact request");
 
@@ -130,9 +130,9 @@ async fn artifact_request_rejects_content_that_does_not_match_the_manifest_hash(
     let data_dir = tempdir().expect("temporary directory");
     let service = service_for(upstream, data_dir.path().to_path_buf());
 
-    service.refresh("stable").await.expect("refresh");
+    service.refresh("test", "stable").await.expect("refresh");
     let error = service
-        .artifact_for_request(&path)
+        .artifact_for_request("test", &path)
         .await
         .expect_err("mismatched artifact must fail");
 
@@ -163,9 +163,9 @@ async fn artifact_request_rejects_paths_not_referenced_by_a_published_manifest()
     let service = service_for(upstream, data_dir.path().to_path_buf());
     let unknown = DistPath::parse("2026-08-20/unknown.tar.xz").expect("dist path");
 
-    service.refresh("stable").await.expect("refresh");
+    service.refresh("test", "stable").await.expect("refresh");
     let error = service
-        .artifact_for_request(&unknown)
+        .artifact_for_request("test", &unknown)
         .await
         .expect_err("unknown artifact must fail");
 
@@ -180,10 +180,13 @@ async fn manifest_request_refreshes_an_expired_snapshot() {
     let data_dir = tempdir().expect("temporary directory");
     let service = service_for(upstream, data_dir.path().to_path_buf());
 
-    service.refresh("stable").await.expect("initial refresh");
+    service
+        .refresh("test", "stable")
+        .await
+        .expect("initial refresh");
     expire_current_snapshot(data_dir.path(), "stable", &service);
     let refreshed = service
-        .manifest_for_request("stable")
+        .manifest_for_request("test", "stable")
         .await
         .expect("expired snapshot refresh");
 
@@ -198,12 +201,15 @@ async fn manifest_request_returns_an_expired_snapshot_when_refresh_fails() {
     let data_dir = tempdir().expect("temporary directory");
     let service = service_for(upstream, data_dir.path().to_path_buf());
 
-    service.refresh("stable").await.expect("initial refresh");
-    let before_failure = service.manifest("stable").expect("snapshot");
+    service
+        .refresh("test", "stable")
+        .await
+        .expect("initial refresh");
+    let before_failure = service.manifest("test", "stable").expect("snapshot");
     expire_current_snapshot(data_dir.path(), "stable", &service);
     available.store(false, Ordering::SeqCst);
     let stale = service
-        .manifest_for_request("stable")
+        .manifest_for_request("test", "stable")
         .await
         .expect("stale fallback");
 
@@ -224,8 +230,8 @@ async fn concurrent_manifest_requests_share_one_initial_refresh() {
     let service = service_for(upstream, data_dir.path().to_path_buf());
 
     let (first, second) = tokio::join!(
-        service.manifest_for_request("stable"),
-        service.manifest_for_request("stable"),
+        service.manifest_for_request("test", "stable"),
+        service.manifest_for_request("test", "stable"),
     );
 
     first.expect("first manifest request");
@@ -341,15 +347,16 @@ async fn start_refresh_upstream(refreshes: Arc<AtomicUsize>) -> (Url, Arc<Atomic
 }
 
 fn expire_current_snapshot(data_dir: &std::path::Path, channel: &str, service: &RustupService) {
-    let snapshot = service.manifest(channel).expect("snapshot");
+    let snapshot = service.manifest("test", channel).expect("snapshot");
     std::fs::write(
         data_dir
             .join("rustup/snapshots")
+            .join("test")
             .join(channel)
             .join("current.toml"),
         format!(
-            "revision = \"{}\"\npublished_at_unix_secs = 0\n",
-            snapshot.checksum
+            "revision = \"{}\"\nsource_name = \"{}\"\npublished_at_unix_secs = 0\n",
+            snapshot.checksum, snapshot.source_name
         ),
     )
     .expect("expire current snapshot");

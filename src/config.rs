@@ -26,15 +26,6 @@ pub struct CargoConfig {
     pub sources: SourceGraph,
 }
 
-impl RustupConfig {
-    pub(crate) fn legacy_upstream_bases(&self) -> Vec<Url> {
-        self.sources
-            .proxy_sources()
-            .filter_map(|source| source.base_url.clone())
-            .collect()
-    }
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum SourceType {
@@ -54,7 +45,6 @@ pub struct SourceConfig {
 #[derive(Debug)]
 pub struct SourceGraph {
     entries: BTreeMap<String, SourceConfig>,
-    order: Vec<String>,
 }
 
 impl SourceGraph {
@@ -68,8 +58,6 @@ impl SourceGraph {
 
     pub fn new(sources: Vec<SourceConfig>) -> Result<Self, ConfigError> {
         let mut entries = BTreeMap::new();
-        let mut order = Vec::with_capacity(sources.len());
-
         for source in sources {
             let name = source.name.clone();
             if !is_valid_source_name(&source.name) {
@@ -78,7 +66,6 @@ impl SourceGraph {
             if entries.insert(name.clone(), source).is_some() {
                 return Err(ConfigError::DuplicateSourceName(name));
             }
-            order.push(name);
         }
 
         if entries.is_empty() {
@@ -135,7 +122,7 @@ impl SourceGraph {
             }
         }
 
-        Ok(Self { entries, order })
+        Ok(Self { entries })
     }
 
     pub fn get(&self, name: &str) -> Option<&SourceConfig> {
@@ -158,13 +145,6 @@ impl SourceGraph {
                     .collect(),
             ),
         }
-    }
-
-    fn proxy_sources(&self) -> impl Iterator<Item = &SourceConfig> {
-        self.order.iter().filter_map(|name| {
-            let source = self.entries.get(name)?;
-            (source.source_type == SourceType::Proxy).then_some(source)
-        })
     }
 }
 

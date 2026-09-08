@@ -12,11 +12,13 @@ fn cache_only_publishes_artifact_when_sha256_matches() {
     let checksum = format!("{:x}", Sha256::digest(contents));
 
     cache
-        .publish_verified(&path, contents, &checksum)
+        .publish_verified("test", &path, contents, &checksum)
         .expect("matching artifact");
 
     assert_eq!(
-        cache.get_verified(&path, &checksum).expect("cache lookup"),
+        cache
+            .get_verified("test", &path, &checksum)
+            .expect("cache lookup"),
         Some(contents.to_vec())
     );
 }
@@ -31,12 +33,12 @@ fn cache_rejects_mismatched_sha256_without_creating_a_hit() {
 
     assert!(
         cache
-            .publish_verified(&path, b"untrusted artifact", wrong_checksum)
+            .publish_verified("test", &path, b"untrusted artifact", wrong_checksum)
             .is_err()
     );
     assert_eq!(
         cache
-            .get_verified(&path, wrong_checksum)
+            .get_verified("test", &path, wrong_checksum)
             .expect("cache lookup"),
         None
     );

@@ -25,6 +25,7 @@ pub struct ArtifactCache {
 pub struct StoredSnapshot {
     pub manifest: String,
     pub checksum: String,
+    pub source_name: String,
     pub published_at_unix_secs: u64,
     pub artifact_hashes: BTreeMap<DistPath, String>,
 }
@@ -39,6 +40,8 @@ pub enum StorageError {
     MetadataSerialize(#[from] toml::ser::Error),
     #[error("rustup channel `{0}` is invalid")]
     InvalidChannel(String),
+    #[error("rustup source name `{0}` is invalid")]
+    InvalidSourceName(String),
     #[error("no published rustup snapshot exists for channel `{0}`")]
     MissingSnapshot(String),
     #[error("snapshot checksum `{0}` is invalid")]
@@ -52,6 +55,7 @@ pub enum StorageError {
 #[derive(Deserialize, Serialize)]
 struct CurrentPointer {
     revision: String,
+    source_name: String,
     published_at_unix_secs: u64,
 }
 
@@ -67,11 +71,21 @@ impl SnapshotStore {
         }
     }
 
-    pub fn publish(&self, channel: &str, snapshot: RewrittenManifest) -> Result<(), StorageError> {
+    pub fn publish(
+        &self,
+        entry_name: &str,
+        upstream_source: &str,
+        channel: &str,
+        snapshot: RewrittenManifest,
+    ) -> Result<(), StorageError> {
+        validate_source_name(entry_name)?;
+        validate_source_name(upstream_source)?;
         validate_channel(channel)?;
         validate_checksum(&snapshot.checksum)?;
 
-        let snapshot_dir = self.snapshot_root(channel).join(&snapshot.checksum);
+        let snapshot_dir = self
+            .snapshot_root(entry_name, channel)
+            .join(&snapshot.checksum);
         fs::create_dir_all(&snapshot_dir)?;
         fs::write(snapshot_dir.join("manifest.toml"), snapshot.manifest)?;
         fs::write(
@@ -94,17 +108,19 @@ impl SnapshotStore {
 
         let pointer = toml::to_string(&CurrentPointer {
             revision: snapshot.checksum,
+            source_name: upstream_source.to_owned(),
             published_at_unix_secs: unix_timestamp()?,
         })?;
         atomic_write(
-            &self.snapshot_root(channel).join("current.toml"),
+            &self.snapshot_root(entry_name, channel).join("current.toml"),
             pointer.as_bytes(),
         )
     }
 
-    pub fn current(&self, channel: &str) -> Result<StoredSnapshot, StorageError> {
+    pub fn current(&self, entry_name: &str, channel: &str) -> Result<StoredSnapshot, StorageError> {
+        validate_source_name(entry_name)?;
         validate_channel(channel)?;
-        let root = self.snapshot_root(channel);
+        let root = self.snapshot_root(entry_name, channel);
         let pointer_path = root.join("current.toml");
         let pointer = fs::read_to_string(&pointer_path).map_err(|error| {
             if error.kind() == io::ErrorKind::NotFound {
@@ -115,6 +131,7 @@ impl SnapshotStore {
         })?;
         let pointer: CurrentPointer = toml::from_str(&pointer)?;
         validate_checksum(&pointer.revision)?;
+        validate_source_name(&pointer.source_name)?;
 
         let snapshot_dir = root.join(&pointer.revision);
         let manifest = fs::read_to_string(snapshot_dir.join("manifest.toml"))?;
@@ -144,13 +161,18 @@ impl SnapshotStore {
         Ok(StoredSnapshot {
             manifest,
             checksum,
+            source_name: pointer.source_name,
             published_at_unix_secs: pointer.published_at_unix_secs,
             artifact_hashes,
         })
     }
 
-    fn snapshot_root(&self, channel: &str) -> PathBuf {
-        self.data_dir.join("rustup").join("snapshots").join(channel)
+    fn snapshot_root(&self, entry_name: &str, channel: &str) -> PathBuf {
+        self.data_dir
+            .join("rustup")
+            .join("snapshots")
+            .join(entry_name)
+            .join(channel)
     }
 }
 
@@ -170,25 +192,29 @@ impl ArtifactCache {
 
     pub fn publish_verified(
         &self,
+        source_name: &str,
         path: &DistPath,
         contents: &[u8],
         expected_checksum: &str,
     ) -> Result<(), StorageError> {
+        validate_source_name(source_name)?;
         validate_checksum(expected_checksum)?;
         if checksum(contents) != expected_checksum {
             return Err(StorageError::ArtifactHashMismatch(path.to_string()));
         }
 
-        atomic_write(&self.artifact_path(path), contents)
+        atomic_write(&self.artifact_path(source_name, path), contents)
     }
 
     pub fn get_verified(
         &self,
+        source_name: &str,
         path: &DistPath,
         expected_checksum: &str,
     ) -> Result<Option<Vec<u8>>, StorageError> {
+        validate_source_name(source_name)?;
         validate_checksum(expected_checksum)?;
-        let artifact_path = self.artifact_path(path);
+        let artifact_path = self.artifact_path(source_name, path);
         let contents = match fs::read(&artifact_path) {
             Ok(contents) => contents,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -203,11 +229,24 @@ impl ArtifactCache {
         }
     }
 
-    fn artifact_path(&self, path: &DistPath) -> PathBuf {
+    fn artifact_path(&self, source_name: &str, path: &DistPath) -> PathBuf {
         self.data_dir
             .join("rustup")
             .join("artifacts")
+            .join(source_name)
             .join(path.as_str())
+    }
+}
+
+fn validate_source_name(source_name: &str) -> Result<(), StorageError> {
+    if !source_name.is_empty()
+        && source_name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        Ok(())
+    } else {
+        Err(StorageError::InvalidSourceName(source_name.to_owned()))
     }
 }
 
