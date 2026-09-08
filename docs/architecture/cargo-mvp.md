@@ -31,8 +31,10 @@ Sparse Index 资源；
 适配器不引入第二个配置 endpoint，也不把 `base_url` 当作可转发任意 URL 的入口。
 crate 下载地址由该 proxy 的 `config.json` 中 `dl` 模板描述，因此 `dl` 可以指向
 同一 registry 根之外的固定 HTTP/HTTPS 地址，但必须经过对应 proxy 的配置读取和
-Stacktory 安全校验。真实私有或 Nexus proxy 的管理地址不一定就是 Cargo registry
-根地址，部署前必须确认其配置、Sparse Index 和 `dl` 资源布局。
+Stacktory 安全校验。校验会拒绝 loopback、私有、link-local、unspecified 和
+明显内部域名，不允许凭据、query、fragment 或路径穿越。真实私有或 Nexus proxy
+的管理地址不一定就是 Cargo registry 根地址，部署前必须确认其配置、Sparse Index
+和 `dl` 资源布局。
 
 Stacktory 对外的 `config.json` 不转发上游配置，而是生成唯一的 `dl` 模板：
 

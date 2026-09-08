@@ -93,6 +93,16 @@ fn rejects_registry_config_with_unsafe_download_url() {
         "https://download.example/{crate}/{version}?token=secret",
         "https://download.example/../{crate}/{version}",
         "ftp://download.example/{crate}/{version}",
+        "http://127.0.0.1/{crate}/{version}",
+        "http://10.0.0.1/{crate}/{version}",
+        "http://172.16.0.1/{crate}/{version}",
+        "http://192.168.0.1/{crate}/{version}",
+        "http://169.254.1.1/{crate}/{version}",
+        "http://0.0.0.0/{crate}/{version}",
+        "http://[::1]/{crate}/{version}",
+        "http://[::]/{crate}/{version}",
+        "https://localhost/{crate}/{version}",
+        "https://registry.internal/{crate}/{version}",
     ] {
         let source = format!(r#"{{"dl":"{dl}"}}"#);
         assert!(

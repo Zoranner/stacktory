@@ -133,7 +133,21 @@ impl CargoService {
                     line: 0,
                     error: "index is not UTF-8".to_owned(),
                 })
-                .and_then(|contents| parse_index_lines(contents).map(|_| ()));
+                .and_then(|contents| {
+                    parse_index_lines(contents).and_then(|records| {
+                        records
+                            .iter()
+                            .any(|record| {
+                                normalize_crate_name(&record.name)
+                                    .is_ok_and(|name| name == crate_name)
+                            })
+                            .then_some(())
+                            .ok_or_else(|| CargoIndexError::InvalidRecord {
+                                line: 0,
+                                error: "index does not contain the requested crate".to_owned(),
+                            })
+                    })
+                });
             if valid_cache.is_ok() {
                 return Ok(contents);
             }
@@ -253,10 +267,11 @@ impl CargoService {
                         continue;
                     }
                 },
-                Err(error) => {
+                Err(error) if is_retryable(&error) => {
                     failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
+                Err(error) => return Err(error.into()),
             };
             let download_url =
                 match render_download_url(&config.dl, &download_name, version, &expected) {

@@ -292,3 +292,136 @@ cargo build --release --locked
 - 尚未执行真实 crates.io、目标 Nexus Cargo proxy 或真实 Cargo 客户端联调；本地
   测试只验证单一 registry `base_url` 加 proxy `config.json` `dl` 模板的协议链路。
 - 仍不实现 Cargo Git Index、publish、push、数据库或其他生态。
+
+## Scoped Re-review 修复
+
+本轮针对 Cargo `config.json` terminal 4xx、`dl` host SSRF 和 index 缓存一致性
+继续修复。保持 Sparse registry 根路径、单一 source `base_url`、proxy `dl`
+marker、只读和无数据库边界，不增加多地址配置。
+
+### TDD 记录
+
+先补充并运行：
+
+```text
+cargo test --test cargo_index_test --test cargo_service_test
+```
+
+旧实现的 RED 结果包括：
+
+- proxy `config.json` 返回 404/403 时被错误收集为 `AllSourcesFailed` 并返回 502。
+- `dl` 指向 `127.0.0.1` 时被错误接受。
+- 合法但属于其他 crate 的 index 缓存被错误命中并直接返回。
+
+随后按失败原因分别修改实现。为使集成测试同时覆盖“公共 dl host”与本地 HTTP
+服务，测试构造了受控 DNS resolver，将公共测试域名解析到本地 listener；生产
+安全校验没有放宽 loopback 或私有地址限制。
+
+### 修复内容
+
+- config 4xx：读取每个 proxy 的 `config.json` 时，网络错误和 5xx 继续按来源失败
+  回退；401、403、404 等 terminal 状态立即返回对应 HTTP 状态。group 不绕过
+  terminal config 错误访问后续成员。
+- dl host SSRF：复用 SourcePool 的 URL 安全 helper，允许配置声明的公共跨 host
+  地址，拒绝 loopback、私有、link-local、unspecified、IPv4-mapped loopback、
+  `localhost` 和明显内部域名，并继续拒绝凭据、query、fragment、编码路径、反斜杠
+  和路径穿越。
+- index 缓存一致性：缓存命中时增加当前请求 crate 的规范化 name 检查；错误 crate
+  缓存删除后重新从 SourcePool 获取。
+- 新增并覆盖 config 404/403、group terminal 不回退、公共 host marker 下载、
+  内部目标拒绝、错误 crate 缓存恢复和存储错误 500 边界。
+
+### 本轮验证
+
+Focused 结果：
+
+```text
+cargo test --test cargo_index_test --test cargo_service_test
+```
+
+index 9 项、service 14 项全部通过。最终门禁已执行：
+
+```text
+cargo fmt --all
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
+cargo build --release --locked
+```
+
+上述命令全部通过。
+
+### 本轮剩余 concern
+
+- 尚未执行真实 crates.io、目标 Nexus Cargo proxy 或真实 Cargo 客户端联调；当前
+  证据覆盖的是本地 HTTP 上游、单一 registry `base_url`、proxy `config.json`
+  `dl` 模板和静态可识别的公共/内部 host 边界。
+- 没有执行 DNS 解析来判断任意公共域名最终是否解析到私有地址，真实部署仍需配合
+  网络出口策略。
+- 仍不实现 Cargo Git Index、publish、push、数据库或其他生态。
+
+## Scoped Re-review 修复
+
+本轮针对 Cargo Task 4 的 scoped re-review findings 继续修复，仍基于单一 source
+`base_url`、proxy `config.json` `dl` 模板和只读代理边界，没有增加多地址配置。
+
+### TDD 记录
+
+先补充回归测试并运行：
+
+```text
+cargo test --test cargo_index_test --test cargo_service_test
+```
+
+旧实现的 RED 结果包括：
+
+- `config.json` 返回 404/403 时被收集为 `AllSourcesFailed`，最终响应为 502。
+- `dl` 指向 `127.0.0.1` 时被错误接受。
+- 合法但属于其他 crate 的 index 缓存被错误命中并直接返回。
+
+随后实现对应修复，并在调试过程中将本地测试 listener 与公共 dl host 分离，避免
+为了测试下载成功而放宽生产 SSRF 防线。最终 focused 测试全部通过。
+
+### 修复内容
+
+- config 4xx：Cargo crate 下载读取 proxy `config.json` 时，只有网络错误和 5xx
+  作为可回退来源失败；401、403、404 等 terminal 状态立即返回对应 HTTP 状态。
+  group 不会绕过 terminal config 4xx 继续访问后续成员。
+- dl host SSRF：复用 SourcePool 的安全 URL helper，允许经过 proxy config 声明的
+  公共跨 host HTTP/HTTPS 地址，同时拒绝 loopback、私有、link-local、unspecified
+  IP、IPv4-mapped loopback、`localhost` 及明显内部域名，并继续拒绝凭据、query、
+  fragment、编码路径、反斜杠和路径穿越。
+- index 缓存一致性：缓存命中时除了解析 JSON Lines、SemVer 和 checksum，还确认
+  至少有一条记录的规范化 name 等于当前请求 crate；错误 crate 缓存会删除并重新
+  通过 SourcePool 获取。
+- 测试补充 config 404/403、group terminal 不回退、公共 dl host marker 下载、
+  内部目标拒绝和错误 crate 缓存恢复。
+
+### 验证
+
+本轮 focused 结果：
+
+```text
+cargo test --test cargo_index_test --test cargo_service_test
+```
+
+index 9 项、service 14 项全部通过。最终门禁执行：
+
+```text
+cargo fmt --all
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
+cargo build --release --locked
+```
+
+上述命令全部通过。
+
+### Scoped re-review concerns
+
+- 尚未执行真实 crates.io、目标 Nexus Cargo proxy 或真实 Cargo 客户端联调；当前
+  证据覆盖的是本地 HTTP 上游、单一 registry `base_url`、proxy `config.json`
+  `dl` 模板和受限公共跨 host 请求。
+- 当前拒绝的是可静态识别的内部目标；没有执行 DNS 解析来判断任意公共域名最终是否
+  解析到私有地址，真实部署仍需配合网络出口策略。
+- 仍不实现 Cargo Git Index、publish、push、数据库或其他生态。

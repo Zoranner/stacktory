@@ -274,20 +274,7 @@ fn sparse_prefix(crate_name: &str) -> String {
 }
 
 fn validate_download_url(url: &Url) -> Result<(), CargoConfigError> {
-    if !matches!(url.scheme(), "http" | "https")
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-        || url.path().contains('\\')
-        || url.path().contains('%')
-        || url.path().chars().any(char::is_control)
-        || url
-            .path()
-            .split('/')
-            .any(|segment| matches!(segment, "." | ".."))
-    {
+    if !crate::sources::pool::is_safe_configured_url(url) {
         return Err(CargoConfigError::InvalidDownloadTemplate(url.to_string()));
     }
     Ok(())

@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{net::SocketAddr, time::Duration};
 
 use reqwest::redirect::Policy;
 use thiserror::Error;
@@ -23,7 +23,15 @@ pub(crate) enum FetchError {
 
 impl HttpFetcher {
     pub(crate) fn new() -> Result<Self, FetchError> {
-        let client = reqwest::Client::builder()
+        Self::build_client(reqwest::Client::builder())
+    }
+
+    pub(crate) fn new_with_resolver(host: &str, address: SocketAddr) -> Result<Self, FetchError> {
+        Self::build_client(reqwest::Client::builder().resolve(host, address))
+    }
+
+    fn build_client(builder: reqwest::ClientBuilder) -> Result<Self, FetchError> {
+        let client = builder
             .redirect(Policy::none())
             .timeout(Duration::from_secs(30))
             .build()?;

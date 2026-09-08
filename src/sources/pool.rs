@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+};
 
 use thiserror::Error;
 use url::Url;
@@ -49,12 +52,32 @@ pub enum SourcePoolError {
 
 impl SourcePool {
     pub fn new(ecosystem: impl Into<String>, graph: SourceGraph) -> Result<Self, SourcePoolError> {
+        Self::with_fetcher(ecosystem, graph, HttpFetcher::new())
+    }
+
+    pub fn new_with_resolver(
+        ecosystem: impl Into<String>,
+        graph: SourceGraph,
+        host: &str,
+        address: SocketAddr,
+    ) -> Result<Self, SourcePoolError> {
+        Self::with_fetcher(
+            ecosystem,
+            graph,
+            HttpFetcher::new_with_resolver(host, address),
+        )
+    }
+
+    fn with_fetcher(
+        ecosystem: impl Into<String>,
+        graph: SourceGraph,
+        fetcher: Result<HttpFetcher, crate::sources::fetcher::FetchError>,
+    ) -> Result<Self, SourcePoolError> {
         Ok(Self {
             ecosystem: ecosystem.into(),
             graph,
             fetcher: Arc::new(
-                HttpFetcher::new()
-                    .map_err(|error| SourcePoolError::FetcherBuild(error.to_string()))?,
+                fetcher.map_err(|error| SourcePoolError::FetcherBuild(error.to_string()))?,
             ),
         })
     }
@@ -176,13 +199,16 @@ fn source_url(source: &SourceConfig, request_key: &str) -> Result<Url, SourcePoo
 }
 
 fn valid_configured_url(source: &SourceConfig, url: &Url) -> bool {
+    is_safe_configured_url(url) && (!source.require_https || url.scheme() == "https")
+}
+
+pub(crate) fn is_safe_configured_url(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https")
-        && url.host_str().is_some()
+        && url.host_str().is_some_and(is_public_host)
         && url.username().is_empty()
         && url.password().is_none()
         && url.query().is_none()
         && url.fragment().is_none()
-        && (!source.require_https || url.scheme() == "https")
         && !url.path().contains('\\')
         && !url.path().contains('%')
         && !url.path().chars().any(char::is_control)
@@ -190,4 +216,49 @@ fn valid_configured_url(source: &SourceConfig, url: &Url) -> bool {
             .path()
             .split('/')
             .any(|segment| matches!(segment, "." | ".."))
+}
+
+fn is_public_host(host: &str) -> bool {
+    let host = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.ends_with(".internal")
+        || host.ends_with(".lan")
+        || host.ends_with(".home.arpa")
+    {
+        return false;
+    }
+    host.parse::<IpAddr>()
+        .map(|address| !is_private_or_local_address(address))
+        .unwrap_or(true)
+}
+
+fn is_private_or_local_address(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(address) => {
+            let [first, second, ..] = address.octets();
+            first == 0
+                || first == 10
+                || first == 127
+                || (first == 169 && second == 254)
+                || (first == 172 && (16..=31).contains(&second))
+                || (first == 192 && second == 168)
+                || (first == 100 && (64..=127).contains(&second))
+                || (first == 198 && (18..=19).contains(&second))
+        }
+        IpAddr::V6(address) => {
+            address.is_loopback()
+                || address.is_unspecified()
+                || (address.segments()[0] & 0xfe00) == 0xfc00
+                || (address.segments()[0] & 0xffc0) == 0xfe80
+                || address
+                    .to_ipv4_mapped()
+                    .is_some_and(|mapped| is_private_or_local_address(IpAddr::V4(mapped)))
+        }
+    }
 }
