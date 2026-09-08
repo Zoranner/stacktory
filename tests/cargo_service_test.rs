@@ -82,6 +82,12 @@ async fn cargo_group_serves_index_and_crate_with_fallback() {
             .expect("crate body"),
         crate_body
     );
+    let audit = std::fs::read_to_string(data_dir.path().join("audit/events.jsonl"))
+        .expect("cargo audit log");
+    assert!(audit.contains(r#""ecosystem":"cargo""#));
+    assert!(audit.contains(r#""entry_name":"group""#));
+    assert!(audit.contains(r#""object_key":"se/rd/serde""#));
+    assert!(audit.contains(r#""selected_proxy":"second""#));
 }
 
 #[tokio::test]
@@ -140,6 +146,136 @@ async fn cargo_group_uses_first_proxy_config_and_dl_template() {
         &b"serde crate from first proxy"[..]
     );
     assert_eq!(second_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn private_source_404_falls_back_to_public_source() {
+    let crate_body = b"crate from public source".to_vec();
+    let crate_hash = format!("{:x}", Sha256::digest(&crate_body));
+    let index_body = valid_index_body(std::str::from_utf8(&crate_body).expect("crate UTF-8"));
+    let private = start_server(Router::new().route(
+        "/se/rd/serde",
+        get({
+            let index_body = index_body.clone();
+            move || {
+                let index_body = index_body.clone();
+                async move { index_body }
+            }
+        }),
+    ))
+    .await;
+    let (_public, public_address) = start_configured_server_with_host(
+        index_body,
+        crate_body.clone(),
+        &crate_hash,
+        "public.example",
+    )
+    .await;
+    let public_source = Url::parse(&format!("http://public.example:{}", public_address.port()))
+        .expect("public source");
+    let data_dir = tempdir().expect("data directory");
+    let registry = AdapterRegistry::new()
+        .with_adapter(
+            "cargo",
+            Arc::new(
+                SourcePool::new_with_resolver(
+                    "cargo",
+                    SourceGraph::new(vec![
+                        proxy("private", private.as_str()),
+                        proxy("public", public_source.as_str()),
+                        group("group", &["private", "public"]),
+                    ])
+                    .expect("source graph"),
+                    "public.example",
+                    public_address,
+                )
+                .expect("source pool"),
+            ),
+            Arc::new(CargoAdapter::new(
+                Url::parse("http://127.0.0.1:18761").expect("root URL"),
+                data_dir.path(),
+            )),
+        )
+        .expect("registry");
+
+    let response = router_with_registry(registry)
+        .oneshot(get_request("/mirror/cargo/group/crates/serde/1.0.0.crate"))
+        .await
+        .expect("fallback response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("crate body"),
+        crate_body
+    );
+}
+
+#[tokio::test]
+async fn cargo_affinity_starts_at_index_source_and_updates_after_checksum_fallback() {
+    let expected_body = b"crate from second source".to_vec();
+    let expected_hash = format!("{:x}", Sha256::digest(&expected_body));
+    let index_body = valid_index_body(std::str::from_utf8(&expected_body).expect("crate UTF-8"));
+    let (first, first_address) = start_configured_server_with_host(
+        index_body.clone(),
+        b"tampered".to_vec(),
+        &expected_hash,
+        "127.0.0.1",
+    )
+    .await;
+    let (second, second_address) = start_configured_server_with_host(
+        index_body,
+        expected_body.clone(),
+        &expected_hash,
+        "127.0.0.1",
+    )
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let registry = AdapterRegistry::new()
+        .with_adapter(
+            "cargo",
+            Arc::new(
+                SourcePool::new(
+                    "cargo",
+                    SourceGraph::new(vec![
+                        proxy("first", first.as_str()),
+                        proxy("second", second.as_str()),
+                        group("group", &["first", "second"]),
+                    ])
+                    .expect("source graph"),
+                )
+                .expect("source pool"),
+            ),
+            Arc::new(CargoAdapter::new(
+                Url::parse("http://127.0.0.1:18761").expect("root URL"),
+                data_dir.path(),
+            )),
+        )
+        .expect("registry");
+
+    let response = router_with_registry(registry)
+        .oneshot(get_request("/mirror/cargo/group/crates/serde/1.0.0.crate"))
+        .await
+        .expect("affinity response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("crate body"),
+        expected_body
+    );
+    assert_eq!(
+        std::fs::read_to_string(
+            data_dir
+                .path()
+                .join("cargo/metadata/group/index/se/rd/serde.source")
+        )
+        .expect("selected proxy sidecar"),
+        "second\n"
+    );
+    let _ = (first_address, second_address);
 }
 
 #[tokio::test]
@@ -332,7 +468,7 @@ async fn cargo_upstream_forbidden_preserves_forbidden_status() {
     let address = listener.local_addr().expect("address");
     let expected_hash = format!("{:x}", Sha256::digest(b"expected crate"));
     let dl = format!(
-        "http://download.example:{}/download/{{lowerprefix}}{{crate}}/{{version}}/{{sha256-checksum}}",
+        "http://download.example:{}/download/{{lowerprefix}}/{{crate}}/{{version}}/{{sha256-checksum}}",
         address.port()
     );
     let download_path = format!("/download/se/rd/serde/1.0.0/{expected_hash}");
@@ -394,7 +530,7 @@ async fn cargo_upstream_forbidden_preserves_forbidden_status() {
 }
 
 #[tokio::test]
-async fn cargo_group_config_not_found_is_terminal_and_does_not_fallback() {
+async fn cargo_group_config_not_found_returns_not_found_after_all_members_miss() {
     let index_body = valid_index_body("expected crate");
     let first = start_server(Router::new().route(
         "/se/rd/serde",
@@ -414,7 +550,7 @@ async fn cargo_group_config_not_found_is_terminal_and_does_not_fallback() {
             let second_hits = second_hits.clone();
             async move {
                 second_hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                StatusCode::BAD_GATEWAY
+                StatusCode::NOT_FOUND
             }
         })
     })
@@ -448,7 +584,7 @@ async fn cargo_group_config_not_found_is_terminal_and_does_not_fallback() {
         .expect("config 404 response");
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    assert_eq!(second_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(second_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -640,11 +776,26 @@ async fn start_configured_server(
     crate_body: Vec<u8>,
     download_checksum: &str,
 ) -> (Url, SocketAddr) {
+    start_configured_server_with_host(
+        index_body,
+        crate_body,
+        download_checksum,
+        "download.example",
+    )
+    .await
+}
+
+async fn start_configured_server_with_host(
+    index_body: String,
+    crate_body: Vec<u8>,
+    download_checksum: &str,
+    download_host: &str,
+) -> (Url, SocketAddr) {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
     let address = listener.local_addr().expect("address");
     let download_path = format!("/download/se/rd/serde/1.0.0/{download_checksum}");
     let dl = format!(
-        "http://download.example:{}/download/{{lowerprefix}}{{crate}}/{{version}}/{{sha256-checksum}}",
+        "http://{download_host}:{}/download/{{lowerprefix}}/{{crate}}/{{version}}/{{sha256-checksum}}",
         address.port()
     );
     let router = Router::new()

@@ -116,6 +116,35 @@ pub fn render_download_url(
     version: &str,
     checksum: &str,
 ) -> Result<Url, CargoConfigError> {
+    render_download_url_with_context(template, crate_name, version, checksum, None, false)
+}
+
+pub fn render_download_url_for_source(
+    template: &str,
+    crate_name: &str,
+    version: &str,
+    checksum: &str,
+    base_url: &Url,
+    require_https: bool,
+) -> Result<Url, CargoConfigError> {
+    render_download_url_with_context(
+        template,
+        crate_name,
+        version,
+        checksum,
+        Some(base_url),
+        require_https,
+    )
+}
+
+fn render_download_url_with_context(
+    template: &str,
+    crate_name: &str,
+    version: &str,
+    checksum: &str,
+    base_url: Option<&Url>,
+    require_https: bool,
+) -> Result<Url, CargoConfigError> {
     validate_crate_name(crate_name)?;
     validate_version(version)?;
     if checksum.len() != 64 || !checksum.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -125,8 +154,8 @@ pub fn render_download_url(
     }
 
     let lower_name = normalize_crate_name(crate_name)?;
-    let prefix = sparse_prefix(crate_name);
-    let lower_prefix = sparse_prefix(&lower_name);
+    let prefix = sparse_prefix(crate_name)?;
+    let lower_prefix = sparse_prefix(&lower_name)?;
     let replacements = [
         ("{crate}", crate_name),
         ("{version}", version),
@@ -155,7 +184,7 @@ pub fn render_download_url(
     }
     let url = Url::parse(&expanded)
         .map_err(|error| CargoConfigError::InvalidDownloadTemplate(error.to_string()))?;
-    validate_download_url(&url)?;
+    validate_download_url(&url, base_url, require_https)?;
     Ok(url)
 }
 
@@ -263,18 +292,28 @@ fn replace_template_markers(
     Ok(result)
 }
 
-fn sparse_prefix(crate_name: &str) -> String {
+pub fn sparse_prefix(crate_name: &str) -> Result<String, CargoPathError> {
+    validate_crate_name(crate_name)?;
     let bytes = crate_name.as_bytes();
-    match bytes.len() {
-        1 => "1/".to_owned(),
-        2 => "2/".to_owned(),
-        3 => format!("3/{}/", &crate_name[..1]),
-        _ => format!("{}/{}/", &crate_name[..2], &crate_name[2..4]),
-    }
+    Ok(match bytes.len() {
+        1 => "1".to_owned(),
+        2 => "2".to_owned(),
+        3 => format!("3/{}", &crate_name[..1]),
+        _ => format!("{}/{}", &crate_name[..2], &crate_name[2..4]),
+    })
 }
 
-fn validate_download_url(url: &Url) -> Result<(), CargoConfigError> {
-    if !crate::sources::pool::is_safe_configured_url(url) {
+fn validate_download_url(
+    url: &Url,
+    base_url: Option<&Url>,
+    require_https: bool,
+) -> Result<(), CargoConfigError> {
+    let safe = base_url
+        .map(|base| {
+            crate::sources::pool::is_safe_configured_url_for_source(base, require_https, url)
+        })
+        .unwrap_or_else(|| crate::sources::pool::is_safe_configured_url(url));
+    if !safe {
         return Err(CargoConfigError::InvalidDownloadTemplate(url.to_string()));
     }
     Ok(())

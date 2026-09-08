@@ -29,6 +29,31 @@ struct AuditEvent<'a> {
     event: &'a str,
     target: &'a str,
     outcome: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ecosystem: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    entry_name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    object_key: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected_proxy: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    object_type: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_status: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure_category: Option<&'a str>,
+}
+
+#[derive(Default)]
+pub struct AuditDetails<'a> {
+    pub ecosystem: Option<&'a str>,
+    pub entry_name: Option<&'a str>,
+    pub object_key: Option<&'a str>,
+    pub selected_proxy: Option<&'a str>,
+    pub object_type: Option<&'a str>,
+    pub cache_status: Option<&'a str>,
+    pub failure_category: Option<&'a str>,
 }
 
 impl AuditSink {
@@ -40,6 +65,16 @@ impl AuditSink {
     }
 
     pub fn record(&self, event: &str, target: &str, outcome: &str) -> Result<(), AuditError> {
+        self.record_detailed(event, target, outcome, AuditDetails::default())
+    }
+
+    pub fn record_detailed(
+        &self,
+        event: &str,
+        target: &str,
+        outcome: &str,
+        details: AuditDetails<'_>,
+    ) -> Result<(), AuditError> {
         let _guard = self
             .write_lock
             .lock()
@@ -60,6 +95,13 @@ impl AuditSink {
                 event,
                 target,
                 outcome,
+                ecosystem: details.ecosystem,
+                entry_name: details.entry_name,
+                object_key: details.object_key,
+                selected_proxy: details.selected_proxy,
+                object_type: details.object_type,
+                cache_status: details.cache_status,
+                failure_category: details.failure_category,
             },
         )?;
         file.write_all(b"\n")?;

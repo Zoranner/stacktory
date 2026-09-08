@@ -47,6 +47,7 @@ pub enum SourcePoolError {
         entry_name: String,
         request_key: String,
         failures: String,
+        status: Option<u16>,
     },
 }
 
@@ -92,6 +93,12 @@ impl SourcePool {
             .map(|members| members.into_iter().cloned().collect())
     }
 
+    pub fn is_group(&self, entry_name: &str) -> bool {
+        self.graph
+            .get(entry_name)
+            .is_some_and(|source| source.source_type == crate::SourceType::Group)
+    }
+
     pub async fn fetch(
         &self,
         entry_name: &str,
@@ -101,8 +108,14 @@ impl SourcePool {
         let members = self
             .proxy_members(entry_name)
             .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
+        let is_group = self
+            .graph
+            .get(entry_name)
+            .is_some_and(|source| source.source_type == crate::SourceType::Group);
         let request_key = normalize_request_key(request_key)?;
         let mut failures = Vec::new();
+        let mut saw_failure = false;
+        let mut all_not_found = true;
 
         for source in members {
             let url = source_url(&source, &request_key)?;
@@ -117,12 +130,20 @@ impl SourcePool {
                     });
                 }
                 Err(error) if error.is_retryable() => {
+                    saw_failure = true;
+                    all_not_found = false;
                     failures.push(format!("{}: {error}", source.name));
                 }
                 Err(error) => {
+                    let status = error.status_code().unwrap_or_default();
+                    if is_group && status == 404 {
+                        saw_failure = true;
+                        failures.push(format!("{}: {error}", source.name));
+                        continue;
+                    }
                     return Err(SourcePoolError::TerminalSourceError {
                         source_name: source.name,
-                        status: error.status_code().unwrap_or_default(),
+                        status,
                         error: error.to_string(),
                     });
                 }
@@ -133,6 +154,7 @@ impl SourcePool {
             entry_name: entry_name.to_owned(),
             request_key,
             failures: failures.join("; "),
+            status: (is_group && saw_failure && all_not_found).then_some(404),
         })
     }
 
@@ -158,6 +180,7 @@ impl SourcePool {
                 entry_name: source_name.to_owned(),
                 request_key: url.path().to_owned(),
                 failures: error.to_string(),
+                status: None,
             }),
             Err(error) => Err(SourcePoolError::TerminalSourceError {
                 source_name: source_name.to_owned(),
@@ -199,7 +222,9 @@ fn source_url(source: &SourceConfig, request_key: &str) -> Result<Url, SourcePoo
 }
 
 fn valid_configured_url(source: &SourceConfig, url: &Url) -> bool {
-    is_safe_configured_url(url) && (!source.require_https || url.scheme() == "https")
+    source.base_url.as_ref().is_some_and(|base_url| {
+        is_safe_configured_url_for_source(base_url, source.require_https, url)
+    })
 }
 
 pub(crate) fn is_safe_configured_url(url: &Url) -> bool {
@@ -216,6 +241,48 @@ pub(crate) fn is_safe_configured_url(url: &Url) -> bool {
             .path()
             .split('/')
             .any(|segment| matches!(segment, "." | ".."))
+}
+
+pub(crate) fn is_safe_configured_url_for_source(
+    base_url: &Url,
+    require_https: bool,
+    url: &Url,
+) -> bool {
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || (require_https && url.scheme() != "https")
+        || url.path().contains('\\')
+        || url.path().contains('%')
+        || url.path().chars().any(char::is_control)
+        || url
+            .path()
+            .split('/')
+            .any(|segment| matches!(segment, "." | ".."))
+    {
+        return false;
+    }
+
+    if same_origin(base_url, url) {
+        return path_is_within(base_url.path(), url.path());
+    }
+    is_public_host(url.host_str().unwrap_or_default())
+}
+
+fn same_origin(left: &Url, right: &Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
+fn path_is_within(base_path: &str, candidate_path: &str) -> bool {
+    let base_path = base_path.trim_end_matches('/');
+    base_path.is_empty()
+        || candidate_path == base_path
+        || candidate_path.starts_with(&format!("{base_path}/"))
 }
 
 fn is_public_host(host: &str) -> bool {

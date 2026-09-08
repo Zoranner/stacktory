@@ -17,6 +17,7 @@ use url::Url;
 
 use crate::{
     SourcePool,
+    audit::{AuditDetails, AuditSink},
     sources::registry::{Adapter, AdapterFuture},
     sources::{FetchOperation, SourcePoolError},
 };
@@ -24,7 +25,7 @@ use crate::{
 use super::{
     index::{
         CargoIndexError, download_template, parse_index_lines, parse_registry_config,
-        render_download_url, rewrite_index_lines, sparse_path_for_request,
+        render_download_url_for_source, rewrite_index_lines, sparse_path_for_request,
     },
     path::{CargoPath, CargoPathError, normalize_crate_name, validate_version},
 };
@@ -38,6 +39,13 @@ pub struct CargoAdapter {
 pub struct CargoService {
     root_url: Url,
     data_dir: PathBuf,
+    audit: AuditSink,
+}
+
+#[derive(Debug)]
+struct IndexSnapshot {
+    body: Vec<u8>,
+    selected_proxy: String,
 }
 
 #[derive(Debug, Error)]
@@ -68,9 +76,11 @@ impl CargoAdapter {
 
 impl CargoService {
     pub fn new(root_url: Url, data_dir: impl Into<PathBuf>) -> Self {
+        let data_dir = data_dir.into();
         Self {
             root_url,
-            data_dir: data_dir.into(),
+            audit: AuditSink::new(data_dir.clone()),
+            data_dir,
         }
     }
 
@@ -100,7 +110,7 @@ impl CargoService {
         }
         if let Ok((crate_name, _)) = sparse_path_for_request(path) {
             let body = self.index(entry_name, path, &crate_name, pool).await?;
-            return Ok(("application/json", body));
+            return Ok(("application/json", body.body));
         }
         if let Some(crate_path) = path.strip_prefix("crates/") {
             let (crate_name, version) = parse_crate_request(crate_path)?;
@@ -125,37 +135,62 @@ impl CargoService {
         index_path: &str,
         crate_name: &str,
         pool: &SourcePool,
-    ) -> Result<Vec<u8>, CargoError> {
+    ) -> Result<IndexSnapshot, CargoError> {
         let cache_path = self.metadata_path(entry_name, index_path);
+        let sidecar_path = self.metadata_sidecar_path(entry_name, index_path);
         if let Some(contents) = read_if_present(&cache_path)? {
-            let valid_cache = std::str::from_utf8(&contents)
-                .map_err(|_| CargoIndexError::InvalidRecord {
-                    line: 0,
-                    error: "index is not UTF-8".to_owned(),
-                })
-                .and_then(|contents| {
-                    parse_index_lines(contents).and_then(|records| {
-                        records
-                            .iter()
-                            .any(|record| {
-                                normalize_crate_name(&record.name)
-                                    .is_ok_and(|name| name == crate_name)
-                            })
-                            .then_some(())
-                            .ok_or_else(|| CargoIndexError::InvalidRecord {
-                                line: 0,
-                                error: "index does not contain the requested crate".to_owned(),
-                            })
+            let selected_proxy = read_if_present(&sidecar_path)?
+                .and_then(|contents| String::from_utf8(contents).ok())
+                .map(|contents| contents.trim().to_owned())
+                .filter(|source_name| {
+                    pool.proxy_members(entry_name).is_some_and(|members| {
+                        members.iter().any(|member| member.name == *source_name)
                     })
                 });
-            if valid_cache.is_ok() {
-                return Ok(contents);
+            let valid_cache = std::str::from_utf8(&contents)
+                .ok()
+                .and_then(|contents| parse_index_lines(contents).ok())
+                .is_some_and(|records| {
+                    records.iter().any(|record| {
+                        normalize_crate_name(&record.name).is_ok_and(|name| name == crate_name)
+                    })
+                });
+            if let Some(selected_proxy) = selected_proxy.filter(|_| valid_cache) {
+                self.record_cargo(
+                    "cargo_index_read",
+                    entry_name,
+                    index_path,
+                    CargoAuditDetails {
+                        selected_proxy: Some(&selected_proxy),
+                        object_type: "index",
+                        cache_status: "hit",
+                        failure_category: None,
+                    },
+                );
+                return Ok(IndexSnapshot {
+                    body: contents,
+                    selected_proxy,
+                });
             }
             fs::remove_file(&cache_path)?;
+            let _ = fs::remove_file(&sidecar_path);
+            self.record_cargo(
+                "cargo_index_cache_invalid",
+                entry_name,
+                index_path,
+                CargoAuditDetails {
+                    selected_proxy: None,
+                    object_type: "index",
+                    cache_status: "miss",
+                    failure_category: Some("invalid_cache"),
+                },
+            );
         }
 
         let request_key = index_path.to_owned();
         let mut failures = Vec::new();
+        let mut saw_failure = false;
+        let mut all_not_found = true;
         for member in pool
             .proxy_members(entry_name)
             .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?
@@ -186,6 +221,8 @@ impl CargoService {
                                 normalize_crate_name(&record.name)
                                     .is_ok_and(|name| name == crate_name)
                             }) {
+                                saw_failure = true;
+                                all_not_found = false;
                                 failures.push(format!(
                                     "{}: index does not contain the requested crate",
                                     member.name
@@ -193,22 +230,69 @@ impl CargoService {
                                 continue;
                             }
                             atomic_write(&cache_path, &contents)?;
-                            return Ok(contents);
+                            atomic_write(
+                                &sidecar_path,
+                                format!("{}\n", response.source_name).as_bytes(),
+                            )?;
+                            self.record_cargo(
+                                "cargo_index_published",
+                                entry_name,
+                                index_path,
+                                CargoAuditDetails {
+                                    selected_proxy: Some(&response.source_name),
+                                    object_type: "index",
+                                    cache_status: "published",
+                                    failure_category: None,
+                                },
+                            );
+                            return Ok(IndexSnapshot {
+                                body: contents,
+                                selected_proxy: response.source_name,
+                            });
                         }
-                        Err(error) => failures.push(format!("{}: {error}", member.name)),
+                        Err(error) => {
+                            saw_failure = true;
+                            all_not_found = false;
+                            failures.push(format!("{}: {error}", member.name));
+                        }
                     }
                 }
                 Err(error) if is_retryable(&error) => {
+                    saw_failure = true;
+                    all_not_found = false;
+                    failures.push(format!("{}: {error}", member.name));
+                }
+                Err(error)
+                    if terminal_status(&error) == Some(404) && is_group_entry(pool, entry_name) =>
+                {
+                    saw_failure = true;
                     failures.push(format!("{}: {error}", member.name));
                 }
                 Err(error) => return Err(error.into()),
             }
         }
 
+        self.record_cargo(
+            "cargo_index_fetch_failed",
+            entry_name,
+            index_path,
+            CargoAuditDetails {
+                selected_proxy: None,
+                object_type: "index",
+                cache_status: "failed",
+                failure_category: Some(if saw_failure && all_not_found {
+                    "not_found"
+                } else {
+                    "source_failed"
+                }),
+            },
+        );
         Err(SourcePoolError::AllSourcesFailed {
             entry_name: entry_name.to_owned(),
             request_key,
             failures: failures.join("; "),
+            status: (is_group_entry(pool, entry_name) && saw_failure && all_not_found)
+                .then_some(404),
         }
         .into())
     }
@@ -221,10 +305,10 @@ impl CargoService {
         pool: &SourcePool,
     ) -> Result<Vec<u8>, CargoError> {
         let index_path = super::path::sparse_index_path(crate_name)?;
-        let index = self
+        let snapshot = self
             .index(entry_name, &index_path, crate_name, pool)
             .await?;
-        let records = parse_index_lines(std::str::from_utf8(&index).map_err(|_| {
+        let records = parse_index_lines(std::str::from_utf8(&snapshot.body).map_err(|_| {
             CargoIndexError::InvalidRecord {
                 line: 0,
                 error: "index is not UTF-8".to_owned(),
@@ -245,6 +329,17 @@ impl CargoService {
         let cache_path = self.artifact_path(entry_name, crate_name, version);
         if let Some(contents) = read_if_present(&cache_path)? {
             if checksum(&contents).eq_ignore_ascii_case(&expected) {
+                self.record_cargo(
+                    "cargo_artifact_read",
+                    entry_name,
+                    &format!("crates/{crate_name}/{version}.crate"),
+                    CargoAuditDetails {
+                        selected_proxy: Some(&snapshot.selected_proxy),
+                        object_type: "artifact",
+                        cache_status: "hit",
+                        failure_category: None,
+                    },
+                );
                 return Ok(contents);
             }
             fs::remove_file(&cache_path)?;
@@ -252,10 +347,31 @@ impl CargoService {
 
         let request_key = format!("crates/{crate_name}/{version}.crate");
         let mut failures = Vec::new();
-        for member in pool
+        let mut members = pool
             .proxy_members(entry_name)
-            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?
+            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
+        if let Some(position) = members
+            .iter()
+            .position(|member| member.name == snapshot.selected_proxy)
         {
+            let selected = members.remove(position);
+            members.insert(0, selected);
+        }
+        let is_group = is_group_entry(pool, entry_name);
+        let mut saw_failure = false;
+        let mut all_not_found = true;
+        self.record_cargo(
+            "cargo_artifact_read",
+            entry_name,
+            &request_key,
+            CargoAuditDetails {
+                selected_proxy: Some(&snapshot.selected_proxy),
+                object_type: "artifact",
+                cache_status: "miss",
+                failure_category: None,
+            },
+        );
+        for member in members {
             let config = match pool
                 .fetch(&member.name, "config.json", FetchOperation::Get)
                 .await
@@ -263,44 +379,162 @@ impl CargoService {
                 Ok(response) => match parse_registry_config(&response.body) {
                     Ok(config) => config,
                     Err(error) => {
+                        saw_failure = true;
+                        all_not_found = false;
+                        self.record_cargo(
+                            "cargo_artifact_fallback",
+                            entry_name,
+                            &request_key,
+                            CargoAuditDetails {
+                                selected_proxy: Some(&member.name),
+                                object_type: "artifact",
+                                cache_status: "fallback",
+                                failure_category: Some("invalid_config"),
+                            },
+                        );
                         failures.push(format!("{}: {error}", member.name));
                         continue;
                     }
                 },
                 Err(error) if is_retryable(&error) => {
+                    saw_failure = true;
+                    all_not_found = false;
+                    self.record_cargo(
+                        "cargo_artifact_fallback",
+                        entry_name,
+                        &request_key,
+                        CargoAuditDetails {
+                            selected_proxy: Some(&member.name),
+                            object_type: "artifact",
+                            cache_status: "fallback",
+                            failure_category: Some("source_unavailable"),
+                        },
+                    );
+                    failures.push(format!("{}: {error}", member.name));
+                    continue;
+                }
+                Err(error) if terminal_status(&error) == Some(404) && is_group => {
+                    saw_failure = true;
+                    self.record_cargo(
+                        "cargo_artifact_fallback",
+                        entry_name,
+                        &request_key,
+                        CargoAuditDetails {
+                            selected_proxy: Some(&member.name),
+                            object_type: "artifact",
+                            cache_status: "fallback",
+                            failure_category: Some("not_found"),
+                        },
+                    );
                     failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
                 Err(error) => return Err(error.into()),
             };
-            let download_url =
-                match render_download_url(&config.dl, &download_name, version, &expected) {
-                    Ok(url) => url,
-                    Err(error) => {
-                        failures.push(format!("{}: {error}", member.name));
-                        continue;
-                    }
-                };
+            let download_url = match render_download_url_for_source(
+                &config.dl,
+                &download_name,
+                version,
+                &expected,
+                member
+                    .base_url
+                    .as_ref()
+                    .expect("validated proxy source must have a base URL"),
+                member.require_https,
+            ) {
+                Ok(url) => url,
+                Err(error) => {
+                    saw_failure = true;
+                    all_not_found = false;
+                    failures.push(format!("{}: {error}", member.name));
+                    continue;
+                }
+            };
             match pool.fetch_configured_url(&member.name, download_url).await {
                 Ok(response) if checksum(&response.body).eq_ignore_ascii_case(&expected) => {
                     atomic_write(&cache_path, &response.body)?;
+                    atomic_write(
+                        &self.metadata_sidecar_path(entry_name, &index_path),
+                        format!("{}\n", member.name).as_bytes(),
+                    )?;
+                    self.record_cargo(
+                        "cargo_artifact_published",
+                        entry_name,
+                        &request_key,
+                        CargoAuditDetails {
+                            selected_proxy: Some(&member.name),
+                            object_type: "artifact",
+                            cache_status: "published",
+                            failure_category: None,
+                        },
+                    );
                     return Ok(response.body);
                 }
                 Ok(_) => failures.push(format!(
                     "{}: checksum mismatch for {crate_name} {version}",
                     member.name
                 )),
+                Err(error) if terminal_status(&error) == Some(404) && is_group => {
+                    saw_failure = true;
+                    self.record_cargo(
+                        "cargo_artifact_fallback",
+                        entry_name,
+                        &request_key,
+                        CargoAuditDetails {
+                            selected_proxy: Some(&member.name),
+                            object_type: "artifact",
+                            cache_status: "fallback",
+                            failure_category: Some("not_found"),
+                        },
+                    );
+                    failures.push(format!("{}: {error}", member.name));
+                }
                 Err(error) if is_source_failure(&error) => {
+                    saw_failure = true;
+                    if terminal_status(&error) != Some(404) {
+                        all_not_found = false;
+                    }
+                    self.record_cargo(
+                        "cargo_artifact_fallback",
+                        entry_name,
+                        &request_key,
+                        CargoAuditDetails {
+                            selected_proxy: Some(&member.name),
+                            object_type: "artifact",
+                            cache_status: "fallback",
+                            failure_category: Some(if terminal_status(&error) == Some(404) {
+                                "not_found"
+                            } else {
+                                "source_unavailable"
+                            }),
+                        },
+                    );
                     failures.push(format!("{}: {error}", member.name));
                 }
                 Err(error) => return Err(error.into()),
             }
         }
 
+        self.record_cargo(
+            "cargo_artifact_fetch_failed",
+            entry_name,
+            &request_key,
+            CargoAuditDetails {
+                selected_proxy: None,
+                object_type: "artifact",
+                cache_status: "failed",
+                failure_category: Some(if saw_failure && all_not_found {
+                    "not_found"
+                } else {
+                    "source_failed"
+                }),
+            },
+        );
         Err(SourcePoolError::AllSourcesFailed {
             entry_name: entry_name.to_owned(),
             request_key,
             failures: failures.join("; "),
+            status: (is_group && saw_failure && all_not_found).then_some(404),
         }
         .into())
     }
@@ -314,6 +548,15 @@ impl CargoService {
             .join(object_key)
     }
 
+    fn metadata_sidecar_path(&self, entry_name: &str, object_key: &str) -> PathBuf {
+        let path = self.metadata_path(entry_name, object_key);
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("metadata path must have a file name");
+        path.with_file_name(format!("{file_name}.source"))
+    }
+
     fn artifact_path(&self, entry_name: &str, crate_name: &str, version: &str) -> PathBuf {
         self.data_dir
             .join("cargo")
@@ -323,6 +566,42 @@ impl CargoService {
             .join(crate_name)
             .join(format!("{version}.crate"))
     }
+
+    fn record_cargo(
+        &self,
+        event: &str,
+        entry_name: &str,
+        object_key: &str,
+        details: CargoAuditDetails<'_>,
+    ) {
+        if let Err(error) = self.audit.record_detailed(
+            event,
+            object_key,
+            if details.failure_category.is_some() {
+                "failure"
+            } else {
+                "success"
+            },
+            AuditDetails {
+                ecosystem: Some("cargo"),
+                entry_name: Some(entry_name),
+                object_key: Some(object_key),
+                selected_proxy: details.selected_proxy,
+                object_type: Some(details.object_type),
+                cache_status: Some(details.cache_status),
+                failure_category: details.failure_category,
+            },
+        ) {
+            eprintln!("Stacktory audit write failed: {error}");
+        }
+    }
+}
+
+struct CargoAuditDetails<'a> {
+    selected_proxy: Option<&'a str>,
+    object_type: &'a str,
+    cache_status: &'a str,
+    failure_category: Option<&'a str>,
 }
 
 impl Adapter for CargoAdapter {
@@ -366,6 +645,10 @@ fn cargo_error_response(error: &CargoError) -> Response {
         CargoError::Source(SourcePoolError::TerminalSourceError { status, .. }) => {
             StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY)
         }
+        CargoError::Source(SourcePoolError::AllSourcesFailed {
+            status: Some(status),
+            ..
+        }) => StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
         CargoError::Source(_) | CargoError::Index(_) => StatusCode::BAD_GATEWAY,
         CargoError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
@@ -385,6 +668,18 @@ fn is_source_failure(error: &SourcePoolError) -> bool {
         error,
         SourcePoolError::AllSourcesFailed { .. } | SourcePoolError::InvalidConfiguredUrl(_)
     )
+}
+
+fn terminal_status(error: &SourcePoolError) -> Option<u16> {
+    match error {
+        SourcePoolError::TerminalSourceError { status, .. } => Some(*status),
+        SourcePoolError::AllSourcesFailed { status, .. } => *status,
+        _ => None,
+    }
+}
+
+fn is_group_entry(pool: &SourcePool, entry_name: &str) -> bool {
+    pool.is_group(entry_name)
 }
 
 fn checksum(contents: &[u8]) -> String {

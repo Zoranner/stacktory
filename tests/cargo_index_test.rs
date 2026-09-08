@@ -1,6 +1,6 @@
 use stacktory::cargo::{
     CargoIndexError, parse_index_lines, parse_registry_config, render_download_url,
-    rewrite_crate_download_url, rewrite_index_lines,
+    render_download_url_for_source, rewrite_crate_download_url, rewrite_index_lines, sparse_prefix,
 };
 use url::Url;
 
@@ -68,7 +68,7 @@ fn accepts_semver_prerelease_and_build_metadata() {
 #[test]
 fn expands_all_supported_download_markers() {
     let config = parse_registry_config(
-        br#"{"dl":"https://download.example/{prefix}{crate}/{version}/{lowerprefix}{sha256-checksum}"}"#,
+        br#"{"dl":"https://download.example/{prefix}/{crate}/{version}/{lowerprefix}/{sha256-checksum}"}"#,
     )
     .expect("registry config");
 
@@ -83,6 +83,64 @@ fn expands_all_supported_download_markers() {
     assert_eq!(
         url.as_str(),
         "https://download.example/Se/rd/Serde/1.0.0-alpha.1+build.5/se/rd/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+}
+
+#[test]
+fn sparse_prefixes_have_no_trailing_separator() {
+    for (crate_name, expected) in [("a", "1"), ("ab", "2"), ("abc", "3/a"), ("serde", "se/rd")] {
+        assert_eq!(sparse_prefix(crate_name).expect("prefix"), expected);
+    }
+}
+
+#[test]
+fn private_same_origin_download_url_is_allowed_but_private_other_path_is_rejected() {
+    let base = Url::parse("http://localhost:8080/repository/cargo").expect("private base");
+    let checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    let same_origin = render_download_url_for_source(
+        "http://localhost:8080/repository/cargo/download/{crate}/{version}",
+        "serde",
+        "1.0.0",
+        checksum,
+        &base,
+        false,
+    )
+    .expect("same-origin private URL");
+    assert_eq!(
+        same_origin.as_str(),
+        "http://localhost:8080/repository/cargo/download/serde/1.0.0"
+    );
+
+    assert!(
+        render_download_url_for_source(
+            "http://localhost:8080/other/{crate}/{version}",
+            "serde",
+            "1.0.0",
+            checksum,
+            &base,
+            false,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn public_cross_host_download_url_is_allowed() {
+    let base = Url::parse("https://index.crates.io").expect("registry base");
+    let url = render_download_url_for_source(
+        "https://static.crates.io/crates/{crate}/{crate}-{version}.crate",
+        "serde",
+        "1.0.0",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        &base,
+        true,
+    )
+    .expect("public cross-host URL");
+
+    assert_eq!(
+        url.as_str(),
+        "https://static.crates.io/crates/serde/serde-1.0.0.crate"
     );
 }
 

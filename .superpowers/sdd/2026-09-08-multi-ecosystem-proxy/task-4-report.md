@@ -158,6 +158,188 @@ cargo build --release --locked
   本地测试验证的是适配器约定的单一上游根资源布局。
 - 仍不实现 Cargo Git Index、publish、push、数据库或其他生态。
 
+## Final Branch 集中修复
+
+本轮针对最终整分支审查 findings 进行集中修复，保持私有 Cargo/Nexus 可用、单一
+source `base_url`、只读、无数据库和不修改其他生态的边界。
+
+### TDD 记录
+
+先新增并运行回归测试：
+
+```text
+cargo test --test cargo_index_test --test cargo_service_test --test sources_test
+```
+
+旧实现的 RED 结果包括：
+
+- 缺少 `render_download_url_for_source`、无尾斜杠 prefix API 和
+  `AllSourcesFailed.status`。
+- prefix marker 在大小写和分隔符上的行为不符合标准模板。
+- Cargo affinity 没有持久化 selected proxy，artifact 不能按绑定来源优先。
+- Cargo 审计事件没有详细生态、入口、对象和缓存字段。
+- SourcePool 不区分 group 404 回退与其他 terminal 4xx。
+
+确认失败原因后才修改生产代码。随后 focused Cargo/SourcePool 测试全部通过；其中
+受控 resolver 只用于测试公共下载 host 到本地 listener 的映射，没有放宽生产私有
+目标限制。
+
+### 修复内容
+
+- 私有 dl：
+  - `dl` 与 proxy `base_url` 同 scheme、host、port 且路径位于 base path 下时允许
+    私有 IP、localhost 和内部域名。
+  - 跨 host 仍只允许静态可识别的公共 host，例如 registry 到公共下载 host。
+  - 凭据、query、fragment、反斜杠、编码路径、`.`、`..` 和不满足 `require_https`
+    的地址仍拒绝。
+- group 404：
+  - SourcePool 只对 group 的对象缺失 404 继续下一个成员。
+  - group 所有成员均 404 时返回带 `status: Some(404)` 的失败。
+  - 401、403、408、429 等 terminal 状态不回退；单独 proxy 的 404 仍直接返回。
+  - Cargo index、config 和 artifact 都遵循该边界，支持私有源缺失后回退公共源。
+- Cargo source affinity：
+  - index body 与 `{object}.source` sidecar 一起保存实际 `selected_proxy`。
+  - cache hit 必须同时验证 index、当前 crate 和有效 sidecar。
+  - artifact 请求先尝试 sidecar 绑定来源，只有来源不可用或 checksum 失败时才按
+    group 顺序回退；校验成功后更新 artifact 和 source sidecar。
+- prefix：
+  - `sparse_prefix` 返回无尾斜杠的 `1`、`2`、`3/s`、`se/rd`。
+  - `{prefix}/{crate}` 和 `{lowerprefix}/{sha256-checksum}` 不产生双斜杠；
+    `{prefix}` 保留 name 大小写，`{lowerprefix}` 使用小写规范化值。
+- Cargo 审计：
+  - 扩展现有 `AuditSink` 的结构化事件字段，Cargo 事件包含 `ecosystem`、
+    `entry_name`、`object_key`、`selected_proxy`、`object_type`、`cache_status` 和
+    `failure_category`。
+  - 覆盖 Cargo index/artifact 读取、缓存命中/无效、回退、发布和失败事件。
+- 平行实现：
+  - `src/upstream.rs` 无生产调用，已删除该旧 Rustup 平行客户端及其
+    `tests/upstream_test.rs`，Cargo 继续只通过 SourcePool 访问来源。
+- 文档：
+  - `docs/architecture/cargo-mvp.md` 和
+    `docs/architecture/multi-ecosystem-readonly-proxy.md` 已更新为 Cargo affinity
+    和审计已实现状态；README 同步 404、私有 base path 和审计边界。
+
+### 最终验证
+
+以下命令在当前集中修复后的代码上全部通过：
+
+```text
+cargo test --test cargo_index_test --test cargo_service_test --test cargo_path_test --test sources_test
+cargo fmt --all
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
+cargo build --release --locked
+```
+
+Focused 结果为 Cargo index 12 项、Cargo service 16 项、Cargo path 6 项、
+SourcePool 10 项全部通过；全量测试 75 项通过，Clippy、格式检查和 release build
+全部通过。
+
+### 剩余边界
+
+- 尚未执行真实 crates.io、真实 Nexus Cargo proxy 或真实 Cargo 客户端联调。
+- SSRF 防线未执行 DNS 解析验证公共域名最终地址；当前只拒绝静态可识别的内部目标，
+  真实部署仍需配合网络出口策略。
+- Cargo Git Index、publish、push、数据库及其他生态仍未实现。
+
+## Final Branch 集中修复
+
+本轮基于当前分支的最终整分支审查 findings 做集中修复，保留以下不可变边界：
+
+- 私有 Cargo/Nexus registry 可以作为 proxy 使用。
+- 每个 proxy 只有一个 `base_url`，不增加多地址配置。
+- Cargo 只读，不实现 Git Index、publish、push 或其他生态。
+- 不引入数据库，继续使用文件系统缓存和现有 `AuditSink`。
+
+### TDD 记录
+
+先补充并运行：
+
+```text
+cargo test --test cargo_index_test --test cargo_service_test --test sources_test
+```
+
+旧实现的 RED 结果包括：
+
+- 缺少带 proxy `base_url` 上下文的私有 dl 校验和无尾斜杠 prefix API。
+- `AllSourcesFailed` 不携带最终状态，无法表达 group 全部 404。
+- Cargo index 没有持久化 selected proxy，artifact 无法基于来源绑定优先。
+- Cargo 审计没有生态、入口、对象、来源和缓存字段。
+
+确认上述失败后才修改生产代码。实现期间还使用了编译器和 focused 测试输出定位
+接口返回类型、旧 404 断言和 marker 分隔符问题，未用警告屏蔽或测试绕过替代修复。
+
+### 修复内容
+
+- 私有 dl 与公共跨 host：
+  - `dl` 与 proxy `base_url` 同 scheme、host、port 且路径位于 base path 下时，
+    允许私有 IP、localhost 和 `.internal` 等内部 host。
+  - 不同 host 仍只接受公共目标，保留 registry host 到公共下载 host 的能力。
+  - 继续拒绝凭据、query、fragment、反斜杠、编码路径、`.`、`..`、非 HTTP(S) 和
+    不满足 `require_https` 的地址。
+- group 404：
+  - `SourcePool` 只对 group 对象缺失 404 回退。
+  - group 所有成员均 404 时以 `status: Some(404)` 返回；单独 proxy 404 仍直接
+    返回 404。
+  - 401、403、408、429 继续作为 terminal 状态，不回退。
+  - Cargo index、config、artifact 均按该来源状态边界处理，支持私有源缺失后回退
+    公共源。
+- Cargo source affinity：
+  - index 内容旁写入 `{object}.source` sidecar，保存成功响应的
+    `selected_proxy`。
+  - index cache hit 必须同时满足内容可解析、包含当前 crate 且 sidecar 属于当前
+    entry。
+  - artifact 请求先按 sidecar 选择来源；来源不可用或 checksum 失败时才按 group
+    顺序回退。
+  - 回退 artifact 通过 checksum 后才写入缓存，并原子更新 selected proxy sidecar。
+- prefix：
+  - `sparse_prefix` 返回无尾斜杠的 `1`、`2`、`3/s`、`se/rd`。
+  - `{prefix}/{crate}` 和 `{lowerprefix}/{sha256-checksum}` 不产生双斜杠；
+    prefix 保留记录 name 大小写，lowerprefix 使用规范化小写名称。
+- Cargo 审计：
+  - 扩展现有 `AuditSink`，Cargo 事件包含 `ecosystem`、`entry_name`、`object_key`、
+    `selected_proxy`、`object_type`、`cache_status` 和 `failure_category`。
+  - 已接入 index/artifact 读取、缓存命中/无效、来源回退、发布和失败事件。
+- 平行实现清理：
+  - `rg` 确认 `src/upstream.rs` 无生产调用。
+  - 删除旧 `src/upstream.rs` 和只服务于它的 `tests/upstream_test.rs`，避免 Rustup
+    存在绕过 `SourcePool` 的平行来源客户端。
+- 文档：
+  - `docs/architecture/cargo-mvp.md` 和
+    `docs/architecture/multi-ecosystem-readonly-proxy.md` 已同步 Cargo affinity、
+    审计和私有 dl 边界。
+
+### 最终验证
+
+Focused：
+
+```text
+cargo test --test cargo_index_test --test cargo_service_test --test cargo_path_test --test sources_test
+```
+
+结果为 index 12 项、service 16 项、path 6 项、SourcePool 10 项全部通过。
+
+完整门禁：
+
+```text
+cargo fmt --all
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
+cargo build --release --locked
+```
+
+上述命令全部通过；删除旧 upstream 专属测试后，全量测试共 87 项通过，release
+build 成功。
+
+### 剩余边界
+
+- 尚未执行真实 crates.io、真实 Nexus Cargo proxy 或真实 Cargo 客户端联调。
+- 公共跨 host 目标的 SSRF 防护目前基于静态 host/IP 分类，没有执行 DNS 解析和
+  运行时地址重绑定防护；真实部署仍需配合网络出口策略和 DNS 安全控制。
+- Cargo Git Index、publish、push、数据库及其他生态仍未实现。
+
 ## 上游 dl 模板驱动下载修复
 
 本轮继续修复 Cargo Task 4 的上游下载契约。Cargo registry 的单一 `base_url` 仍是

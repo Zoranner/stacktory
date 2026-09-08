@@ -219,7 +219,7 @@ async fn redirect_is_not_followed_and_can_fallback() {
 async fn terminal_client_error_does_not_fallback() {
     let fallback_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let first =
-        start_server(Router::new().route("/artifact", get(|| async { StatusCode::NOT_FOUND })))
+        start_server(Router::new().route("/artifact", get(|| async { StatusCode::FORBIDDEN })))
             .await;
     let second = start_server({
         let fallback_hits = fallback_hits.clone();
@@ -258,7 +258,7 @@ async fn terminal_client_error_does_not_fallback() {
 }
 
 #[tokio::test]
-async fn unauthorized_forbidden_and_missing_do_not_fallback() {
+async fn unauthorized_and_forbidden_do_not_fallback() {
     let fallback_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let first = start_server(
         Router::new()
@@ -292,7 +292,7 @@ async fn unauthorized_forbidden_and_missing_do_not_fallback() {
     )
     .expect("source pool");
 
-    for request_key in ["unauthorized", "forbidden", "missing"] {
+    for request_key in ["unauthorized", "forbidden"] {
         let result = pool
             .fetch("fallbacks", request_key, FetchOperation::Get)
             .await;
@@ -303,6 +303,53 @@ async fn unauthorized_forbidden_and_missing_do_not_fallback() {
         ));
     }
     assert_eq!(fallback_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn group_falls_back_after_not_found_and_reports_not_found_when_all_missing() {
+    let first =
+        start_server(Router::new().route("/missing", get(|| async { StatusCode::NOT_FOUND })))
+            .await;
+    let second =
+        start_server(Router::new().route("/missing", get(|| async { "from second source" }))).await;
+    let pool = SourcePool::new(
+        "rustup",
+        SourceGraph::new(vec![
+            proxy("first", first.as_str()),
+            proxy("second", second.as_str()),
+            group("fallbacks", &["first", "second"]),
+        ])
+        .expect("source graph"),
+    )
+    .expect("source pool");
+
+    let response = fetch_from_pool(&pool, "fallbacks", "missing")
+        .await
+        .expect("404 fallback response");
+    assert_eq!(response.body, b"from second source");
+
+    let only_missing =
+        start_server(Router::new().route("/missing", get(|| async { StatusCode::NOT_FOUND })))
+            .await;
+    let pool = SourcePool::new(
+        "rustup",
+        SourceGraph::new(vec![
+            proxy("only", only_missing.as_str()),
+            group("group", &["only"]),
+        ])
+        .expect("source graph"),
+    )
+    .expect("source pool");
+    let error = fetch_from_pool(&pool, "group", "missing")
+        .await
+        .expect_err("all missing should fail");
+    assert!(matches!(
+        error,
+        SourcePoolError::AllSourcesFailed {
+            status: Some(404),
+            ..
+        }
+    ));
 }
 
 #[tokio::test]

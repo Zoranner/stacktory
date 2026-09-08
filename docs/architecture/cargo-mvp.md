@@ -3,16 +3,14 @@
 ## 当前实现状态
 
 本文档覆盖 Cargo 协议细节。当前 Cargo MVP 已实现 Sparse Index、crate 下载、
-来源回退、缓存和 checksum 校验，但尚未实现公共架构要求的通用 metadata
-current/sidecar affinity：
+来源回退、缓存、checksum 校验和 metadata current/sidecar affinity：
 
-- 当前 index 和 crate 请求按请求独立通过 SourcePool 获取。
-- artifact 请求尚未先读取 metadata sidecar 中的 `selected_proxy`。
-- fallback 成功后尚未按“摘要校验通过再更新来源绑定”的规则更新 sidecar。
-
-后续 Cargo 适配必须补齐该 affinity，并与 npm、PyPI、NuGet 的适配共同遵守
-两级文件系统模型；本文件不把当前 Cargo 缓存和 checksum 行为表述为已完成
-通用来源绑定。
+- index 成功响应会持久化 `selected_proxy` sidecar。
+- artifact 请求先使用该 selected proxy；来源不可用或 checksum 失败时才按 group
+  顺序回退。
+- 回退制品通过 checksum 校验后，才原子更新 artifact 和 selected proxy sidecar。
+- Cargo 读取、缓存命中/未命中、回退、发布和失败会写入现有 `AuditSink` 的结构化
+  JSONL 事件。
 
 ## 范围
 
@@ -45,10 +43,11 @@ Sparse Index 资源；
 适配器不引入第二个配置 endpoint，也不把 `base_url` 当作可转发任意 URL 的入口。
 crate 下载地址由该 proxy 的 `config.json` 中 `dl` 模板描述，因此 `dl` 可以指向
 同一 registry 根之外的固定 HTTP/HTTPS 地址，但必须经过对应 proxy 的配置读取和
-Stacktory 安全校验。校验会拒绝 loopback、私有、link-local、unspecified 和
-明显内部域名，不允许凭据、query、fragment 或路径穿越。真实私有或 Nexus proxy
-的管理地址不一定就是 Cargo registry 根地址，部署前必须确认其配置、Sparse Index
-和 `dl` 资源布局。
+Stacktory 安全校验。同 scheme/host/port 且路径位于该 proxy `base_url` 下的
+地址允许使用私有 IP、localhost 或内部域名；跨 host 只允许公共目标。所有情况
+都拒绝凭据、query、fragment、编码路径、反斜杠和路径穿越。真实私有或 Nexus
+proxy 的管理地址不一定就是 Cargo registry 根地址，部署前必须确认其配置、
+Sparse Index 和 `dl` 资源布局。
 
 Stacktory 对外的 `config.json` 不转发上游配置，而是生成唯一的 `dl` 模板：
 
@@ -74,7 +73,7 @@ package name，不要求它已经是小写；路径使用其规范化结果。�
 例如 `serde` 的 index 路径是 `se/rd/serde`。请求路径必须与规范化后的结果完全
 一致，不能包含绝对路径、空段、`.`、`..`、反斜杠、编码字符或控制字符。
 
-index 内容按 JSON Lines 逐行解析。每条记录至少需要规范化的 `name`、`vers` 和
+index 内容按 JSON Lines 逐行解析。每条记录至少需要合法的 `name`、`vers` 和
 64 位十六进制 `cksum`；其他字段保持原始 JSON Lines 内容，不在适配器中重建
 依赖、feature 或 yanked 语义。Cargo index 记录本身没有下载 URL，下载地址由
 Sparse Registry 的 `dl` 配置模板负责重写。
@@ -95,9 +94,10 @@ crate 请求会先读取当前 proxy 的 `config.json`，按 `dl` 中的 `{crate
 `{version}`、`{prefix}`、`{lowerprefix}` 和 `{sha256-checksum}` marker 生成下载
 URL。上游响应只有在摘要匹配后才会原子写入 artifact 缓存并返回。
 
-group 的每个 proxy 独立尝试 index 和 crate。网络/服务端失败、非法 index 内容和
-crate 摘要不匹配都会阻止当前对象发布；可回退的失败会继续尝试下一个成员。4xx
-等来源明确拒绝由 `SourcePool` 作为终止错误返回，不被适配器改写为无条件重试。
+group 的每个 proxy 独立尝试 index 和 crate。网络/5xx、非法 index 内容和 crate
+摘要不匹配都会阻止当前对象发布，并可继续尝试下一个成员；group 对象缺失 404
+也可回退，所有成员缺失时返回 404。401、403、408、429 等 terminal 状态不回退，
+直接保留对应 HTTP 状态。
 
 ## 请求流程
 
@@ -113,8 +113,9 @@ crate 摘要不匹配都会阻止当前对象发布；可回退的失败会继�
 ```
 
 未知命名入口、非法路径和 index 中不存在的 crate 版本返回 404。无可用来源或
-完整性失败返回 502。缓存目录创建、读取、写入失败返回 500。适配器不记录上游
-响应正文，也不接受客户端提供的上游 URL。
+完整性失败返回 502。缓存目录创建、读取、写入失败返回 500。Cargo 的读取、
+缓存、回退、发布和失败会写入结构化审计事件；适配器不记录上游响应正文，也不
+接受客户端提供的上游 URL。
 
 ## 验证边界
 

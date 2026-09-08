@@ -283,6 +283,7 @@ impl RustupService {
             entry_name: source_name.to_owned(),
             request_key: manifest_key,
             failures: failures.join("; "),
+            status: None,
         }
         .into())
     }
