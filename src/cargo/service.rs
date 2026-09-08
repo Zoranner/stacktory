@@ -23,8 +23,8 @@ use crate::{
 
 use super::{
     index::{
-        CargoIndexError, download_template, parse_index_lines, rewrite_index_lines,
-        sparse_path_for_request,
+        CargoIndexError, download_template, parse_index_lines, parse_registry_config,
+        render_download_url, rewrite_index_lines, sparse_path_for_request,
     },
     path::{CargoPath, CargoPathError, normalize_crate_name, validate_version},
 };
@@ -216,13 +216,13 @@ impl CargoService {
                 error: "index is not UTF-8".to_owned(),
             }
         })?)?;
-        let expected = records
+        let (download_name, expected) = records
             .iter()
             .find(|record| {
                 normalize_crate_name(&record.name).is_ok_and(|name| name == crate_name)
                     && record.version == version
             })
-            .map(|record| record.checksum.clone())
+            .map(|record| (record.name.clone(), record.checksum.clone()))
             .ok_or_else(|| CargoError::MissingVersion {
                 name: crate_name.to_owned(),
                 version: version.to_owned(),
@@ -242,10 +242,31 @@ impl CargoService {
             .proxy_members(entry_name)
             .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?
         {
-            match pool
-                .fetch(&member.name, &request_key, FetchOperation::Get)
+            let config = match pool
+                .fetch(&member.name, "config.json", FetchOperation::Get)
                 .await
             {
+                Ok(response) => match parse_registry_config(&response.body) {
+                    Ok(config) => config,
+                    Err(error) => {
+                        failures.push(format!("{}: {error}", member.name));
+                        continue;
+                    }
+                },
+                Err(error) => {
+                    failures.push(format!("{}: {error}", member.name));
+                    continue;
+                }
+            };
+            let download_url =
+                match render_download_url(&config.dl, &download_name, version, &expected) {
+                    Ok(url) => url,
+                    Err(error) => {
+                        failures.push(format!("{}: {error}", member.name));
+                        continue;
+                    }
+                };
+            match pool.fetch_configured_url(&member.name, download_url).await {
                 Ok(response) if checksum(&response.body).eq_ignore_ascii_case(&expected) => {
                     atomic_write(&cache_path, &response.body)?;
                     return Ok(response.body);
@@ -254,7 +275,7 @@ impl CargoService {
                     "{}: checksum mismatch for {crate_name} {version}",
                     member.name
                 )),
-                Err(error) if is_retryable(&error) => {
+                Err(error) if is_source_failure(&error) => {
                     failures.push(format!("{}: {error}", member.name));
                 }
                 Err(error) => return Err(error.into()),
@@ -342,6 +363,13 @@ fn response(status: StatusCode, content_type: &'static str, body: Vec<u8>) -> Re
 
 fn is_retryable(error: &SourcePoolError) -> bool {
     matches!(error, SourcePoolError::AllSourcesFailed { .. })
+}
+
+fn is_source_failure(error: &SourcePoolError) -> bool {
+    matches!(
+        error,
+        SourcePoolError::AllSourcesFailed { .. } | SourcePoolError::InvalidConfiguredUrl(_)
+    )
 }
 
 fn checksum(contents: &[u8]) -> String {

@@ -84,9 +84,11 @@ type = "group"
 members = ["crates-io"]
 ```
 
-Cargo proxy 的 `base_url` 只能配置一个上游根地址，但该根地址必须实际提供
-`config.json`、标准 Sparse Index 相对路径和 crate 下载相对路径。私有或 Nexus
-proxy 不能只填写管理页面地址；应确认其代理资源布局与 Stacktory 适配器约定一致。
+Cargo proxy 的 `base_url` 只能配置一个上游 registry 根地址。该根地址必须实际提供
+`config.json` 和标准 Sparse Index 相对路径；crate 下载地址由该 proxy 的
+`config.json` 中 `dl` 模板描述，可以指向经过安全校验的 HTTP/HTTPS 下载地址。
+私有或 Nexus proxy 不能只填写管理页面地址；应确认其实际代理资源布局包含 Cargo
+registry 配置和 Sparse Index，并确认 `dl` 模板可被 Stacktory 安全解析。
 
 首期只实现 Sparse Index 和 crate 下载，不实现 Cargo Git Index、publish、push 或
 其他生态协议。

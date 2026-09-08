@@ -24,13 +24,15 @@ Cargo 使用配置中的 `sources`。`proxy` 是一个固定上游根地址，`g
 ```text
 config.json
 {sparse-index-path}
-crates/{crate}/{version}.crate
 ```
 
-每个 Cargo proxy 只有一个 `base_url`。该根地址必须实际提供上述三类资源；
-适配器不引入第二个 endpoint，也不把 `base_url` 当作可转发任意 URL 的入口。
-真实私有或 Nexus proxy 的管理地址不一定就是 Cargo registry 根地址，部署前必须
-确认其相对资源布局。
+每个 Cargo proxy 只有一个 `base_url`。该根地址必须实际提供上述 registry 配置和
+Sparse Index 资源；
+适配器不引入第二个配置 endpoint，也不把 `base_url` 当作可转发任意 URL 的入口。
+crate 下载地址由该 proxy 的 `config.json` 中 `dl` 模板描述，因此 `dl` 可以指向
+同一 registry 根之外的固定 HTTP/HTTPS 地址，但必须经过对应 proxy 的配置读取和
+Stacktory 安全校验。真实私有或 Nexus proxy 的管理地址不一定就是 Cargo registry
+根地址，部署前必须确认其配置、Sparse Index 和 `dl` 资源布局。
 
 Stacktory 对外的 `config.json` 不转发上游配置，而是生成唯一的 `dl` 模板：
 
@@ -73,7 +75,9 @@ data_dir/cargo/artifacts/{entry}/crates/{crate}/{version}.crate
 index 只有在 UTF-8、JSON Lines、合法 crate 名称、严格 SemVer 版本和 checksum 均
 通过解析后才会原子写入。
 crate 请求会先从 index 找到目标版本的 `cksum`，缓存命中也会重新计算 SHA-256。
-上游响应只有在摘要匹配后才会原子写入 artifact 缓存并返回。
+crate 请求会先读取当前 proxy 的 `config.json`，按 `dl` 中的 `{crate}`、
+`{version}`、`{prefix}`、`{lowerprefix}` 和 `{sha256-checksum}` marker 生成下载
+URL。上游响应只有在摘要匹配后才会原子写入 artifact 缓存并返回。
 
 group 的每个 proxy 独立尝试 index 和 crate。网络/服务端失败、非法 index 内容和
 crate 摘要不匹配都会阻止当前对象发布；可回退的失败会继续尝试下一个成员。4xx

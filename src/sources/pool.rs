@@ -31,6 +31,8 @@ pub enum SourcePoolError {
     UnknownEntry(String),
     #[error("request key `{0}` is invalid")]
     InvalidRequestKey(String),
+    #[error("configured URL `{0}` is invalid")]
+    InvalidConfiguredUrl(String),
     #[error("source `{source_name}` returned HTTP {status}: {error}")]
     TerminalSourceError {
         source_name: String,
@@ -110,6 +112,37 @@ impl SourcePool {
             failures: failures.join("; "),
         })
     }
+
+    pub async fn fetch_configured_url(
+        &self,
+        source_name: &str,
+        url: Url,
+    ) -> Result<SourceResponse, SourcePoolError> {
+        let source = self
+            .graph
+            .get(source_name)
+            .ok_or_else(|| SourcePoolError::UnknownEntry(source_name.to_owned()))?;
+        if source.source_type != crate::SourceType::Proxy || !valid_configured_url(source, &url) {
+            return Err(SourcePoolError::InvalidConfiguredUrl(url.to_string()));
+        }
+
+        match self.fetcher.fetch(url.clone()).await {
+            Ok(body) => Ok(SourceResponse {
+                source_name: source_name.to_owned(),
+                body,
+            }),
+            Err(error) if error.is_retryable() => Err(SourcePoolError::AllSourcesFailed {
+                entry_name: source_name.to_owned(),
+                request_key: url.path().to_owned(),
+                failures: error.to_string(),
+            }),
+            Err(error) => Err(SourcePoolError::TerminalSourceError {
+                source_name: source_name.to_owned(),
+                status: error.status_code().unwrap_or_default(),
+                error: error.to_string(),
+            }),
+        }
+    }
 }
 
 fn normalize_request_key(request_key: &str) -> Result<String, SourcePoolError> {
@@ -140,4 +173,21 @@ fn source_url(source: &SourceConfig, request_key: &str) -> Result<Url, SourcePoo
     url.set_query(None);
     url.set_fragment(None);
     Ok(url)
+}
+
+fn valid_configured_url(source: &SourceConfig, url: &Url) -> bool {
+    matches!(url.scheme(), "http" | "https")
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && (!source.require_https || url.scheme() == "https")
+        && !url.path().contains('\\')
+        && !url.path().contains('%')
+        && !url.path().chars().any(char::is_control)
+        && !url
+            .path()
+            .split('/')
+            .any(|segment| matches!(segment, "." | ".."))
 }

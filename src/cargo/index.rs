@@ -14,6 +14,23 @@ pub struct IndexRecord {
     pub checksum: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CargoRegistryConfig {
+    pub dl: String,
+}
+
+#[derive(Debug, Error)]
+pub enum CargoConfigError {
+    #[error("cargo registry config.json is invalid JSON: {0}")]
+    InvalidJson(#[from] serde_json::Error),
+    #[error("cargo registry config.json has no dl template")]
+    MissingDownloadTemplate,
+    #[error("cargo registry dl template is invalid: {0}")]
+    InvalidDownloadTemplate(String),
+    #[error(transparent)]
+    Path(#[from] CargoPathError),
+}
+
 #[derive(Debug, Error)]
 pub enum CargoIndexError {
     #[error("cargo index line {line} is invalid JSON: {error}")]
@@ -38,6 +55,21 @@ struct RawIndexRecord {
     version: String,
     #[serde(rename = "cksum")]
     checksum: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RawRegistryConfig {
+    dl: Option<String>,
+}
+
+pub fn parse_registry_config(source: &[u8]) -> Result<CargoRegistryConfig, CargoConfigError> {
+    let raw: RawRegistryConfig = serde_json::from_slice(source)?;
+    let dl = raw
+        .dl
+        .filter(|dl| !dl.is_empty())
+        .ok_or(CargoConfigError::MissingDownloadTemplate)?;
+    validate_template_markers(&dl)?;
+    Ok(CargoRegistryConfig { dl })
 }
 
 pub fn parse_index_lines(source: &str) -> Result<Vec<IndexRecord>, CargoIndexError> {
@@ -76,6 +108,55 @@ pub fn parse_index_lines(source: &str) -> Result<Vec<IndexRecord>, CargoIndexErr
             })
         })
         .collect()
+}
+
+pub fn render_download_url(
+    template: &str,
+    crate_name: &str,
+    version: &str,
+    checksum: &str,
+) -> Result<Url, CargoConfigError> {
+    validate_crate_name(crate_name)?;
+    validate_version(version)?;
+    if checksum.len() != 64 || !checksum.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(CargoConfigError::InvalidDownloadTemplate(
+            "sha256 checksum is invalid".to_owned(),
+        ));
+    }
+
+    let lower_name = normalize_crate_name(crate_name)?;
+    let prefix = sparse_prefix(crate_name);
+    let lower_prefix = sparse_prefix(&lower_name);
+    let replacements = [
+        ("{crate}", crate_name),
+        ("{version}", version),
+        ("{prefix}", &prefix),
+        ("{lowerprefix}", &lower_prefix),
+        ("{sha256-checksum}", checksum),
+    ];
+    let mut expanded = replace_template_markers(template, &replacements)?;
+    if replacements
+        .iter()
+        .all(|(marker, _)| !template.contains(marker))
+    {
+        expanded = format!("{}/{{}}", template.trim_end_matches('/'));
+        expanded = expanded.replace("{}", &format!("{crate_name}/{version}/download"));
+    }
+
+    if expanded.contains('\\')
+        || expanded.contains('%')
+        || expanded.split(['?', '#']).next().is_some_and(|value| {
+            value
+                .split('/')
+                .any(|segment| segment == "." || segment == "..")
+        })
+    {
+        return Err(CargoConfigError::InvalidDownloadTemplate(expanded));
+    }
+    let url = Url::parse(&expanded)
+        .map_err(|error| CargoConfigError::InvalidDownloadTemplate(error.to_string()))?;
+    validate_download_url(&url)?;
+    Ok(url)
 }
 
 pub fn rewrite_index_lines(
@@ -126,4 +207,88 @@ pub(crate) fn sparse_path_for_request(path: &str) -> Result<(String, String), Ca
         return Err(CargoPathError::Invalid(path.to_owned()));
     }
     Ok((normalized_name, expected))
+}
+
+fn validate_template_markers(template: &str) -> Result<(), CargoConfigError> {
+    let supported = [
+        "crate",
+        "version",
+        "prefix",
+        "lowerprefix",
+        "sha256-checksum",
+    ];
+    let mut remaining = template;
+    while let Some(start) = remaining.find('{') {
+        let after_start = &remaining[start + 1..];
+        let end = after_start
+            .find('}')
+            .ok_or_else(|| CargoConfigError::InvalidDownloadTemplate(template.to_owned()))?;
+        let marker = &after_start[..end];
+        if !supported.contains(&marker) {
+            return Err(CargoConfigError::InvalidDownloadTemplate(
+                template.to_owned(),
+            ));
+        }
+        remaining = &after_start[end + 1..];
+    }
+    if remaining.contains('}') {
+        return Err(CargoConfigError::InvalidDownloadTemplate(
+            template.to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn replace_template_markers(
+    template: &str,
+    replacements: &[(&str, &str)],
+) -> Result<String, CargoConfigError> {
+    let mut result = String::with_capacity(template.len());
+    let mut remaining = template;
+    while let Some(start) = remaining.find('{') {
+        result.push_str(&remaining[..start]);
+        let after_start = &remaining[start..];
+        let end = after_start
+            .find('}')
+            .ok_or_else(|| CargoConfigError::InvalidDownloadTemplate(template.to_owned()))?;
+        let marker = &after_start[..=end];
+        let replacement = replacements
+            .iter()
+            .find_map(|(name, value)| (*name == marker).then_some(*value))
+            .ok_or_else(|| CargoConfigError::InvalidDownloadTemplate(template.to_owned()))?;
+        result.push_str(replacement);
+        remaining = &after_start[end + 1..];
+    }
+    result.push_str(remaining);
+    Ok(result)
+}
+
+fn sparse_prefix(crate_name: &str) -> String {
+    let bytes = crate_name.as_bytes();
+    match bytes.len() {
+        1 => "1/".to_owned(),
+        2 => "2/".to_owned(),
+        3 => format!("3/{}/", &crate_name[..1]),
+        _ => format!("{}/{}/", &crate_name[..2], &crate_name[2..4]),
+    }
+}
+
+fn validate_download_url(url: &Url) -> Result<(), CargoConfigError> {
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path().contains('\\')
+        || url.path().contains('%')
+        || url.path().chars().any(char::is_control)
+        || url
+            .path()
+            .split('/')
+            .any(|segment| matches!(segment, "." | ".."))
+    {
+        return Err(CargoConfigError::InvalidDownloadTemplate(url.to_string()));
+    }
+    Ok(())
 }
