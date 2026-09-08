@@ -1,12 +1,15 @@
 use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc};
 
 use axum::response::Response;
+use thiserror::Error;
 
 use super::SourcePool;
 
 pub type AdapterFuture = Pin<Box<dyn Future<Output = Response> + Send>>;
 
 pub trait Adapter: Send + Sync + 'static {
+    fn ecosystem(&self) -> &str;
+
     fn handle(&self, source_name: String, path: String, pool: Arc<SourcePool>) -> AdapterFuture;
 }
 
@@ -20,22 +23,56 @@ pub(crate) struct RegisteredAdapter {
     pub(crate) adapter: Arc<dyn Adapter>,
 }
 
+#[derive(Debug, Error, Eq, PartialEq)]
+pub enum RegistryError {
+    #[error("ecosystem `{0}` is already registered")]
+    DuplicateEcosystem(String),
+    #[error(
+        "ecosystem identity mismatch: registered `{ecosystem}`, pool `{pool}`, adapter `{adapter}`"
+    )]
+    EcosystemMismatch {
+        ecosystem: String,
+        pool: String,
+        adapter: String,
+    },
+}
+
 impl AdapterRegistry {
     pub fn new() -> Self {
         Self::default()
     }
 
     pub fn with_adapter(
-        self,
+        mut self,
         ecosystem: impl Into<String>,
         pool: Arc<SourcePool>,
         adapter: Arc<dyn Adapter>,
-    ) -> Self {
-        let mut adapters = (*self.adapters).clone();
-        adapters.insert(ecosystem.into(), RegisteredAdapter { pool, adapter });
-        Self {
-            adapters: Arc::new(adapters),
+    ) -> Result<Self, RegistryError> {
+        self.register(ecosystem, pool, adapter)?;
+        Ok(self)
+    }
+
+    pub fn register(
+        &mut self,
+        ecosystem: impl Into<String>,
+        pool: Arc<SourcePool>,
+        adapter: Arc<dyn Adapter>,
+    ) -> Result<(), RegistryError> {
+        let ecosystem = ecosystem.into();
+        if pool.ecosystem() != ecosystem || adapter.ecosystem() != ecosystem {
+            return Err(RegistryError::EcosystemMismatch {
+                ecosystem,
+                pool: pool.ecosystem().to_owned(),
+                adapter: adapter.ecosystem().to_owned(),
+            });
         }
+        if self.adapters.contains_key(&ecosystem) {
+            return Err(RegistryError::DuplicateEcosystem(ecosystem));
+        }
+        let mut adapters = (*self.adapters).clone();
+        adapters.insert(ecosystem, RegisteredAdapter { pool, adapter });
+        self.adapters = Arc::new(adapters);
+        Ok(())
     }
 
     pub(crate) fn get(&self, ecosystem: &str) -> Option<&RegisteredAdapter> {

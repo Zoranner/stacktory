@@ -1,17 +1,20 @@
-use std::{future::Future, sync::Arc};
+use std::sync::Arc;
 
 use thiserror::Error;
 use url::Url;
 
-use crate::{
-    SourceConfig, SourceGraph,
-    sources::fetcher::{FetchError, HttpFetcher},
-};
+use crate::{SourceConfig, SourceGraph, sources::fetcher::HttpFetcher};
 
 #[derive(Debug)]
 pub struct SourcePool {
+    ecosystem: String,
     graph: SourceGraph,
     fetcher: Arc<HttpFetcher>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FetchOperation {
+    Get,
 }
 
 #[derive(Debug)]
@@ -22,10 +25,14 @@ pub struct SourceResponse {
 
 #[derive(Debug, Error)]
 pub enum SourcePoolError {
+    #[error("HTTP fetcher cannot be created: {0}")]
+    FetcherBuild(String),
     #[error("source entry `{0}` was not found")]
     UnknownEntry(String),
     #[error("request key `{0}` is invalid")]
     InvalidRequestKey(String),
+    #[error("source `{source_name}` returned a terminal error: {error}")]
+    TerminalSourceError { source_name: String, error: String },
     #[error("all sources for entry `{entry_name}` failed for `{request_key}`: {failures}")]
     AllSourcesFailed {
         entry_name: String,
@@ -35,15 +42,19 @@ pub enum SourcePoolError {
 }
 
 impl SourcePool {
-    pub fn new(graph: SourceGraph) -> Result<Self, FetchError> {
+    pub fn new(ecosystem: impl Into<String>, graph: SourceGraph) -> Result<Self, SourcePoolError> {
         Ok(Self {
+            ecosystem: ecosystem.into(),
             graph,
-            fetcher: Arc::new(HttpFetcher::new()?),
+            fetcher: Arc::new(
+                HttpFetcher::new()
+                    .map_err(|error| SourcePoolError::FetcherBuild(error.to_string()))?,
+            ),
         })
     }
 
-    pub fn fetcher(&self) -> Arc<HttpFetcher> {
-        self.fetcher.clone()
+    pub fn ecosystem(&self) -> &str {
+        &self.ecosystem
     }
 
     pub fn proxy_members(&self, entry_name: &str) -> Option<Vec<SourceConfig>> {
@@ -52,16 +63,12 @@ impl SourcePool {
             .map(|members| members.into_iter().cloned().collect())
     }
 
-    pub async fn fetch<F, Fut>(
+    pub async fn fetch(
         &self,
         entry_name: &str,
         request_key: &str,
-        operation: F,
-    ) -> Result<SourceResponse, SourcePoolError>
-    where
-        F: Fn(Url) -> Fut,
-        Fut: Future<Output = Result<Vec<u8>, FetchError>>,
-    {
+        operation: FetchOperation,
+    ) -> Result<SourceResponse, SourcePoolError> {
         let members = self
             .proxy_members(entry_name)
             .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
@@ -70,14 +77,25 @@ impl SourcePool {
 
         for source in members {
             let url = source_url(&source, &request_key)?;
-            match operation(url).await {
+            let result = match operation {
+                FetchOperation::Get => self.fetcher.fetch(url).await,
+            };
+            match result {
                 Ok(body) => {
                     return Ok(SourceResponse {
                         source_name: source.name,
                         body,
                     });
                 }
-                Err(error) => failures.push(format!("{}: {error}", source.name)),
+                Err(error) if error.is_retryable() => {
+                    failures.push(format!("{}: {error}", source.name));
+                }
+                Err(error) => {
+                    return Err(SourcePoolError::TerminalSourceError {
+                        source_name: source.name,
+                        error: error.to_string(),
+                    });
+                }
             }
         }
 
@@ -90,11 +108,16 @@ impl SourcePool {
 }
 
 fn normalize_request_key(request_key: &str) -> Result<String, SourcePoolError> {
-    let request_key = request_key.trim_start_matches('/');
     if request_key.is_empty()
+        || request_key.starts_with('/')
+        || request_key.contains('\\')
+        || request_key.contains('%')
         || request_key.contains('?')
         || request_key.contains('#')
-        || request_key.split('/').any(|segment| segment == "..")
+        || request_key.chars().any(char::is_control)
+        || request_key
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
     {
         return Err(SourcePoolError::InvalidRequestKey(request_key.to_owned()));
     }

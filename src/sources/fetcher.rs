@@ -5,12 +5,12 @@ use thiserror::Error;
 use url::Url;
 
 #[derive(Debug)]
-pub struct HttpFetcher {
+pub(crate) struct HttpFetcher {
     client: reqwest::Client,
 }
 
 #[derive(Debug, Error)]
-pub enum FetchError {
+pub(crate) enum FetchError {
     #[error("HTTP client cannot be created: {0}")]
     ClientBuild(#[from] reqwest::Error),
     #[error("request to `{0}` failed: {1}")]
@@ -22,7 +22,7 @@ pub enum FetchError {
 }
 
 impl HttpFetcher {
-    pub fn new() -> Result<Self, FetchError> {
+    pub(crate) fn new() -> Result<Self, FetchError> {
         let client = reqwest::Client::builder()
             .redirect(Policy::none())
             .timeout(Duration::from_secs(30))
@@ -30,7 +30,7 @@ impl HttpFetcher {
         Ok(Self { client })
     }
 
-    pub async fn fetch(&self, url: Url) -> Result<Vec<u8>, FetchError> {
+    pub(crate) async fn fetch(&self, url: Url) -> Result<Vec<u8>, FetchError> {
         let response = self
             .client
             .get(url.clone())
@@ -45,5 +45,19 @@ impl HttpFetcher {
             .await
             .map(|bytes| bytes.to_vec())
             .map_err(|error| FetchError::ResponseBody(url, error))
+    }
+}
+
+impl FetchError {
+    pub(crate) fn is_retryable(&self) -> bool {
+        match self {
+            Self::ClientBuild(_) | Self::Request(_, _) | Self::ResponseBody(_, _) => true,
+            Self::HttpStatus(_, status) => {
+                status.is_redirection()
+                    || status.is_server_error()
+                    || *status == reqwest::StatusCode::REQUEST_TIMEOUT
+                    || *status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            }
+        }
     }
 }

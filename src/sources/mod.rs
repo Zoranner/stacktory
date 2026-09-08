@@ -1,6 +1,5 @@
+pub(crate) mod fetcher;
 pub mod pool;
-
-pub mod fetcher;
 pub mod registry;
 
-pub use pool::{SourcePool, SourcePoolError, SourceResponse};
+pub use pool::{FetchOperation, SourcePool, SourcePoolError, SourceResponse};
