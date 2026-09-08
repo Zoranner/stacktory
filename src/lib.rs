@@ -5,9 +5,11 @@ mod config;
 pub mod http;
 pub mod rustup;
 pub mod service;
+pub mod sources;
 pub mod storage;
 pub mod upstream;
 
 pub use config::{
     CargoConfig, Config, ConfigError, RustupConfig, SourceConfig, SourceGraph, SourceType,
 };
+pub use sources::SourcePool;

@@ -11,6 +11,7 @@ use axum::{
 use crate::{
     rustup::DistPath,
     service::{RustupService, ServiceError},
+    sources::registry::AdapterRegistry,
     storage::StorageError,
 };
 
@@ -25,8 +26,31 @@ pub fn router_with_rustup(service: Arc<RustupService>) -> Router {
         .with_state(service)
 }
 
+pub fn router_with_registry(registry: AdapterRegistry) -> Router {
+    Router::new()
+        .route("/healthz", get(health))
+        .route("/mirror/{ecosystem}/{name}/{*path}", get(named_source))
+        .with_state(registry)
+}
+
 async fn health() -> StatusCode {
     StatusCode::OK
+}
+
+async fn named_source(
+    State(registry): State<AdapterRegistry>,
+    Path((ecosystem, name, path)): Path<(String, String, String)>,
+) -> axum::response::Response {
+    let Some(registered) = registry.get(&ecosystem) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if registered.pool.proxy_members(&name).is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    registered
+        .adapter
+        .handle(name, path, registered.pool.clone())
+        .await
 }
 
 async fn rustup_dist(
