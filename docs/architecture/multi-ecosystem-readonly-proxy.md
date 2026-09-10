@@ -3,7 +3,8 @@
 ## 目标
 
 Stacktory 为内网开发机提供统一的研发制品访问入口。当前实现包含 Rustup
-动态镜像和 Cargo Sparse Index/crate 只读代理；npm、UPM、PyPI 和 NuGet
+动态镜像和 Cargo Sparse Index/crate 只读代理；npm、UPM、PyPI、NuGet、Docker、
+VS Code 扩展和 Winget
 只在本文件及各自 MVP 文档中定义后续适配边界，未实现的生态不注册路由。
 
 本设计约束公共来源访问、显式组合、缓存、完整性和审计职责，使新增生态只
@@ -31,12 +32,19 @@ Stacktory 为内网开发机提供统一的研发制品访问入口。当前实�
   增加 scope 选择规则。
 - PyPI：Simple API 的 HTML/JSON 表示和项目文件下载。
 - NuGet：V3 service index、registration 和 package content。
+- Docker：Registry V2 manifest、image config、layer blob、tag/digest 拉取和
+  多架构 manifest。
+- VS Code 扩展：扩展 metadata、版本信息和 `.vsix` 下载。
+- Winget：source/index、package manifest 和安装包下载。
 
 ### 明确不在范围内
 
 - npm publish、unpublish、账号和 token 管理。
 - PyPI 上传、删除、账号和 token 管理。
 - NuGet push、delete、搜索、API key、账号和动态注册服务。
+- Docker 镜像推送、删除、账号、签名管理和构建服务。
+- VS Code 扩展发布、删除、账号和 token 管理。
+- Winget source 发布、manifest 写入、账号和签名管理。
 - UPM 发布、包写入、Unity Editor、Asset Store 和 Git URL 包。
 - 管理后台、动态修改配置、远程配置中心和数据库。
 - 任意 URL 代理、客户端指定上游、未验证的跨来源重定向。
@@ -255,6 +263,31 @@ PyPI 使用 `/mirror/pypi/{name}/simple/...`，适配器负责项目名规范化
 NuGet 使用 `/mirror/nuget/{name}/v3/...`，适配器负责 service index、registration
 和 package content；搜索及写入型 API 保持后续独立范围。详细契约见
 `nuget-mvp.md`。
+
+### Docker
+
+Docker 使用 `/mirror/docker/{name}/...`。适配器首期处理 Registry V2 的 manifest、
+image config 和 layer blob，支持 tag、digest 和多架构 manifest。Docker 的内容
+寻址模型要求按 digest 校验并缓存 blob；tag 到 manifest 的解析结果作为 metadata
+处理。推送、删除、账号和签名管理不在只读代理范围内。
+
+Docker source 的 `base_url` 是一个 Registry V2 根地址。具体的
+`/v2/{repository}/manifests/{reference}`、`blobs/{digest}` 等协议路径由适配器
+生成，不向公共 source 配置增加多个地址字段。
+
+### VS Code 扩展
+
+VS Code 扩展使用 `/mirror/vscode/{name}/...`。适配器负责扩展 metadata、版本
+选择和 `.vsix` 文件下载；具体支持 Microsoft Marketplace、Open VSX 或内部
+兼容源需要在实现任务中按实际上游协议固定，不能把某个平台 API 当作通用协议。
+发布、删除、账号和 token 管理不在范围内。
+
+### Winget
+
+Winget 使用 `/mirror/winget/{name}/...`。适配器负责 source/index、package
+manifest 和安装包下载，重写 manifest 中的下载地址，并校验
+`InstallerSha256`。安装包来源必须经过配置来源或协议适配器的安全校验；发布、
+manifest 写入、账号和签名管理不在范围内。
 
 ## 验证边界
 

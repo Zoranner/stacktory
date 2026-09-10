@@ -8,7 +8,7 @@ Stacktory 从受信任的固定上游取得 Rust channel manifest 及其制品�
 本地提供兼容 Rustup 的响应。
 
 本文件只覆盖 Rustup 协议细节，不覆盖 Cargo 协议细节；Cargo 路由和 Cargo
-适配边界见 `cargo-mvp.md`。npm/Bun、PyPI、NuGet、OCI、APT、YUM/DNF、Winget、
+适配边界见 `cargo-mvp.md`。npm/Bun、PyPI、NuGet、Docker、APT、YUM/DNF、Winget、
 VS Code 扩展或 Unity UPM 的协议细节也不在本文件内，也不承担 Python、Node.js、
 .NET SDK、Bun、VS Code 等静态安装包分发。Unity 的未来适配范围仅为官方 UPM
 Registry 和 OpenUPM。本期不接收任意 URL，也不写入或访问生产 Nexus 配置。
