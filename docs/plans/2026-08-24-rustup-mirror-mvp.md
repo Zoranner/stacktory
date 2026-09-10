@@ -26,7 +26,7 @@
 #[test]
 fn accepts_public_production_configuration() {
     let config = Config::from_toml(PUBLIC_PRODUCTION).unwrap();
-    assert_eq!(config.listen.ip().to_string(), "0.0.0.0");
+    assert_eq!(config.listen_address.to_string(), "0.0.0.0");
 }
 ```
 
@@ -37,7 +37,7 @@ Run: `cargo test --test config_test rejects_anonymous_production_configuration`
 - [ ] **Step 3: 实现最小配置类型和启动入口**
 
 ```rust
-pub struct Config { pub listen: SocketAddr, pub data_dir: PathBuf, /* ... */ }
+pub struct Config { pub listen_address: IpAddr, pub listen_port: u16, pub data_dir: PathBuf, /* ... */ }
 impl Config { pub fn from_toml(input: &str) -> Result<Self, ConfigError> { /* validate */ } }
 ```
 
@@ -65,7 +65,7 @@ fn rejects_encoded_parent_segment() {
 
 #[test]
 fn rewrites_only_configured_dist_urls() {
-    let rewritten = rewrite_manifest(SOURCE, &policy, &public_base).unwrap();
+    let rewritten = rewrite_manifest(SOURCE, &policy, &root_url).unwrap();
     assert!(rewritten.contains("/mirror/rustup/dist/rust-std-"));
 }
 ```
@@ -78,7 +78,7 @@ Run: `cargo test --test rustup_path_test --test manifest_test`
 
 ```rust
 pub fn parse_dist_path(encoded: &str) -> Result<DistPath, RustupError>;
-pub fn rewrite_manifest(source: &str, policy: &UrlPolicy, public_base: &Url)
+pub fn rewrite_manifest(source: &str, policy: &UrlPolicy, root_url: &Url)
     -> Result<RewrittenManifest, RustupError>;
 ```
 
