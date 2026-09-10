@@ -8,6 +8,7 @@ pub mod rustup;
 pub mod service;
 pub mod sources;
 pub mod storage;
+pub mod vscode;
 
 pub use config::{
     CargoConfig, Config, ConfigError, RustupConfig, SourceConfig, SourceGraph, SourceType,
