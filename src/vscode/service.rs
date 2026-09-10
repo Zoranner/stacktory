@@ -17,6 +17,7 @@ use url::Url;
 
 use crate::{
     SourcePool,
+    audit::{AuditDetails, AuditSink},
     sources::{
         FetchOperation, SourcePoolError,
         registry::{Adapter, AdapterFuture},
@@ -34,6 +35,7 @@ pub struct VscodeAdapter {
 pub struct VscodeService {
     root_url: Url,
     data_dir: PathBuf,
+    audit: AuditSink,
 }
 
 #[derive(Debug, Error)]
@@ -64,9 +66,11 @@ impl VscodeAdapter {
 
 impl VscodeService {
     pub fn new(root_url: Url, data_dir: impl Into<PathBuf>) -> Self {
+        let data_dir = data_dir.into();
         Self {
             root_url,
-            data_dir: data_dir.into(),
+            audit: AuditSink::new(data_dir.clone()),
+            data_dir,
         }
     }
 
@@ -111,22 +115,76 @@ impl VscodeService {
         pool: &SourcePool,
     ) -> Result<Vec<u8>, VscodeError> {
         let cache_path = self.metadata_path(entry_name, &path);
+        let sidecar_path = self.metadata_sidecar_path(entry_name, &path);
         if let Some(contents) = read_if_present(&cache_path)? {
             if validate_cached_metadata(&contents).is_ok() {
+                let selected_proxy = read_source_name(&sidecar_path)?;
+                self.record_vscode(
+                    "vscode_metadata_read",
+                    entry_name,
+                    &path.request_key(),
+                    VscodeAuditDetails {
+                        selected_proxy: selected_proxy.as_deref(),
+                        object_type: "metadata",
+                        cache_status: "hit",
+                        failure_category: None,
+                    },
+                );
                 return Ok(contents);
             }
             fs::remove_file(&cache_path)?;
+            let _ = fs::remove_file(&sidecar_path);
+            self.record_vscode(
+                "vscode_metadata_cache_invalid",
+                entry_name,
+                &path.request_key(),
+                VscodeAuditDetails {
+                    selected_proxy: None,
+                    object_type: "metadata",
+                    cache_status: "miss",
+                    failure_category: Some("invalid_cache"),
+                },
+            );
         }
 
-        let response = pool
-            .fetch(entry_name, &path.request_key(), FetchOperation::Get)
-            .await?;
+        let request_key = path.request_key();
+        let response = match pool
+            .fetch(entry_name, &request_key, FetchOperation::Get)
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                self.record_vscode(
+                    "vscode_metadata_fetch_failed",
+                    entry_name,
+                    &request_key,
+                    VscodeAuditDetails {
+                        selected_proxy: None,
+                        object_type: "metadata",
+                        cache_status: "failed",
+                        failure_category: Some("source_failed"),
+                    },
+                );
+                return Err(error.into());
+            }
+        };
         let contents = rewrite_metadata(&response.body, &self.root_url, entry_name, &path)?;
         atomic_write(&cache_path, &contents)?;
         atomic_write(
-            &self.metadata_sidecar_path(entry_name, &path),
+            &sidecar_path,
             format!("{}\n", response.source_name).as_bytes(),
         )?;
+        self.record_vscode(
+            "vscode_metadata_published",
+            entry_name,
+            &request_key,
+            VscodeAuditDetails {
+                selected_proxy: Some(&response.source_name),
+                object_type: "metadata",
+                cache_status: "published",
+                failure_category: None,
+            },
+        );
         Ok(contents)
     }
 
@@ -155,9 +213,34 @@ impl VscodeService {
             self.artifact_path(entry_name, &publisher, &extension, &version, &filename);
         if let Some(contents) = read_if_present(&cache_path)? {
             if checksum(&contents).eq_ignore_ascii_case(&expected_checksum) {
+                self.record_vscode(
+                    "vscode_artifact_read",
+                    entry_name,
+                    &path.request_key(),
+                    VscodeAuditDetails {
+                        selected_proxy: read_source_name(
+                            &self.metadata_sidecar_path(entry_name, &metadata_path),
+                        )?
+                        .as_deref(),
+                        object_type: "artifact",
+                        cache_status: "hit",
+                        failure_category: None,
+                    },
+                );
                 return Ok(contents);
             }
             fs::remove_file(&cache_path)?;
+            self.record_vscode(
+                "vscode_artifact_cache_invalid",
+                entry_name,
+                &path.request_key(),
+                VscodeAuditDetails {
+                    selected_proxy: None,
+                    object_type: "artifact",
+                    cache_status: "miss",
+                    failure_category: Some("integrity_mismatch"),
+                },
+            );
         }
 
         let mut members = pool
@@ -166,14 +249,12 @@ impl VscodeService {
         if let Some(selected_proxy) = read_source_sidecar(
             &self.metadata_sidecar_path(entry_name, &metadata_path),
             &members,
-        )? {
-            if let Some(position) = members
-                .iter()
-                .position(|member| member.name == selected_proxy)
-            {
-                let selected = members.remove(position);
-                members.insert(0, selected);
-            }
+        )? && let Some(position) = members
+            .iter()
+            .position(|member| member.name == selected_proxy)
+        {
+            let selected = members.remove(position);
+            members.insert(0, selected);
         }
 
         let request_key = format!("api/{publisher}/{extension}/{version}/file/{filename}");
@@ -181,6 +262,20 @@ impl VscodeService {
         let mut failures = Vec::new();
         let mut saw_failure = false;
         let mut all_not_found = true;
+        self.record_vscode(
+            "vscode_artifact_read",
+            entry_name,
+            &request_key,
+            VscodeAuditDetails {
+                selected_proxy: read_source_name(
+                    &self.metadata_sidecar_path(entry_name, &metadata_path),
+                )?
+                .as_deref(),
+                object_type: "artifact",
+                cache_status: "miss",
+                failure_category: None,
+            },
+        );
         for member in members {
             match pool
                 .fetch(&member.name, &request_key, FetchOperation::Get)
@@ -192,26 +287,85 @@ impl VscodeService {
                         &self.metadata_sidecar_path(entry_name, &metadata_path),
                         format!("{}\n", member.name).as_bytes(),
                     )?;
+                    self.record_vscode(
+                        "vscode_artifact_published",
+                        entry_name,
+                        &request_key,
+                        VscodeAuditDetails {
+                            selected_proxy: Some(&member.name),
+                            object_type: "artifact",
+                            cache_status: "published",
+                            failure_category: None,
+                        },
+                    );
                     return Ok(response.body);
                 }
                 Ok(_) => {
                     saw_failure = true;
                     all_not_found = false;
                     failures.push(format!("{}: VSIX SHA-256 mismatch", member.name));
+                    self.record_vscode(
+                        "vscode_artifact_fallback",
+                        entry_name,
+                        &request_key,
+                        VscodeAuditDetails {
+                            selected_proxy: Some(&member.name),
+                            object_type: "artifact",
+                            cache_status: "fallback",
+                            failure_category: Some("integrity_mismatch"),
+                        },
+                    );
                 }
                 Err(error) if is_retryable(&error) => {
                     saw_failure = true;
                     all_not_found = false;
                     failures.push(format!("{}: {error}", member.name));
+                    self.record_vscode(
+                        "vscode_artifact_fallback",
+                        entry_name,
+                        &request_key,
+                        VscodeAuditDetails {
+                            selected_proxy: Some(&member.name),
+                            object_type: "artifact",
+                            cache_status: "fallback",
+                            failure_category: Some("source_unavailable"),
+                        },
+                    );
                 }
                 Err(error) if terminal_status(&error) == Some(404) && is_group => {
                     saw_failure = true;
                     failures.push(format!("{}: {error}", member.name));
+                    self.record_vscode(
+                        "vscode_artifact_fallback",
+                        entry_name,
+                        &request_key,
+                        VscodeAuditDetails {
+                            selected_proxy: Some(&member.name),
+                            object_type: "artifact",
+                            cache_status: "fallback",
+                            failure_category: Some("not_found"),
+                        },
+                    );
                 }
                 Err(error) => return Err(error.into()),
             }
         }
 
+        self.record_vscode(
+            "vscode_artifact_fetch_failed",
+            entry_name,
+            &request_key,
+            VscodeAuditDetails {
+                selected_proxy: None,
+                object_type: "artifact",
+                cache_status: "failed",
+                failure_category: Some(if saw_failure && all_not_found {
+                    "not_found"
+                } else {
+                    "source_failed"
+                }),
+            },
+        );
         Err(SourcePoolError::AllSourcesFailed {
             entry_name: entry_name.to_owned(),
             request_key,
@@ -254,6 +408,35 @@ impl VscodeService {
             .join(extension)
             .join(version)
             .join(filename)
+    }
+
+    fn record_vscode(
+        &self,
+        event: &str,
+        entry_name: &str,
+        object_key: &str,
+        details: VscodeAuditDetails<'_>,
+    ) {
+        if let Err(error) = self.audit.record_detailed(
+            event,
+            object_key,
+            if details.failure_category.is_some() {
+                "failure"
+            } else {
+                "success"
+            },
+            AuditDetails {
+                ecosystem: Some("vscode"),
+                entry_name: Some(entry_name),
+                object_key: Some(object_key),
+                selected_proxy: details.selected_proxy,
+                object_type: Some(details.object_type),
+                cache_status: Some(details.cache_status),
+                failure_category: details.failure_category,
+            },
+        ) {
+            eprintln!("Stacktory audit write failed: {error}");
+        }
     }
 }
 
@@ -470,14 +653,18 @@ fn read_source_sidecar(
     path: &Path,
     members: &[crate::SourceConfig],
 ) -> Result<Option<String>, io::Error> {
+    let Some(source_name) = read_source_name(path)? else {
+        return Ok(None);
+    };
+    Ok((members.iter().any(|member| member.name == source_name)).then_some(source_name))
+}
+
+fn read_source_name(path: &Path) -> Result<Option<String>, io::Error> {
     let Some(contents) = read_if_present(path)? else {
         return Ok(None);
     };
     let source_name = String::from_utf8_lossy(&contents).trim().to_owned();
-    Ok(
-        (!source_name.is_empty() && members.iter().any(|member| member.name == source_name))
-            .then_some(source_name),
-    )
+    Ok((!source_name.is_empty()).then_some(source_name))
 }
 
 fn checksum(contents: &[u8]) -> String {
@@ -494,4 +681,11 @@ fn terminal_status(error: &SourcePoolError) -> Option<u16> {
         SourcePoolError::AllSourcesFailed { status, .. } => *status,
         _ => None,
     }
+}
+
+struct VscodeAuditDetails<'a> {
+    selected_proxy: Option<&'a str>,
+    object_type: &'a str,
+    cache_status: &'a str,
+    failure_category: Option<&'a str>,
 }

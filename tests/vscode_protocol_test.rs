@@ -235,6 +235,16 @@ async fn vsix_download_falls_back_after_hash_mismatch_and_then_uses_cache() {
     );
     assert_eq!(first_file_requests.load(Ordering::SeqCst), 1);
     assert_eq!(second_file_requests.load(Ordering::SeqCst), 1);
+
+    let audit = std::fs::read_to_string(data_dir.path().join("audit/events.jsonl"))
+        .expect("VS Code audit log");
+    assert!(audit.contains(r#""ecosystem":"vscode""#));
+    assert!(audit.contains(r#""entry_name":"group""#));
+    assert!(audit.contains(r#""selected_proxy":"first""#));
+    assert!(audit.contains(r#""selected_proxy":"second""#));
+    assert!(audit.contains(r#""cache_status":"fallback""#));
+    assert!(audit.contains(r#""cache_status":"hit""#));
+    assert!(audit.contains(r#""failure_category":"integrity_mismatch""#));
 }
 
 #[tokio::test]
