@@ -97,6 +97,40 @@ impl VscodePath {
             } => format!("api/{publisher}/{extension}/{version}/file/{filename}"),
         }
     }
+
+    pub(crate) fn publisher(&self) -> &str {
+        match self {
+            Self::Metadata { publisher, .. } | Self::File { publisher, .. } => publisher,
+        }
+    }
+
+    pub(crate) fn extension(&self) -> &str {
+        match self {
+            Self::Metadata { extension, .. } | Self::File { extension, .. } => extension,
+        }
+    }
+
+    pub(crate) fn version(&self) -> Option<&str> {
+        match self {
+            Self::Metadata { version, .. } => version.as_deref(),
+            Self::File { version, .. } => Some(version),
+        }
+    }
+
+    pub(crate) fn filename(&self) -> Option<&str> {
+        match self {
+            Self::Metadata { .. } => None,
+            Self::File { filename, .. } => Some(filename),
+        }
+    }
+
+    pub(crate) fn exact_metadata(&self) -> Self {
+        Self::Metadata {
+            publisher: self.publisher().to_owned(),
+            extension: self.extension().to_owned(),
+            version: self.version().map(str::to_owned),
+        }
+    }
 }
 
 fn validate_version(version: &str, path: &str) -> Result<(), VscodePathError> {

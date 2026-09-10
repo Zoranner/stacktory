@@ -122,6 +122,161 @@ async fn version_metadata_requires_the_requested_version_and_verified_sha256() {
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
 }
 
+#[tokio::test]
+async fn vsix_download_falls_back_after_hash_mismatch_and_then_uses_cache() {
+    let vsix = b"verified vsix".to_vec();
+    let expected_hash = format!("{:x}", Sha256::digest(&vsix));
+    let first_file_requests = Arc::new(AtomicUsize::new(0));
+    let second_file_requests = Arc::new(AtomicUsize::new(0));
+    let metadata = metadata_body(&expected_hash);
+    let first = start_server({
+        let latest_metadata = metadata.clone();
+        let version_metadata = metadata.clone();
+        let first_file_requests = first_file_requests.clone();
+        Router::new()
+            .route(
+                "/api/redhat/vscode-yaml",
+                get(move || {
+                    let metadata = latest_metadata.clone();
+                    async move { metadata }
+                }),
+            )
+            .route(
+                "/api/redhat/vscode-yaml/1.17.0",
+                get(move || {
+                    let metadata = version_metadata.clone();
+                    async move { metadata }
+                }),
+            )
+            .route(
+                "/api/redhat/vscode-yaml/1.17.0/file/redhat.vscode-yaml-1.17.0.vsix",
+                get(move || {
+                    let first_file_requests = first_file_requests.clone();
+                    async move {
+                        first_file_requests.fetch_add(1, Ordering::SeqCst);
+                        "tampered vsix"
+                    }
+                }),
+            )
+    })
+    .await;
+    let second = start_server({
+        let latest_metadata = metadata.clone();
+        let version_metadata = metadata.clone();
+        let second_file_requests = second_file_requests.clone();
+        let expected_vsix = vsix.clone();
+        Router::new()
+            .route(
+                "/api/redhat/vscode-yaml",
+                get(move || {
+                    let metadata = latest_metadata.clone();
+                    async move { metadata }
+                }),
+            )
+            .route(
+                "/api/redhat/vscode-yaml/1.17.0",
+                get(move || {
+                    let metadata = version_metadata.clone();
+                    async move { metadata }
+                }),
+            )
+            .route(
+                "/api/redhat/vscode-yaml/1.17.0/file/redhat.vscode-yaml-1.17.0.vsix",
+                get(move || {
+                    let second_file_requests = second_file_requests.clone();
+                    let vsix = expected_vsix.clone();
+                    async move {
+                        second_file_requests.fetch_add(1, Ordering::SeqCst);
+                        vsix
+                    }
+                }),
+            )
+    })
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = vscode_group_router(first, second, data_dir.path());
+
+    let metadata_response = router
+        .clone()
+        .oneshot(get_request("/mirror/vscode/group/api/redhat/vscode-yaml"))
+        .await
+        .expect("metadata response");
+    assert_eq!(metadata_response.status(), StatusCode::OK);
+
+    let first_download = router
+        .clone()
+        .oneshot(get_request(
+            "/mirror/vscode/group/api/redhat/vscode-yaml/1.17.0/file/redhat.vscode-yaml-1.17.0.vsix",
+        ))
+        .await
+        .expect("first VSIX response");
+    assert_eq!(first_download.status(), StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(first_download.into_body(), usize::MAX)
+            .await
+            .expect("first VSIX body"),
+        vsix
+    );
+    assert_eq!(first_file_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(second_file_requests.load(Ordering::SeqCst), 1);
+
+    let second_download = router
+        .oneshot(get_request(
+            "/mirror/vscode/group/api/redhat/vscode-yaml/1.17.0/file/redhat.vscode-yaml-1.17.0.vsix",
+        ))
+        .await
+        .expect("cached VSIX response");
+    assert_eq!(second_download.status(), StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(second_download.into_body(), usize::MAX)
+            .await
+            .expect("cached VSIX body"),
+        vsix
+    );
+    assert_eq!(first_file_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(second_file_requests.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn mismatched_vsix_is_not_published_to_cache() {
+    let expected_hash = format!("{:x}", Sha256::digest(b"expected vsix"));
+    let metadata = metadata_body(&expected_hash);
+    let upstream = start_server(
+        Router::new()
+            .route(
+                "/api/redhat/vscode-yaml/1.17.0",
+                get(move || {
+                    let metadata = metadata.clone();
+                    async move { metadata }
+                }),
+            )
+            .route(
+                "/api/redhat/vscode-yaml/1.17.0/file/redhat.vscode-yaml-1.17.0.vsix",
+                get(|| async { "tampered vsix" }),
+            ),
+    )
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = vscode_router(upstream, data_dir.path());
+
+    let response = router
+        .oneshot(get_request(
+            "/mirror/vscode/official/api/redhat/vscode-yaml/1.17.0/file/redhat.vscode-yaml-1.17.0.vsix",
+        ))
+        .await
+        .expect("mismatched VSIX response");
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert!(
+        !data_dir
+            .path()
+            .join(
+                "vscode/artifacts/official/redhat/vscode-yaml/1.17.0/redhat.vscode-yaml-1.17.0.vsix"
+            )
+            .exists()
+    );
+}
+
 #[test]
 fn vscode_path_rejects_unbounded_or_non_vsix_file_paths() {
     for path in [
@@ -163,6 +318,31 @@ fn vscode_router(upstream: Url, data_dir: &std::path::Path) -> axum::Router {
     router_with_registry(registry)
 }
 
+fn vscode_group_router(first: Url, second: Url, data_dir: &std::path::Path) -> axum::Router {
+    let registry = AdapterRegistry::new()
+        .with_adapter(
+            "vscode",
+            Arc::new(
+                SourcePool::new(
+                    "vscode",
+                    SourceGraph::new(vec![
+                        proxy("first", first.as_str()),
+                        proxy("second", second.as_str()),
+                        group("group", &["first", "second"]),
+                    ])
+                    .expect("source graph"),
+                )
+                .expect("source pool"),
+            ),
+            Arc::new(VscodeAdapter::new(
+                Url::parse("http://127.0.0.1:18761").expect("root URL"),
+                data_dir,
+            )),
+        )
+        .expect("registry");
+    router_with_registry(registry)
+}
+
 fn proxy(name: &str, base_url: &str) -> SourceConfig {
     SourceConfig {
         name: name.to_owned(),
@@ -171,6 +351,29 @@ fn proxy(name: &str, base_url: &str) -> SourceConfig {
         require_https: false,
         members: vec![],
     }
+}
+
+fn group(name: &str, members: &[&str]) -> SourceConfig {
+    SourceConfig {
+        name: name.to_owned(),
+        source_type: SourceType::Group,
+        base_url: None,
+        require_https: false,
+        members: members.iter().map(|member| (*member).to_owned()).collect(),
+    }
+}
+
+fn metadata_body(checksum: &str) -> String {
+    serde_json::json!({
+        "namespace": "redhat",
+        "name": "vscode-yaml",
+        "version": "1.17.0",
+        "files": {
+            "download": "https://open-vsx.example/api/redhat/vscode-yaml/1.17.0/file/redhat.vscode-yaml-1.17.0.vsix",
+            "sha256": checksum
+        }
+    })
+    .to_string()
 }
 
 async fn start_server(router: Router) -> Url {

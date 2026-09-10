@@ -11,6 +11,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use url::Url;
 
@@ -47,8 +48,6 @@ pub enum VscodeError {
     InvalidMetadata(String),
     #[error("VS Code storage I/O failed: {0}")]
     Storage(#[from] io::Error),
-    #[error("VSIX file serving is not implemented yet")]
-    ArtifactNotImplemented,
 }
 
 impl VscodeAdapter {
@@ -78,7 +77,7 @@ impl VscodeService {
         pool: &SourcePool,
     ) -> Response {
         match self.serve(entry_name, path, pool).await {
-            Ok(body) => response(StatusCode::OK, "application/json", body),
+            Ok((content_type, body)) => response(StatusCode::OK, content_type, body),
             Err(error) => vscode_error_response(&error),
         }
     }
@@ -88,16 +87,20 @@ impl VscodeService {
         entry_name: &str,
         path: &str,
         pool: &SourcePool,
-    ) -> Result<Vec<u8>, VscodeError> {
+    ) -> Result<(&'static str, Vec<u8>), VscodeError> {
         if pool.proxy_members(entry_name).is_none() {
             return Err(SourcePoolError::UnknownEntry(entry_name.to_owned()).into());
         }
 
         match VscodePath::parse(path)? {
-            metadata @ VscodePath::Metadata { .. } => {
-                self.metadata(entry_name, metadata, pool).await
-            }
-            VscodePath::File { .. } => Err(VscodeError::ArtifactNotImplemented),
+            metadata @ VscodePath::Metadata { .. } => self
+                .metadata(entry_name, metadata, pool)
+                .await
+                .map(|body| ("application/json", body)),
+            file @ VscodePath::File { .. } => self
+                .artifact(entry_name, file, pool)
+                .await
+                .map(|body| ("application/zip", body)),
         }
     }
 
@@ -127,6 +130,97 @@ impl VscodeService {
         Ok(contents)
     }
 
+    async fn artifact(
+        &self,
+        entry_name: &str,
+        path: VscodePath,
+        pool: &SourcePool,
+    ) -> Result<Vec<u8>, VscodeError> {
+        let publisher = path.publisher().to_owned();
+        let extension = path.extension().to_owned();
+        let version = path
+            .version()
+            .ok_or_else(|| VscodePathError::Invalid(path.request_key()))?
+            .to_owned();
+        let filename = path
+            .filename()
+            .ok_or_else(|| VscodePathError::Invalid(path.request_key()))?
+            .to_owned();
+        let metadata_path = path.exact_metadata();
+        let metadata = self
+            .metadata(entry_name, metadata_path.clone(), pool)
+            .await?;
+        let expected_checksum = metadata_checksum(&metadata)?;
+        let cache_path =
+            self.artifact_path(entry_name, &publisher, &extension, &version, &filename);
+        if let Some(contents) = read_if_present(&cache_path)? {
+            if checksum(&contents).eq_ignore_ascii_case(&expected_checksum) {
+                return Ok(contents);
+            }
+            fs::remove_file(&cache_path)?;
+        }
+
+        let mut members = pool
+            .proxy_members(entry_name)
+            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
+        if let Some(selected_proxy) = read_source_sidecar(
+            &self.metadata_sidecar_path(entry_name, &metadata_path),
+            &members,
+        )? {
+            if let Some(position) = members
+                .iter()
+                .position(|member| member.name == selected_proxy)
+            {
+                let selected = members.remove(position);
+                members.insert(0, selected);
+            }
+        }
+
+        let request_key = format!("api/{publisher}/{extension}/{version}/file/{filename}");
+        let is_group = pool.is_group(entry_name);
+        let mut failures = Vec::new();
+        let mut saw_failure = false;
+        let mut all_not_found = true;
+        for member in members {
+            match pool
+                .fetch(&member.name, &request_key, FetchOperation::Get)
+                .await
+            {
+                Ok(response) if checksum(&response.body) == expected_checksum => {
+                    atomic_write(&cache_path, &response.body)?;
+                    atomic_write(
+                        &self.metadata_sidecar_path(entry_name, &metadata_path),
+                        format!("{}\n", member.name).as_bytes(),
+                    )?;
+                    return Ok(response.body);
+                }
+                Ok(_) => {
+                    saw_failure = true;
+                    all_not_found = false;
+                    failures.push(format!("{}: VSIX SHA-256 mismatch", member.name));
+                }
+                Err(error) if is_retryable(&error) => {
+                    saw_failure = true;
+                    all_not_found = false;
+                    failures.push(format!("{}: {error}", member.name));
+                }
+                Err(error) if terminal_status(&error) == Some(404) && is_group => {
+                    saw_failure = true;
+                    failures.push(format!("{}: {error}", member.name));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+
+        Err(SourcePoolError::AllSourcesFailed {
+            entry_name: entry_name.to_owned(),
+            request_key,
+            failures: failures.join("; "),
+            status: (is_group && saw_failure && all_not_found).then_some(404),
+        }
+        .into())
+    }
+
     fn metadata_path(&self, entry_name: &str, path: &VscodePath) -> PathBuf {
         self.data_dir
             .join("vscode")
@@ -142,6 +236,24 @@ impl VscodeService {
             .and_then(|name| name.to_str())
             .expect("VS Code metadata path must have a file name");
         path.with_file_name(format!("{file_name}.source"))
+    }
+
+    fn artifact_path(
+        &self,
+        entry_name: &str,
+        publisher: &str,
+        extension: &str,
+        version: &str,
+        filename: &str,
+    ) -> PathBuf {
+        self.data_dir
+            .join("vscode")
+            .join("artifacts")
+            .join(entry_name)
+            .join(publisher)
+            .join(extension)
+            .join(version)
+            .join(filename)
     }
 }
 
@@ -269,6 +381,18 @@ fn validate_checksum(value: &str) -> Result<(), VscodeError> {
     }
 }
 
+fn metadata_checksum(body: &[u8]) -> Result<String, VscodeError> {
+    let metadata: Value = serde_json::from_slice(body)?;
+    let checksum = metadata
+        .get("files")
+        .and_then(Value::as_object)
+        .and_then(|files| files.get("sha256"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| VscodeError::InvalidMetadata("metadata SHA-256 is missing".to_owned()))?;
+    validate_checksum(checksum)?;
+    Ok(checksum.to_ascii_lowercase())
+}
+
 fn local_download_url(
     root_url: &Url,
     entry_name: &str,
@@ -302,7 +426,6 @@ fn vscode_error_response(error: &VscodeError) -> Response {
             StatusCode::BAD_GATEWAY
         }
         VscodeError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        VscodeError::ArtifactNotImplemented => StatusCode::NOT_FOUND,
     };
     status.into_response()
 }
@@ -343,33 +466,32 @@ fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), io::Error> {
     }
 }
 
-trait VscodePathParts {
-    fn publisher(&self) -> &str;
-    fn extension(&self) -> &str;
-    fn version(&self) -> Option<&str>;
+fn read_source_sidecar(
+    path: &Path,
+    members: &[crate::SourceConfig],
+) -> Result<Option<String>, io::Error> {
+    let Some(contents) = read_if_present(path)? else {
+        return Ok(None);
+    };
+    let source_name = String::from_utf8_lossy(&contents).trim().to_owned();
+    Ok(
+        (!source_name.is_empty() && members.iter().any(|member| member.name == source_name))
+            .then_some(source_name),
+    )
 }
 
-impl VscodePathParts for VscodePath {
-    fn publisher(&self) -> &str {
-        match self {
-            VscodePath::Metadata { publisher, .. } | VscodePath::File { publisher, .. } => {
-                publisher
-            }
-        }
-    }
+fn checksum(contents: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(contents))
+}
 
-    fn extension(&self) -> &str {
-        match self {
-            VscodePath::Metadata { extension, .. } | VscodePath::File { extension, .. } => {
-                extension
-            }
-        }
-    }
+fn is_retryable(error: &SourcePoolError) -> bool {
+    matches!(error, SourcePoolError::AllSourcesFailed { .. })
+}
 
-    fn version(&self) -> Option<&str> {
-        match self {
-            VscodePath::Metadata { version, .. } => version.as_deref(),
-            VscodePath::File { version, .. } => Some(version),
-        }
+fn terminal_status(error: &SourcePoolError) -> Option<u16> {
+    match error {
+        SourcePoolError::TerminalSourceError { status, .. } => Some(*status),
+        SourcePoolError::AllSourcesFailed { status, .. } => *status,
+        _ => None,
     }
 }
