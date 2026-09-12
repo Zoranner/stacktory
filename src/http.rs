@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::{
     Router,
     body::{Body, to_bytes},
-    extract::{Path, State},
+    extract::{OriginalUri, Path, State},
     http::{Method, Request, StatusCode, header},
     middleware::{self, Next},
     response::IntoResponse,
@@ -113,6 +113,7 @@ async fn registry_cors(request: Request<Body>, next: Next) -> axum::response::Re
 async fn named_source(
     State(registry): State<AdapterRegistry>,
     Path((ecosystem, name, path)): Path<(String, String, String)>,
+    OriginalUri(uri): OriginalUri,
     method: Method,
     body: Body,
 ) -> axum::response::Response {
@@ -126,11 +127,18 @@ async fn named_source(
         Ok(body) => body.to_vec(),
         Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
     };
+    let prefix = format!("/mirror/{ecosystem}/{name}/");
+    let raw_path = uri.path().strip_prefix(&prefix).unwrap_or(&path).to_owned();
     registered
         .adapter
         .handle(
             name,
-            AdapterRequest { method, path, body },
+            AdapterRequest {
+                method,
+                path,
+                raw_path,
+                body,
+            },
             registered.pool.clone(),
         )
         .await

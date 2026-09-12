@@ -11,6 +11,7 @@ pub type AdapterFuture = Pin<Box<dyn Future<Output = Response> + Send>>;
 pub struct AdapterRequest {
     pub method: Method,
     pub path: String,
+    pub raw_path: String,
     pub body: Vec<u8>,
 }
 

@@ -4,6 +4,7 @@ pub mod audit;
 pub mod cargo;
 mod config;
 pub mod http;
+pub mod npm;
 pub mod rustup;
 pub mod service;
 pub mod sources;

@@ -113,6 +113,34 @@ async fn route_forwards_post_method_and_body_to_the_registered_adapter() {
 }
 
 #[tokio::test]
+async fn route_preserves_encoded_path_for_protocol_adapters() {
+    let observed = Arc::new(Mutex::new(None));
+    let registry = AdapterRegistry::new()
+        .with_adapter(
+            "demo",
+            pool("demo"),
+            Arc::new(RawPathAdapter {
+                observed: observed.clone(),
+            }),
+        )
+        .expect("adapter registration");
+
+    router_with_registry(registry)
+        .oneshot(
+            Request::get("/mirror/demo/internal/@scope%2Fpackage")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(
+        *observed.lock().expect("observation lock"),
+        Some(("@scope/package".to_owned(), "@scope%2Fpackage".to_owned()))
+    );
+}
+
+#[tokio::test]
 async fn route_rejects_bodies_larger_than_one_mebibyte() {
     let registry = AdapterRegistry::new()
         .with_adapter(
@@ -274,6 +302,29 @@ impl Adapter for EchoAdapter {
 struct RecordingAdapter {
     ecosystem: &'static str,
     observed: ObservedRequest,
+}
+
+struct RawPathAdapter {
+    observed: Arc<Mutex<Option<(String, String)>>>,
+}
+
+impl Adapter for RawPathAdapter {
+    fn ecosystem(&self) -> &str {
+        "demo"
+    }
+
+    fn handle(
+        &self,
+        _source_name: String,
+        request: AdapterRequest,
+        _pool: Arc<SourcePool>,
+    ) -> Pin<Box<dyn Future<Output = Response> + Send>> {
+        let observed = self.observed.clone();
+        Box::pin(async move {
+            *observed.lock().expect("observation lock") = Some((request.path, request.raw_path));
+            Response::new(Body::empty())
+        })
+    }
 }
 
 impl Adapter for RecordingAdapter {
