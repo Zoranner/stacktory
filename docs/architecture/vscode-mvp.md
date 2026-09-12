@@ -79,12 +79,15 @@ VS Code 使用产品级 `extensionsGallery` 配置：
 ```json
 {
   "extensionsGallery": {
-    "serviceUrl": "http://127.0.0.1:18761/mirror/vscode/group"
+    "serviceUrl": "https://stacktory.example.internal/mirror/vscode/group",
+    "resourceUrlTemplate": "https://stacktory.example.internal/mirror/vscode/group/resource/{publisher}/{name}/{version}/{path}",
+    "extensionUrlTemplate": "https://stacktory.example.internal/mirror/vscode/group/extension/{publisher}/{name}/latest"
   }
 }
 ```
 
 用户 settings 的 `extensions.gallery.serviceUrl` 会进入 VS Code 私有 Marketplace 登录
 流程，不能作为无登录内网镜像入口。真实验证必须使用隔离的 VS Code runtime 副本、独立
-`--user-data-dir` 与 `--extensions-dir`，不能修改日常安装或 profile。通过扩展侧栏搜索
-扩展、打开详情、安装扩展，并核对 Stacktory query 和 asset 审计事件。
+`--user-data-dir` 与 `--extensions-dir`，不能修改日常安装或 profile。产品级地址必须
+使用受信任 HTTPS；通过扩展侧栏搜索扩展、打开详情、安装扩展，并核对 Stacktory query
+和 asset 审计事件。

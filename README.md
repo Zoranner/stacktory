@@ -4,9 +4,25 @@ Stacktory 是面向公司内网开发机的研发制品与动态工具链供应�
 配置化的上游顺序获取内容，开发机只访问 Stacktory 的内网地址；客户端不能传入任意
 上游 URL。
 
-当前 MVP 实现 Rustup 动态工具链镜像适配器和 Cargo Sparse Index/crate 只读代理，
-并提供 Rustup、Cargo 的命名来源配置模型。其他包与制品生态会继续位于统一的
-`/mirror/{ecosystem}` 命名空间，尚未实现的能力标记为后续工作。
+当前 MVP 实现 Rustup 动态工具链镜像适配器、Cargo Sparse Index/crate 只读代理和
+Microsoft Marketplace 的 VS Code 扩展只读代理。Docker、npm、Unity UPM、PyPI 和
+NuGet 已完成来源配置模型与适配边界设计，但尚未注册协议路由。
+
+面向用户的安装、配置和排障步骤见 [`docs/usage.md`](docs/usage.md)。架构文档描述
+协议契约，不代表未注册生态已经可用。
+
+## 能力状态
+
+| 生态 | 状态 | 客户端 |
+| --- | --- | --- |
+| Rustup | 已实现 | `rustup toolchain install` |
+| Cargo | 已实现 | `cargo build`、`cargo fetch`、`cargo install` |
+| VS Code | 已实现 | 受控产品副本的扩展侧栏 |
+| Docker | 未实现 | 暂不可用 |
+| npm | 未实现 | 暂不可用 |
+| Unity UPM | 未实现 | 暂不可用 |
+| PyPI | 未实现 | 暂不可用 |
+| NuGet | 未实现 | 暂不可用 |
 
 ## Rustup 路由
 
