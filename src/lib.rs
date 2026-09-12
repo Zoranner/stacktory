@@ -3,6 +3,7 @@
 pub mod audit;
 pub mod cargo;
 mod config;
+pub mod docker;
 pub mod http;
 pub mod npm;
 pub mod nuget;
