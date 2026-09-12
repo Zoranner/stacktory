@@ -6,10 +6,7 @@
 路径、metadata、tarball 缓存和运行时路由；UPM 仍未实现或注册。本文档中的 UPM
 路径是目标契约，未注册的部分不是现有服务能力。
 
-npm 与 UPM 都使用 npm-compatible registry 的 metadata、版本对象和 tarball
-文件模型。两者共享协议解析、来源访问、缓存、完整性和 URL 重写的核心实现，
-但保持独立的生态入口和客户端配置语义。UPM 不能通过复制一套 npm handler
-实现，也不能把 npm 入口扩展成隐式 UPM 模式。
+npm 与 UPM 都使用 npm-compatible registry 的 metadata、版本对象和 tarball 文件模型。npm 客户端包括 npm 和 Bun；两者共享协议解析、来源访问、缓存、完整性和 URL 重写的核心实现，但保持独立的生态入口和客户端配置语义。UPM 不能通过复制一套 npm handler 实现，也不能把 npm 入口扩展成隐式 UPM 模式。
 
 ## 公共来源契约
 

@@ -1,21 +1,67 @@
-# npm
+# npm 生态
 
-## 配置
+## 状态
 
-管理员提供 Stacktory 服务地址和 npm 入口名称后，将 registry 指向对应的命名入口：
+npm Registry 适配器当前可用。npm 和 Bun 使用同一个 npm-compatible registry 入口，但客户端配置方式不同。
+
+管理员提供 Stacktory 服务地址和 npm 入口名称后，将下面示例中的地址替换为管理员提供的地址：
 
 ```text
-npm config set registry https://stacktory.example.internal/mirror/npm/group
+https://stacktory.example.internal/mirror/npm/group/
 ```
 
-随后可以继续使用：
+## npm 配置
+
+使用 npm 命令配置当前用户的 registry：
+
+```text
+npm config set registry https://stacktory.example.internal/mirror/npm/group/
+```
+
+也可以在项目根目录的 `.npmrc` 中写入：
+
+```text
+registry=https://stacktory.example.internal/mirror/npm/group/
+```
+
+配置完成后，npm 命令不需要改变：
 
 ```text
 npm install
 npm ci
+npm install <package>
 ```
 
-普通包和 scoped package 都通过同一个 registry 入口访问。scoped package 的编码路径由 npm 客户端和 Stacktory 适配器处理，不需要手工拼接 `%2F`。
+普通包和 scoped package 都通过同一个 registry 入口访问，不需要手工拼接 `%2F`。
+
+## Bun 配置
+
+推荐在项目根目录、与 `package.json` 同级的位置创建 `bunfig.toml`：
+
+```toml
+[install]
+registry = "https://stacktory.example.internal/mirror/npm/group/"
+```
+
+Bun 也支持在用户目录配置全局 Bun registry。Windows 用户目录通常是 `%USERPROFILE%\.bunfig.toml`；项目级 `bunfig.toml` 会覆盖全局配置。
+
+配置完成后，使用 Bun 的正常命令：
+
+```text
+bun install
+bun add <package>
+bun remove <package>
+bunx <package>
+```
+
+如果只希望某个 npm scope 使用 Stacktory，可以在 `bunfig.toml` 中配置：
+
+```toml
+[install.scopes]
+"@company" = "https://stacktory.example.internal/mirror/npm/group/"
+```
+
+将 `@company` 和地址替换为管理员提供的 scope 与入口。Bun 官方支持通过 `bunfig.toml` 的 `[install] registry` 设置默认 registry，也支持通过 `[install.scopes]` 为指定 scope 设置 registry。
 
 ## 只读边界
 
