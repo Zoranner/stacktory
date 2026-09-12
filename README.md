@@ -10,7 +10,7 @@ Stacktory 为公司内网开发机提供统一的工具链和软件包下载入�
 | Cargo | 可用 | 配置 Cargo source replacement 后正常使用 Cargo |
 | VS Code 扩展 | 可用 | 使用公司提供的专用 VS Code，在扩展面板中安装 |
 | Docker 镜像 | 暂不可用 | 请勿配置 Docker |
-| npm 包 | 暂不可用 | 请勿配置 npm |
+| npm 包 | 可用 | 配置 npm registry 后使用 `npm install` 或 `npm ci` |
 | Unity UPM 包 | 暂不可用 | 请勿配置 Unity Package Manager |
 | PyPI 包 | 暂不可用 | 请勿配置 pip |
 | NuGet 包 | 暂不可用 | 请勿配置 NuGet |
