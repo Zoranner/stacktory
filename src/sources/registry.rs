@@ -1,6 +1,9 @@
 use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc};
 
-use axum::{http::Method, response::Response};
+use axum::{
+    http::{HeaderMap, Method},
+    response::Response,
+};
 use thiserror::Error;
 
 use super::SourcePool;
@@ -12,6 +15,7 @@ pub struct AdapterRequest {
     pub method: Method,
     pub path: String,
     pub raw_path: String,
+    pub headers: HeaderMap,
     pub body: Vec<u8>,
 }
 

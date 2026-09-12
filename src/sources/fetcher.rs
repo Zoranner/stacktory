@@ -1,5 +1,6 @@
 use std::{net::SocketAddr, time::Duration};
 
+use reqwest::header::HeaderMap;
 use reqwest::redirect::Policy;
 use thiserror::Error;
 use url::Url;
@@ -11,6 +12,7 @@ const MARKETPLACE_ACCEPT: &str = "application/json;api-version=3.0-preview.1";
 pub(crate) struct FetchResponse {
     pub(crate) body: Vec<u8>,
     pub(crate) content_type: Option<String>,
+    pub(crate) headers: HeaderMap,
 }
 
 #[derive(Debug)]
@@ -61,7 +63,23 @@ impl HttpFetcher {
         url: Url,
         timeout: Duration,
     ) -> Result<FetchResponse, FetchError> {
-        let response = self.client.get(url.clone()).timeout(timeout).send().await;
+        self.fetch_with_headers(url, HeaderMap::new(), timeout)
+            .await
+    }
+
+    pub(crate) async fn fetch_with_headers(
+        &self,
+        url: Url,
+        headers: HeaderMap,
+        timeout: Duration,
+    ) -> Result<FetchResponse, FetchError> {
+        let response = self
+            .client
+            .get(url.clone())
+            .headers(headers)
+            .timeout(timeout)
+            .send()
+            .await;
         self.response_bytes(url, response).await
     }
 
@@ -98,12 +116,14 @@ impl HttpFetcher {
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
+        let headers = response.headers().clone();
         response
             .bytes()
             .await
             .map(|bytes| FetchResponse {
                 body: bytes.to_vec(),
                 content_type,
+                headers,
             })
             .map_err(|error| FetchError::ResponseBody(url, error))
     }

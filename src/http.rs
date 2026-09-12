@@ -115,6 +115,7 @@ async fn named_source(
     Path((ecosystem, name, path)): Path<(String, String, String)>,
     OriginalUri(uri): OriginalUri,
     method: Method,
+    headers: header::HeaderMap,
     body: Body,
 ) -> axum::response::Response {
     let Some(registered) = registry.get(&ecosystem) else {
@@ -137,6 +138,7 @@ async fn named_source(
                 method,
                 path,
                 raw_path,
+                headers,
                 body,
             },
             registered.pool.clone(),

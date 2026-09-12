@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use axum::http::HeaderMap;
 use thiserror::Error;
 use url::Url;
 
@@ -36,6 +37,7 @@ pub struct SourceResponse {
     pub source_name: String,
     pub body: Vec<u8>,
     pub content_type: Option<String>,
+    pub headers: HeaderMap,
 }
 
 #[derive(Clone, Copy)]
@@ -145,6 +147,17 @@ impl SourcePool {
         request_key: &str,
         operation: FetchOperation,
     ) -> Result<SourceResponse, SourcePoolError> {
+        self.fetch_proxy_path_with_headers(source_name, request_key, HeaderMap::new(), operation)
+            .await
+    }
+
+    pub async fn fetch_proxy_path_with_headers(
+        &self,
+        source_name: &str,
+        request_key: &str,
+        headers: HeaderMap,
+        operation: FetchOperation,
+    ) -> Result<SourceResponse, SourcePoolError> {
         let source = self
             .graph
             .get(source_name)
@@ -154,11 +167,16 @@ impl SourcePool {
         }
         let request_key = normalize_proxy_path(request_key)?;
         let url = source_url_raw(source, &request_key)?;
-        match self.fetcher.fetch(url, operation.timeout()).await {
+        match self
+            .fetcher
+            .fetch_with_headers(url, headers, operation.timeout())
+            .await
+        {
             Ok(response) => Ok(SourceResponse {
                 source_name: source_name.to_owned(),
                 body: response.body,
                 content_type: response.content_type,
+                headers: response.headers,
             }),
             Err(error) if error.is_retryable() => Err(SourcePoolError::AllSourcesFailed {
                 entry_name: source_name.to_owned(),
@@ -224,6 +242,7 @@ impl SourcePool {
                         source_name: source.name,
                         body: response.body,
                         content_type: response.content_type,
+                        headers: response.headers,
                     });
                 }
                 Err(error) if error.is_retryable() => {
@@ -274,6 +293,7 @@ impl SourcePool {
                 source_name: source_name.to_owned(),
                 body: response.body,
                 content_type: response.content_type,
+                headers: response.headers,
             }),
             Err(error) if error.is_retryable() => Err(SourcePoolError::AllSourcesFailed {
                 entry_name: source_name.to_owned(),
