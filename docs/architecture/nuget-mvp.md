@@ -47,6 +47,7 @@ group 时多个 proxy 不自动组合。
 
 ```text
 GET /mirror/nuget/{name}/v3/index.json
+GET /mirror/nuget/{name}/package/{id}/index.json
 GET /mirror/nuget/{name}/registration/{*path}
 GET /mirror/nuget/{name}/package/{id}/{version}/{id}.{version}.nupkg
 ```

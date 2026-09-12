@@ -114,6 +114,37 @@ async fn package_integrity_failure_falls_back_and_updates_binding_source() {
     assert!(audit.contains(r#""failure_category":"integrity_mismatch""#));
 }
 
+#[tokio::test]
+async fn package_version_index_falls_back_without_merging_sources() {
+    let (port, address) = start_group_server_with_missing_first_package_index().await;
+    let data_dir = tempdir().expect("data directory");
+    let router = group_router(port, address, data_dir.path());
+
+    let response = router
+        .oneshot(get_request("/mirror/nuget/group/package/foo/index.json"))
+        .await
+        .expect("package version index response");
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("package version index body"),
+    )
+    .expect("package version index JSON");
+    assert_eq!(body["versions"], serde_json::json!(["1.0.0"]));
+    let source: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            data_dir
+                .path()
+                .join("nuget/metadata/group/service-index.source"),
+        )
+        .expect("service index source"),
+    )
+    .expect("service index source JSON");
+    assert_eq!(source["selected_proxy"], "second");
+}
+
 fn get_request(path: &str) -> Request<Body> {
     Request::get(path).body(Body::empty()).expect("request")
 }
@@ -266,6 +297,47 @@ async fn start_group_server(
                     }
                 }
             }),
+        );
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.expect("server");
+    });
+    (port, address)
+}
+
+async fn start_group_server_with_missing_first_package_index() -> (u16, SocketAddr) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let port = address.port();
+    let router = Router::new()
+        .route(
+            "/first/v3/index.json",
+            get(move || async move {
+                format!(
+                    r#"{{"version":"3.0.0","resources":[
+                        {{"@id":"http://first.example:{port}/first/v3/registration/","@type":"RegistrationsBaseUrl/3.6.0"}},
+                        {{"@id":"http://first.example:{port}/first/v3-flatcontainer/","@type":"PackageBaseAddress/3.0.0"}}
+                    ]}}"#
+                )
+            }),
+        )
+        .route(
+            "/second/v3/index.json",
+            get(move || async move {
+                format!(
+                    r#"{{"version":"3.0.0","resources":[
+                        {{"@id":"http://second.example:{port}/second/v3/registration/","@type":"RegistrationsBaseUrl/3.6.0"}},
+                        {{"@id":"http://second.example:{port}/second/v3-flatcontainer/","@type":"PackageBaseAddress/3.0.0"}}
+                    ]}}"#
+                )
+            }),
+        )
+        .route(
+            "/first/v3-flatcontainer/foo/index.json",
+            get(|| async { axum::http::StatusCode::NOT_FOUND }),
+        )
+        .route(
+            "/second/v3-flatcontainer/foo/index.json",
+            get(|| async { r#"{"versions":["1.0.0"]}"# }),
         );
     tokio::spawn(async move {
         axum::serve(listener, router).await.expect("server");

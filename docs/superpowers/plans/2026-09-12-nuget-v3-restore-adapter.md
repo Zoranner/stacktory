@@ -147,11 +147,11 @@
 - Modify: `tests/nuget_package_test.rs`
 - Modify: `README.md`
 
-- [ ] Run the complete local upstream test suite covering service index, registration, package content, path traversal, unknown resources, redirect handling, fallback, cache isolation, and audit output.
-- [ ] Run `cargo fmt --all`.
-- [ ] Run `cargo test --all-targets --all-features --locked`.
-- [ ] Run `cargo clippy --all-targets --all-features -- -D warnings`.
-- [ ] Run `git diff --check`.
-- [ ] Start the service from the repository root using a temporary NuGet configuration and local/real upstream settings as appropriate.
-- [ ] Run a separate `dotnet restore` against `/mirror/nuget/{entry}/v3/index.json`, record whether the real client completes, and keep client verification separate from local protocol tests.
+- [x] Run the complete local upstream test suite covering service index, registration, package content, path traversal, unknown resources, redirect handling, fallback, cache isolation, and audit output.
+- [x] Run `cargo fmt --all`.
+- [x] Run `cargo test --all-targets --all-features --locked`.
+- [x] Run `cargo clippy --all-targets --all-features -- -D warnings`.
+- [x] Run `git diff --check`.
+- [x] Start the service from the repository root using a temporary NuGet configuration and local/real upstream settings as appropriate.
+- [x] Run a separate `dotnet restore` against `/mirror/nuget/{entry}/v3/index.json`, record whether the real client completes, and keep client verification separate from local protocol tests.
 - [ ] Commit final verification/documentation changes as `验证 NuGet restore 客户端链路`.

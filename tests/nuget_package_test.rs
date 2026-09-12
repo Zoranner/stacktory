@@ -187,6 +187,37 @@ async fn package_version_index_is_available_for_restore_clients() {
     assert_eq!(body["versions"], serde_json::json!(["1.0.0"]));
 }
 
+#[tokio::test]
+async fn package_content_can_use_a_verified_package_version_index_binding() {
+    let package = valid_nupkg();
+    let package_hash = STANDARD.encode(Sha512::digest(&package));
+    let (upstream, address) =
+        start_package_server(package.clone(), package_hash, Arc::new(AtomicUsize::new(0))).await;
+    let data_dir = tempdir().expect("data directory");
+    let router = nuget_router(upstream, address, data_dir.path());
+
+    let index = router
+        .clone()
+        .oneshot(get_request("/mirror/nuget/official/package/foo/index.json"))
+        .await
+        .expect("package version index response");
+    assert_eq!(index.status(), axum::http::StatusCode::OK);
+
+    let response = router
+        .oneshot(get_request(
+            "/mirror/nuget/official/package/foo/1.0.0/foo.1.0.0.nupkg",
+        ))
+        .await
+        .expect("package response");
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("package body"),
+        package
+    );
+}
+
 async fn prime_registration(router: &axum::Router) {
     let service_index = router
         .clone()

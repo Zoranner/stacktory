@@ -53,62 +53,147 @@ async fn serve_package_index(
     pool: &SourcePool,
 ) -> Result<Vec<u8>, NugetError> {
     let package_id = parse_package_index_path(path)?;
-    let snapshot = service.service_index(entry_name, pool).await?;
-    let package_base = snapshot.package_base_url.ok_or_else(|| {
-        NugetError::InvalidPackageIndex("service index has no package content resource".to_owned())
-    })?;
+    let initial_snapshot = service.service_index(entry_name, pool).await?;
     let cache_path = package_index_path(&service.data_dir, entry_name, &package_id);
     let descriptor_path = package_index_descriptor_path(&service.data_dir, entry_name, &package_id);
-    if let (Some(body), Some(selected_proxy)) = (
-        read_if_present(&cache_path)?,
-        read_selected_proxy(&descriptor_path)?,
-    ) && selected_proxy == snapshot.selected_proxy
-        && valid_package_index(&body)
-    {
+    let preferred = initial_snapshot.selected_proxy.clone();
+    let mut members = pool
+        .proxy_members(entry_name)
+        .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
+    if let Some(position) = members.iter().position(|member| member.name == preferred) {
+        let selected = members.remove(position);
+        members.insert(0, selected);
+    }
+    let is_group = pool.is_group(entry_name);
+    let mut failures = Vec::new();
+    let mut all_not_found = true;
+
+    for member in members {
+        let snapshot = if member.name == preferred {
+            initial_snapshot.clone()
+        } else {
+            match service
+                .service_index_from_source(entry_name, &member.name, pool)
+                .await
+            {
+                Ok(snapshot) => snapshot,
+                Err(error) if is_group && is_retryable(&error) => {
+                    all_not_found = false;
+                    failures.push(format!("{}: {error}", member.name));
+                    continue;
+                }
+                Err(error) if is_group && is_not_found(&error) => {
+                    failures.push(format!("{}: {error}", member.name));
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        let Some(package_base) = snapshot.package_base_url.clone() else {
+            all_not_found = false;
+            failures.push(format!("{}: package resource is missing", member.name));
+            continue;
+        };
+        if let (Some(body), Some(selected_proxy)) = (
+            read_if_present(&cache_path)?,
+            read_selected_proxy(&descriptor_path)?,
+        ) && selected_proxy == snapshot.selected_proxy
+            && valid_package_index(&body)
+        {
+            service.record_object(
+                "nuget_package_index_read",
+                NugetAuditDetails {
+                    object_key: &format!("package/{package_id}/index.json"),
+                    entry_name,
+                    selected_proxy: &selected_proxy,
+                    object_type: "package-index",
+                    cache_status: "hit",
+                    failure_category: None,
+                },
+            )?;
+            return Ok(body);
+        }
+        let upstream_url = append_path(&package_base, &format!("{package_id}/index.json"));
+        let upstream = match pool
+            .fetch_discovered_url(
+                &snapshot.selected_proxy,
+                upstream_url,
+                FetchOperation::Metadata,
+            )
+            .await
+        {
+            Ok(response) => response,
+            Err(error) if is_group && is_source_retryable(&error) => {
+                all_not_found = false;
+                failures.push(format!("{}: {error}", member.name));
+                continue;
+            }
+            Err(error) if is_group && is_source_not_found(&error) => {
+                failures.push(format!("{}: {error}", member.name));
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if !valid_package_index(&upstream.body) {
+            all_not_found = false;
+            failures.push(format!("{}: invalid package version index", member.name));
+            continue;
+        }
+        atomic_write(&cache_path, &upstream.body)?;
+        atomic_write(
+            &descriptor_path,
+            format!("{}\n", snapshot.selected_proxy).as_bytes(),
+        )?;
+        if snapshot.selected_proxy != preferred {
+            service.publish_service_index(entry_name, &snapshot)?;
+            service.record_object(
+                "nuget_package_index_fallback",
+                NugetAuditDetails {
+                    object_key: &format!("package/{package_id}/index.json"),
+                    entry_name,
+                    selected_proxy: &snapshot.selected_proxy,
+                    object_type: "package-index",
+                    cache_status: "fallback",
+                    failure_category: Some("source_unavailable_or_invalid"),
+                },
+            )?;
+        }
         service.record_object(
-            "nuget_package_index_read",
+            "nuget_package_index_published",
             NugetAuditDetails {
                 object_key: &format!("package/{package_id}/index.json"),
                 entry_name,
-                selected_proxy: &selected_proxy,
+                selected_proxy: &snapshot.selected_proxy,
                 object_type: "package-index",
-                cache_status: "hit",
+                cache_status: "published",
                 failure_category: None,
             },
         )?;
-        return Ok(body);
+        return Ok(upstream.body);
     }
 
-    let upstream_url = append_path(&package_base, &format!("{package_id}/index.json"));
-    let upstream = pool
-        .fetch_discovered_url(
-            &snapshot.selected_proxy,
-            upstream_url,
-            FetchOperation::Metadata,
-        )
-        .await?;
-    if !valid_package_index(&upstream.body) {
-        return Err(NugetError::InvalidPackageIndex(
-            "versions is missing or contains an unsafe version".to_owned(),
-        ));
-    }
-    atomic_write(&cache_path, &upstream.body)?;
-    atomic_write(
-        &descriptor_path,
-        format!("{}\n", snapshot.selected_proxy).as_bytes(),
-    )?;
     service.record_object(
-        "nuget_package_index_published",
+        "nuget_package_index_fetch_failed",
         NugetAuditDetails {
             object_key: &format!("package/{package_id}/index.json"),
             entry_name,
-            selected_proxy: &snapshot.selected_proxy,
+            selected_proxy: "",
             object_type: "package-index",
-            cache_status: "published",
-            failure_category: None,
+            cache_status: "failed",
+            failure_category: Some(if all_not_found {
+                "not_found"
+            } else {
+                "source_failed"
+            }),
         },
     )?;
-    Ok(upstream.body)
+    Err(SourcePoolError::AllSourcesFailed {
+        entry_name: entry_name.to_owned(),
+        request_key: format!("package/{package_id}/index.json"),
+        failures: failures.join("; "),
+        status: (is_group && all_not_found).then_some(404),
+    }
+    .into())
 }
 
 async fn serve_package(
@@ -119,11 +204,11 @@ async fn serve_package(
 ) -> Result<Vec<u8>, NugetError> {
     let (package_id, version) = parse_package_path(path)?;
     let binding_path = binding_path(&service.data_dir, entry_name, &package_id, &version);
-    let stored_binding: PackageBinding = read_json(&binding_path)?.ok_or_else(|| {
-        NugetError::InvalidPackage("package is not referenced by registration".to_owned())
-    })?;
-    if !stored_binding.package_id.eq_ignore_ascii_case(&package_id)
-        || !stored_binding.version.eq_ignore_ascii_case(&version)
+    let initial_snapshot = service.service_index(entry_name, pool).await?;
+    let stored_binding: Option<PackageBinding> = read_json(&binding_path)?;
+    if let Some(binding) = &stored_binding
+        && (!binding.package_id.eq_ignore_ascii_case(&package_id)
+            || !binding.version.eq_ignore_ascii_case(&version))
     {
         return Err(NugetError::InvalidPackage(
             "stored package binding does not match the request".to_owned(),
@@ -132,7 +217,10 @@ async fn serve_package(
     let mut members = pool
         .proxy_members(entry_name)
         .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
-    let preferred = stored_binding.selected_proxy.clone();
+    let preferred = stored_binding
+        .as_ref()
+        .map(|binding| binding.selected_proxy.clone())
+        .unwrap_or_else(|| initial_snapshot.selected_proxy.clone());
     if let Some(position) = members.iter().position(|member| member.name == preferred) {
         let selected = members.remove(position);
         members.insert(0, selected);
@@ -142,38 +230,81 @@ async fn serve_package(
     let mut failures = Vec::new();
     let mut all_not_found = true;
     for member in members {
-        let (binding, fallback_snapshot) = if member.name == preferred {
-            (stored_binding.clone(), None)
-        } else {
-            let snapshot = match service
-                .service_index_from_source(entry_name, &member.name, pool)
-                .await
-            {
-                Ok(snapshot) => snapshot,
-                Err(error) if is_group && is_retryable(&error) => {
-                    all_not_found = false;
-                    failures.push(format!("{}: {error}", member.name));
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
-            let binding = match binding_for_source(
-                service,
-                entry_name,
-                &package_id,
-                &version,
-                &snapshot,
-                pool,
+        let (binding, fallback_snapshot) = if stored_binding
+            .as_ref()
+            .is_some_and(|binding| member.name == binding.selected_proxy)
+        {
+            (
+                stored_binding.clone().expect("checked stored binding"),
+                None,
             )
-            .await
-            {
-                Ok(binding) => binding,
-                Err(error) if is_group && is_retryable(&error) => {
-                    all_not_found = false;
-                    failures.push(format!("{}: {error}", member.name));
-                    continue;
+        } else {
+            let snapshot = if member.name == initial_snapshot.selected_proxy {
+                initial_snapshot.clone()
+            } else {
+                match service
+                    .service_index_from_source(entry_name, &member.name, pool)
+                    .await
+                {
+                    Ok(snapshot) => snapshot,
+                    Err(error) if is_group && is_retryable(&error) => {
+                        all_not_found = false;
+                        failures.push(format!("{}: {error}", member.name));
+                        continue;
+                    }
+                    Err(error) => return Err(error),
                 }
-                Err(error) => return Err(error),
+            };
+            let binding = if stored_binding.is_some() {
+                match binding_for_source(
+                    service,
+                    entry_name,
+                    &package_id,
+                    &version,
+                    &snapshot,
+                    pool,
+                )
+                .await
+                {
+                    Ok(binding) => binding,
+                    Err(_) => match binding_for_package_index(
+                        service,
+                        entry_name,
+                        &package_id,
+                        &version,
+                        &snapshot,
+                        pool,
+                    )
+                    .await
+                    {
+                        Ok(binding) => binding,
+                        Err(error) if is_group && is_retryable(&error) => {
+                            all_not_found = false;
+                            failures.push(format!("{}: {error}", member.name));
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    },
+                }
+            } else {
+                match binding_for_package_index(
+                    service,
+                    entry_name,
+                    &package_id,
+                    &version,
+                    &snapshot,
+                    pool,
+                )
+                .await
+                {
+                    Ok(binding) => binding,
+                    Err(error) if is_group && is_retryable(&error) => {
+                        all_not_found = false;
+                        failures.push(format!("{}: {error}", member.name));
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                }
             };
             (binding, Some(snapshot))
         };
@@ -352,6 +483,56 @@ fn parse_package_index_path(path: &str) -> Result<String, NugetError> {
     Ok(parts[0].to_ascii_lowercase())
 }
 
+async fn binding_for_package_index(
+    _service: &NugetService,
+    _entry_name: &str,
+    package_id: &str,
+    version: &str,
+    snapshot: &crate::nuget::service_index::ServiceIndexSnapshot,
+    pool: &SourcePool,
+) -> Result<PackageBinding, NugetError> {
+    let package_base = snapshot.package_base_url.as_ref().ok_or_else(|| {
+        NugetError::InvalidPackageIndex("service index has no package content resource".to_owned())
+    })?;
+    let index_url = append_path(package_base, &format!("{package_id}/index.json"));
+    let response = pool
+        .fetch_discovered_url(
+            &snapshot.selected_proxy,
+            index_url,
+            FetchOperation::Metadata,
+        )
+        .await?;
+    let index: serde_json::Value = serde_json::from_slice(&response.body)?;
+    let versions = index
+        .get("versions")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| NugetError::InvalidPackageIndex("versions is missing".to_owned()))?;
+    if !versions.iter().any(|candidate| {
+        candidate
+            .as_str()
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(version))
+    }) {
+        return Err(NugetError::InvalidPackage(
+            "package version is not listed by the package index".to_owned(),
+        ));
+    }
+    let mut upstream_url = package_base.clone();
+    let package_id = package_id.to_ascii_lowercase();
+    let version = version.to_ascii_lowercase();
+    let base_path = upstream_url.path().trim_end_matches('/');
+    upstream_url.set_path(&format!(
+        "{base_path}/{package_id}/{version}/{package_id}.{version}.nupkg"
+    ));
+    Ok(PackageBinding {
+        selected_proxy: snapshot.selected_proxy.clone(),
+        package_id,
+        version,
+        upstream_url: upstream_url.to_string(),
+        package_hash: None,
+        package_hash_algorithm: None,
+    })
+}
+
 fn valid_package_index(body: &[u8]) -> bool {
     serde_json::from_slice::<serde_json::Value>(body)
         .ok()
@@ -363,11 +544,9 @@ fn valid_package_index(body: &[u8]) -> bool {
         })
         .is_some_and(|versions| {
             !versions.is_empty()
-                && versions.iter().all(|version| {
-                    version
-                        .as_str()
-                        .is_some_and(is_safe_segment)
-                })
+                && versions
+                    .iter()
+                    .all(|version| version.as_str().is_some_and(is_safe_segment))
         })
 }
 
@@ -634,8 +813,20 @@ fn is_retryable(error: &NugetError) -> bool {
         NugetError::Source(SourcePoolError::AllSourcesFailed { .. })
             | NugetError::InvalidRegistration(_)
             | NugetError::InvalidServiceIndex(_)
+            | NugetError::InvalidPackageIndex(_)
             | NugetError::InvalidPackage(_)
             | NugetError::PackageIntegrityFailure(_)
+    )
+}
+
+fn is_not_found(error: &NugetError) -> bool {
+    matches!(
+        error,
+        NugetError::Source(SourcePoolError::TerminalSourceError { status: 404, .. })
+            | NugetError::Source(SourcePoolError::AllSourcesFailed {
+                status: Some(404),
+                ..
+            })
     )
 }
 
