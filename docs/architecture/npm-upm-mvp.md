@@ -2,9 +2,8 @@
 
 ## 状态与目标
 
-本文档定义 npm 和 Unity Package Manager（UPM）的只读适配边界。当前 npm 已实现
-路径、metadata、tarball 缓存和运行时路由；UPM 仍未实现或注册。本文档中的 UPM
-路径是目标契约，未注册的部分不是现有服务能力。
+本文档定义 npm 和 Unity Package Manager（UPM）的只读适配边界。npm 和 UPM 的
+metadata、tarball、校验、缓存和来源回退均已实现，但使用独立生态入口和名称校验。
 
 npm 与 UPM 都使用 npm-compatible registry 的 metadata、版本对象和 tarball 文件模型。npm 客户端包括 npm 和 Bun；两者共享协议解析、来源访问、缓存、完整性和 URL 重写的核心实现，但保持独立的生态入口和客户端配置语义。UPM 不能通过复制一套 npm handler 实现，也不能把 npm 入口扩展成隐式 UPM 模式。
 
@@ -81,7 +80,7 @@ metadata 命中某个 proxy 后，版本对象和 tarball 请求必须保留
 `selected_proxy` 绑定。group 不合并多个 proxy 的版本集合；只有当前来源不可用
 或校验失败时才按声明顺序回退。
 
-## UPM 路由与 scope
+## UPM 路由与本地 scope 配置
 
 UPM 使用独立生态入口：
 
@@ -89,32 +88,13 @@ UPM 使用独立生态入口：
 /mirror/upm/{name}/...
 ```
 
-UPM 的 registry 传输可以复用 npm-compatible metadata 和 tarball 核心，但
-Unity 客户端通过 scoped registry 配置决定哪些 package scope 由该入口提供。
-scope 是 UPM 的生态特有配置，不改变公共 source graph，也不改变 `{name}` 的
-含义。
+UPM 的 registry 传输复用 npm-compatible metadata 和 tarball 核心，但 Unity 客户端
+通过项目 `Packages/manifest.json` 中的 `scopedRegistries` 决定哪些 package scope
+由该入口提供。scope 是用户本地配置，不属于 Stacktory source graph，也不改变
+`{name}` 的含义。
 
-目标配置表达的是“某个 UPM 命名入口服务哪些 Unity package scope”，例如：
-
-```toml
-[upm]
-
-[[upm.scopes]]
-pattern = "com.example"
-entry = "group"
-
-[[upm.scopes]]
-pattern = "com.example.tools"
-entry = "group"
-```
-
-scope 匹配应采用明确的边界规则，不能让 `com.example` 意外匹配
-`com.examplesomething`。同一 scope 的多个入口配置必须拒绝或由更具体规则
-确定，不能按配置文件顺序隐式选择。
-
-UPM 的 scope 选择不等同于 npm 的 `@scope/package` 命名。UPM 包名通常是
-`com.company.package` 形式，适配器应按 Unity package name 和 scope 规则
-校验；不能把 UPM 包强制转换成 npm scoped package，也不能让 UPM 请求落入
+UPM package name 通常是 `com.company.package` 形式。适配器按 Unity package name
+规则校验；不能把 UPM 包强制转换成 npm scoped package，也不能让 UPM 请求落入
 `/mirror/npm/{name}/...`。
 
 ## 共享核心与隔离点
@@ -130,7 +110,7 @@ UPM 的 scope 选择不等同于 npm 的 `@scope/package` 命名。UPM 包名通
 
 - `/mirror/npm/{name}/...` 与 `/mirror/upm/{name}/...` 路由注册。
 - npm package name 与 UPM Unity package name 的路径校验。
-- UPM scope 选择和 Unity 客户端配置。
+- UPM package name 校验；scope 选择由 Unity 客户端本地配置负责。
 - npm 与 UPM 的缓存键生态字段、协议变体和测试夹具。
 
 “共享核心”指实现层的受限协议组件，不是把两种客户端语义合并为一个万能
@@ -158,7 +138,7 @@ Asset Store 和 Git URL 包代理。
 
 - 普通 package 和 scoped/npm package 路径。
 - `%2F` scoped metadata 分隔符的原始路径解析，以及其他编码斜杠拒绝。
-- UPM package name、scope 精确匹配和 scope 冲突。
+- UPM package name 和本地 scoped registry 配置。
 - metadata 中 tarball URL 的入口化重写。
 - `integrity`/`shasum` 校验、坏包不落盘和 group 回退。
 - npm/UPM 入口与缓存键隔离。

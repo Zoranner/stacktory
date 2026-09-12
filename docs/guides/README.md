@@ -13,6 +13,6 @@ Stacktory 的用户文档按制品库分别维护。请选择正在使用的制�
 | VS Code 扩展 | 可用 | [VS Code](vscode.md) |
 | Docker Registry | 公开无认证 Registry V2 只读可用 | [Docker](docker.md) |
 | npm | 可用 | [npm](npm.md) |
-| Unity UPM | 暂不可用 | [Unity UPM](upm.md) |
+| Unity UPM | 可用 | [Unity UPM](upm.md) |
 | PyPI | 暂不可用 | [PyPI](pypi.md) |
 | NuGet | 暂不可用 | [NuGet](nuget.md) |

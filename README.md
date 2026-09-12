@@ -11,7 +11,7 @@ Stacktory 为公司内网开发机提供统一的工具链和软件包下载入�
 | VS Code 扩展 | 可用 | 使用公司提供的专用 VS Code，在扩展面板中安装 |
 | Docker 镜像 | 公开无认证 Registry V2 只读可用 | 使用 `/mirror/docker/{name}/v2/...` 入口 |
 | npm 包 | 可用 | 配置 npm registry 后使用 `npm install` 或 `npm ci` |
-| Unity UPM 包 | 暂不可用 | 请勿配置 Unity Package Manager |
+| Unity UPM 包 | 可用 | 在 Unity 项目中配置 Stacktory scoped registry |
 | PyPI 包 | 暂不可用 | 请勿配置 pip |
 | NuGet 包 | 暂不可用 | 请勿配置 NuGet |
 
