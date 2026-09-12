@@ -95,7 +95,7 @@ async fn service_index_rejects_unknown_resource_relationships() {
     ))
     .await;
     let data_dir = tempdir().expect("data directory");
-    let router = nuget_router(upstream, data_dir.path());
+    let router = nuget_router(upstream.clone(), data_dir.path());
 
     let response = router
         .oneshot(get_request("/mirror/nuget/official/v3/index.json"))
@@ -109,6 +109,81 @@ async fn service_index_rejects_unknown_resource_relationships() {
             .join("nuget/metadata/official/service-index.json")
             .exists()
     );
+}
+
+#[tokio::test]
+async fn service_index_returns_internal_error_when_audit_storage_fails() {
+    let data_dir = tempdir().expect("data directory");
+    let metadata_dir = data_dir.path().join("nuget/metadata/official");
+    std::fs::create_dir_all(&metadata_dir).expect("metadata directory");
+    std::fs::write(
+        metadata_dir.join("service-index.json"),
+        br#"{"version":"3.0.0","resources":[
+            {"@id":"http://127.0.0.1:9/mirror/nuget/official/registration/","@type":"RegistrationsBaseUrl/3.6.0"},
+            {"@id":"http://127.0.0.1:9/mirror/nuget/official/package/","@type":"PackageBaseAddress/3.0.0"}
+        ]}"#,
+    )
+    .expect("service index cache");
+    std::fs::write(
+        metadata_dir.join("service-index.source"),
+        br#"{"selected_proxy":"official","registration_url":"http://127.0.0.1:9/v3/registration/","package_base_url":"http://127.0.0.1:9/v3-flatcontainer/"}"#,
+    )
+    .expect("service index sidecar");
+    std::fs::write(data_dir.path().join("audit"), b"not a directory").expect("audit blocker");
+    let upstream = Url::parse("http://127.0.0.1:9/v3/index.json").expect("unused upstream URL");
+    let router = nuget_router(upstream, data_dir.path());
+
+    let response = router
+        .oneshot(get_request("/mirror/nuget/official/v3/index.json"))
+        .await
+        .expect("service index response");
+
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    );
+}
+
+#[tokio::test]
+async fn service_index_rejects_incomplete_restore_resources() {
+    let upstream = start_service_index_with_body(|port| {
+        format!(
+            r#"{{"version":"3.0.0","resources":[{{"@id":"http://127.0.0.1:{port}/v3/registration/","@type":"RegistrationsBaseUrl/3.6.0"}}]}}"#
+        )
+    })
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = nuget_router(upstream, data_dir.path());
+
+    let response = router
+        .oneshot(get_request("/mirror/nuget/official/v3/index.json"))
+        .await
+        .expect("service index response");
+
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
+}
+
+#[tokio::test]
+async fn service_index_rejects_duplicate_restore_resources() {
+    let upstream = start_service_index_with_body(|port| {
+        format!(
+            r#"{{"version":"3.0.0","resources":[
+                {{"@id":"http://127.0.0.1:{port}/v3/registration/","@type":"RegistrationsBaseUrl/3.6.0"}},
+                {{"@id":"http://127.0.0.1:{port}/v3/registration2/","@type":"RegistrationsBaseUrl/3.4.0"}},
+                {{"@id":"http://127.0.0.1:{port}/v3-flatcontainer/","@type":"PackageBaseAddress/3.0.0"}}
+            ]}}"#
+        )
+    })
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = nuget_router(upstream, data_dir.path());
+
+    let response = router
+        .oneshot(get_request("/mirror/nuget/official/v3/index.json"))
+        .await
+        .expect("service index response");
+
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
 }
 
 fn get_request(path: &str) -> Request<Body> {
@@ -195,6 +270,26 @@ async fn start_service_index_server() -> Url {
 async fn start_server(router: Router) -> Url {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
     let address = listener.local_addr().expect("address");
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.expect("server");
+    });
+    Url::parse(&format!("http://{address}/v3/index.json")).expect("service index URL")
+}
+
+async fn start_service_index_with_body<F>(build_body: F) -> Url
+where
+    F: FnOnce(u16) -> String,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let body = build_body(address.port());
+    let router = Router::new().route(
+        "/v3/index.json",
+        get(move || {
+            let body = body.clone();
+            async move { body }
+        }),
+    );
     tokio::spawn(async move {
         axum::serve(listener, router).await.expect("server");
     });

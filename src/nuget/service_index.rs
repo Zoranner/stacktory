@@ -17,7 +17,7 @@ use url::Url;
 
 use crate::{
     SourcePool,
-    audit::{AuditDetails, AuditSink},
+    audit::{AuditDetails, AuditError, AuditSink},
     sources::{
         FetchOperation, SourcePoolError,
         registry::{Adapter, AdapterFuture, AdapterRequest},
@@ -49,6 +49,8 @@ pub enum NugetError {
     InvalidServiceIndex(String),
     #[error("NuGet registration is invalid: {0}")]
     InvalidRegistration(String),
+    #[error("NuGet registration path is invalid: {0}")]
+    InvalidRegistrationPath(String),
     #[error("NuGet package content is invalid: {0}")]
     InvalidPackage(String),
     #[error("NuGet package content integrity check failed: {0}")]
@@ -57,6 +59,8 @@ pub enum NugetError {
     Storage(#[from] io::Error),
     #[error("NuGet JSON serialization failed: {0}")]
     Serialization(#[from] serde_json::Error),
+    #[error("NuGet audit storage failed: {0}")]
+    Audit(#[from] AuditError),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -149,18 +153,20 @@ impl NugetService {
         if let (Some(body), Some(descriptor)) = (
             read_if_present(&cache_path)?,
             read_descriptor(&descriptor_path)?,
-        ) && pool.proxy_members(entry_name).is_some_and(|configured| {
-            configured
-                .iter()
-                .any(|source| source.name == descriptor.selected_proxy)
-        }) {
+        ) && is_valid_cached_service_index(&body, &descriptor)
+            && pool.proxy_members(entry_name).is_some_and(|configured| {
+                configured
+                    .iter()
+                    .any(|source| source.name == descriptor.selected_proxy)
+            })
+        {
             self.record(
                 "nuget_service_index_read",
                 entry_name,
                 &descriptor.selected_proxy,
                 "hit",
                 None,
-            );
+            )?;
             return Ok(ServiceIndexSnapshot {
                 body,
                 selected_proxy: descriptor.selected_proxy,
@@ -218,7 +224,7 @@ impl NugetService {
                         &upstream.source_name,
                         "published",
                         None,
-                    );
+                    )?;
                     return Ok(ServiceIndexSnapshot {
                         body: rewritten.body,
                         selected_proxy: upstream.source_name,
@@ -243,7 +249,7 @@ impl NugetService {
             } else {
                 "source_failed"
             }),
-        );
+        )?;
         Err(SourcePoolError::AllSourcesFailed {
             entry_name: entry_name.to_owned(),
             request_key: "v3/index.json".to_owned(),
@@ -335,7 +341,7 @@ impl NugetService {
         selected_proxy: &str,
         cache_status: &str,
         failure_category: Option<&str>,
-    ) {
+    ) -> Result<(), NugetError> {
         self.record_object(
             event,
             NugetAuditDetails {
@@ -346,11 +352,15 @@ impl NugetService {
                 cache_status,
                 failure_category,
             },
-        );
+        )
     }
 
-    pub(crate) fn record_object(&self, event: &str, details: NugetAuditDetails<'_>) {
-        if let Err(error) = self.audit.record_detailed(
+    pub(crate) fn record_object(
+        &self,
+        event: &str,
+        details: NugetAuditDetails<'_>,
+    ) -> Result<(), NugetError> {
+        self.audit.record_detailed(
             event,
             details.object_key,
             if details.failure_category.is_some() {
@@ -368,9 +378,8 @@ impl NugetService {
                 cache_status: Some(details.cache_status),
                 failure_category: details.failure_category,
             },
-        ) {
-            eprintln!("Stacktory audit write failed: {error}");
-        }
+        )?;
+        Ok(())
     }
 }
 
@@ -437,6 +446,11 @@ fn rewrite_service_index(
                     "registration resource URL is outside the configured source".to_owned(),
                 ));
             }
+            if registration_url.is_some() {
+                return Err(NugetError::InvalidServiceIndex(
+                    "service index contains duplicate registration resources".to_owned(),
+                ));
+            }
             registration_url = Some(upstream_url);
             rewritten.push(rewrite_resource(
                 object,
@@ -448,12 +462,22 @@ fn rewrite_service_index(
                     "package resource URL is outside the configured source".to_owned(),
                 ));
             }
+            if package_base_url.is_some() {
+                return Err(NugetError::InvalidServiceIndex(
+                    "service index contains duplicate package resources".to_owned(),
+                ));
+            }
             package_base_url = Some(upstream_url);
             rewritten.push(rewrite_resource(
                 object,
                 local_resource_url(root_url, entry_name, "package/"),
             ));
         }
+    }
+    if registration_url.is_none() || package_base_url.is_none() {
+        return Err(NugetError::InvalidServiceIndex(
+            "service index lacks a restore resource".to_owned(),
+        ));
     }
     *resources = rewritten;
     Ok(RewrittenServiceIndex {
@@ -499,6 +523,31 @@ fn parse_optional_url(value: Option<String>) -> Result<Option<Url>, NugetError> 
                 .map_err(|_| NugetError::InvalidServiceIndex("stored URL is invalid".to_owned()))
         })
         .transpose()
+}
+
+fn is_valid_cached_service_index(body: &[u8], descriptor: &ServiceIndexDescriptor) -> bool {
+    descriptor.registration_url.is_some()
+        && descriptor.package_base_url.is_some()
+        && serde_json::from_slice::<Value>(body)
+            .ok()
+            .and_then(|index| index.get("resources").and_then(Value::as_array).cloned())
+            .is_some_and(|resources| {
+                resources.iter().any(|resource| {
+                    resource
+                        .get("@type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|resource_type| {
+                            resource_type.starts_with(REGISTRATIONS_BASE_URL)
+                        })
+                }) && resources.iter().any(|resource| {
+                    resource
+                        .get("@type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|resource_type| {
+                            resource_type.starts_with(PACKAGE_BASE_ADDRESS)
+                        })
+                })
+            })
 }
 
 fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>, io::Error> {
@@ -562,9 +611,12 @@ fn nuget_error_response(error: &NugetError) -> Response {
         NugetError::Source(_)
         | NugetError::InvalidServiceIndex(_)
         | NugetError::InvalidRegistration(_)
+        | NugetError::InvalidRegistrationPath(_)
         | NugetError::InvalidPackage(_)
         | NugetError::PackageIntegrityFailure(_) => StatusCode::BAD_GATEWAY,
-        NugetError::Storage(_) | NugetError::Serialization(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        NugetError::Storage(_) | NugetError::Serialization(_) | NugetError::Audit(_) => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
     };
     (status, [(CONTENT_TYPE, "application/json")], Body::empty()).into_response()
 }

@@ -81,6 +81,17 @@ async fn serve_registration(
                 .any(|member| member.name == descriptor.selected_proxy)
         })
     {
+        service.record_object(
+            "nuget_registration_read",
+            NugetAuditDetails {
+                object_key: &request.relative,
+                entry_name,
+                selected_proxy: &descriptor.selected_proxy,
+                object_type: "registration",
+                cache_status: "hit",
+                failure_category: None,
+            },
+        )?;
         return Ok(body);
     }
 
@@ -186,7 +197,7 @@ async fn serve_registration(
                     cache_status: "fallback",
                     failure_category: Some("source_unavailable_or_invalid"),
                 },
-            );
+            )?;
         }
         service.record_object(
             "nuget_registration_published",
@@ -198,7 +209,7 @@ async fn serve_registration(
                 cache_status: "published",
                 failure_category: None,
             },
-        );
+        )?;
         return Ok(body);
     }
 
@@ -263,7 +274,7 @@ pub(crate) async fn binding_for_source(
 
 fn parse_registration_path(path: &str) -> Result<RegistrationPath, NugetError> {
     let relative = path.strip_prefix("registration/").ok_or_else(|| {
-        NugetError::InvalidRegistration("registration path is invalid".to_owned())
+        NugetError::InvalidRegistrationPath("registration path is invalid".to_owned())
     })?;
     let segments = relative.split('/').collect::<Vec<_>>();
     if segments.len() < 2
@@ -274,7 +285,7 @@ fn parse_registration_path(path: &str) -> Result<RegistrationPath, NugetError> {
             .last()
             .is_some_and(|segment| segment.ends_with(".json"))
     {
-        return Err(NugetError::InvalidRegistration(
+        return Err(NugetError::InvalidRegistrationPath(
             "registration path contains unsafe segments".to_owned(),
         ));
     }
@@ -373,7 +384,12 @@ fn rewrite_object(
                     "packageContent has no package ID/version proof".to_owned(),
                 )
             })?;
-        validate_package_identity(&request.package_id, &package_id, &version)?;
+        validate_package_identity(
+            &request.package_id,
+            &package_id,
+            request.leaf_version.as_deref(),
+            &version,
+        )?;
         let upstream_url = Url::parse(content).map_err(|_| {
             NugetError::InvalidRegistration("packageContent URL is invalid".to_owned())
         })?;
@@ -475,9 +491,11 @@ fn rewrite_object(
 fn validate_package_identity(
     requested_id: &str,
     actual_id: &str,
+    requested_version: Option<&str>,
     version: &str,
 ) -> Result<(), NugetError> {
     if !actual_id.eq_ignore_ascii_case(requested_id)
+        || requested_version.is_some_and(|requested| !version.eq_ignore_ascii_case(requested))
         || !is_safe_segment(actual_id)
         || !is_safe_segment(version)
     {
@@ -717,10 +735,13 @@ fn registration_error_response(error: &NugetError) -> Response {
             ..
         }) => StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
         NugetError::InvalidRegistration(_) => StatusCode::BAD_GATEWAY,
+        NugetError::InvalidRegistrationPath(_) => StatusCode::NOT_FOUND,
         NugetError::Source(_) | NugetError::InvalidServiceIndex(_) => StatusCode::BAD_GATEWAY,
         NugetError::InvalidPackage(_) => StatusCode::NOT_FOUND,
         NugetError::PackageIntegrityFailure(_) => StatusCode::BAD_GATEWAY,
-        NugetError::Storage(_) | NugetError::Serialization(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        NugetError::Storage(_) | NugetError::Serialization(_) | NugetError::Audit(_) => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
     };
     status.into_response()
 }

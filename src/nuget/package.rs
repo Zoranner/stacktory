@@ -122,7 +122,7 @@ async fn serve_package(
                     &binding.selected_proxy,
                     "hit",
                     None,
-                );
+                )?;
                 return Ok(bytes);
             }
             let _ = fs::remove_file(&cache_path);
@@ -153,7 +153,7 @@ async fn serve_package(
                         cache_status: "fallback",
                         failure_category: Some("source_unavailable"),
                     },
-                );
+                )?;
                 continue;
             }
             Err(error) if is_group && is_source_not_found(&error) => {
@@ -168,7 +168,7 @@ async fn serve_package(
                         cache_status: "fallback",
                         failure_category: Some("not_found"),
                     },
-                );
+                )?;
                 continue;
             }
             Err(error) => return Err(error.into()),
@@ -188,7 +188,7 @@ async fn serve_package(
                         cache_status: "fallback",
                         failure_category: Some("integrity_mismatch"),
                     },
-                );
+                )?;
                 continue;
             }
             Err(error) => return Err(error),
@@ -207,7 +207,7 @@ async fn serve_package(
             &binding.selected_proxy,
             "published",
             None,
-        );
+        )?;
         return Ok(upstream.body);
     }
 
@@ -251,6 +251,7 @@ fn parse_package_path(path: &str) -> Result<(String, String), NugetError> {
 
 fn verify_package(bytes: &[u8], binding: &PackageBinding) -> Result<bool, NugetError> {
     let Some(expected) = binding.package_hash.as_deref() else {
+        validate_nupkg(bytes)?;
         return Ok(false);
     };
     let Some(algorithm) = binding.package_hash_algorithm.as_deref() else {
@@ -276,6 +277,32 @@ fn verify_package(bytes: &[u8], binding: &PackageBinding) -> Result<bool, NugetE
         ));
     }
     Ok(true)
+}
+
+fn validate_nupkg(bytes: &[u8]) -> Result<(), NugetError> {
+    if bytes.len() < 22 || (!bytes.starts_with(b"PK\x03\x04") && !bytes.starts_with(b"PK\x05\x06"))
+    {
+        return Err(NugetError::PackageIntegrityFailure(
+            "package content is not a ZIP archive".to_owned(),
+        ));
+    }
+    let search_start = bytes.len().saturating_sub(65_557);
+    let eocd = bytes[search_start..]
+        .windows(4)
+        .rposition(|window| window == b"PK\x05\x06")
+        .map(|offset| search_start + offset)
+        .ok_or_else(|| {
+            NugetError::PackageIntegrityFailure(
+                "package content has no ZIP end-of-central-directory record".to_owned(),
+            )
+        })?;
+    let comment_length = u16::from_le_bytes([bytes[eocd + 20], bytes[eocd + 21]]) as usize;
+    if eocd + 22 + comment_length > bytes.len() {
+        return Err(NugetError::PackageIntegrityFailure(
+            "package ZIP end record is truncated".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn cache_is_valid(
@@ -434,8 +461,11 @@ fn package_error_response(error: &NugetError) -> Response {
         }) => StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
         NugetError::Source(_) | NugetError::InvalidServiceIndex(_) => StatusCode::BAD_GATEWAY,
         NugetError::InvalidRegistration(_) => StatusCode::BAD_GATEWAY,
+        NugetError::InvalidRegistrationPath(_) => StatusCode::NOT_FOUND,
         NugetError::PackageIntegrityFailure(_) => StatusCode::BAD_GATEWAY,
-        NugetError::Storage(_) | NugetError::Serialization(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        NugetError::Storage(_) | NugetError::Serialization(_) | NugetError::Audit(_) => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
     };
     status.into_response()
 }
@@ -475,7 +505,7 @@ impl NugetService {
         selected_proxy: &str,
         cache_status: &str,
         failure_category: Option<&str>,
-    ) {
+    ) -> Result<(), NugetError> {
         let object_key = format!("package/{package_id}/{version}");
         self.record_object(
             "nuget_package_content",
@@ -487,6 +517,6 @@ impl NugetService {
                 cache_status,
                 failure_category,
             },
-        );
+        )
     }
 }

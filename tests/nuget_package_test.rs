@@ -97,7 +97,7 @@ async fn package_content_digest_failure_does_not_publish_or_return_the_bad_bytes
 
 #[tokio::test]
 async fn package_content_without_upstream_digest_uses_local_cache_hash() {
-    let package = b"undigested nupkg".to_vec();
+    let package = valid_nupkg();
     let package_requests = Arc::new(AtomicUsize::new(0));
     let (upstream, address) =
         start_package_server_without_hash(package.clone(), package_requests.clone()).await;
@@ -129,6 +129,38 @@ async fn package_content_without_upstream_digest_uses_local_cache_hash() {
             .await
             .expect("cached package body"),
         package
+    );
+}
+
+fn valid_nupkg() -> Vec<u8> {
+    vec![
+        0x50, 0x4b, 0x05, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]
+}
+
+#[tokio::test]
+async fn package_content_without_upstream_digest_rejects_non_nupkg_content() {
+    let package_requests = Arc::new(AtomicUsize::new(0));
+    let (upstream, address) =
+        start_package_server_without_hash(b"not a zip archive".to_vec(), package_requests).await;
+    let data_dir = tempdir().expect("data directory");
+    let router = nuget_router(upstream, address, data_dir.path());
+
+    prime_registration(&router).await;
+    let response = router
+        .oneshot(get_request(
+            "/mirror/nuget/official/package/foo/1.0.0/foo.1.0.0.nupkg",
+        ))
+        .await
+        .expect("bad package response");
+
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
+    assert!(
+        !data_dir
+            .path()
+            .join("nuget/artifacts/official/objects/package/foo/1.0.0/foo.1.0.0.nupkg")
+            .exists()
     );
 }
 

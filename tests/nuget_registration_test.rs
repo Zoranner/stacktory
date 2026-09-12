@@ -12,7 +12,7 @@ use url::Url;
 
 #[tokio::test]
 async fn registration_index_rewrites_leaf_and_package_content_relationships() {
-    let (upstream, address) = start_registration_server(false).await;
+    let (upstream, address) = start_registration_server(false, false).await;
     let data_dir = tempdir().expect("data directory");
     let router = nuget_router(upstream, address, data_dir.path());
 
@@ -52,6 +52,19 @@ async fn registration_index_rewrites_leaf_and_package_content_relationships() {
             .exists()
     );
 
+    let cached = router
+        .clone()
+        .oneshot(get_request(
+            "/mirror/nuget/official/registration/foo/index.json",
+        ))
+        .await
+        .expect("cached registration response");
+    assert_eq!(cached.status(), axum::http::StatusCode::OK);
+    let audit =
+        std::fs::read_to_string(data_dir.path().join("audit/events.jsonl")).expect("audit log");
+    assert!(audit.contains(r#""event":"nuget_registration_read""#));
+    assert!(audit.contains(r#""cache_status":"hit""#));
+
     let leaf = router
         .oneshot(get_request(
             "/mirror/nuget/official/registration/foo/1.0.0.json",
@@ -73,7 +86,7 @@ async fn registration_index_rewrites_leaf_and_package_content_relationships() {
 
 #[tokio::test]
 async fn registration_rejects_package_content_outside_the_discovered_package_resource() {
-    let (upstream, address) = start_registration_server(true).await;
+    let (upstream, address) = start_registration_server(true, false).await;
     let data_dir = tempdir().expect("data directory");
     let router = nuget_router(upstream, address, data_dir.path());
 
@@ -96,6 +109,43 @@ async fn registration_rejects_package_content_outside_the_discovered_package_res
             .join("nuget/metadata/official/bindings/foo/1.0.0.json")
             .exists()
     );
+}
+
+#[tokio::test]
+async fn registration_leaf_rejects_a_catalog_version_different_from_the_request() {
+    let (upstream, address) = start_registration_server(false, true).await;
+    let data_dir = tempdir().expect("data directory");
+    let router = nuget_router(upstream, address, data_dir.path());
+
+    let response = router
+        .oneshot(get_request(
+            "/mirror/nuget/official/registration/foo/1.0.0.json",
+        ))
+        .await
+        .expect("registration response");
+
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
+    assert!(
+        !data_dir
+            .path()
+            .join("nuget/metadata/official/bindings/foo/2.0.0.json")
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn invalid_registration_paths_return_not_found() {
+    let (upstream, address) = start_registration_server(false, false).await;
+    let router = nuget_router(upstream, address, tempdir().expect("data directory").path());
+
+    let response = router
+        .oneshot(get_request(
+            "/mirror/nuget/official/registration/foo/not-json",
+        ))
+        .await
+        .expect("registration response");
+
+    assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
 }
 
 fn get_request(path: &str) -> Request<Body> {
@@ -135,15 +185,21 @@ fn nuget_router(upstream: Url, address: SocketAddr, data_dir: &Path) -> axum::Ro
     router_with_registry(registry)
 }
 
-async fn start_registration_server(external_content: bool) -> (Url, SocketAddr) {
+async fn start_registration_server(
+    external_content: bool,
+    mismatched_version: bool,
+) -> (Url, SocketAddr) {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
     let address = listener.local_addr().expect("address");
+    let content_version = if mismatched_version { "2.0.0" } else { "1.0.0" };
     let content_url = if external_content {
-        "http://evil.example/v3-flatcontainer/foo/1.0.0/foo.1.0.0.nupkg".to_owned()
+        format!(
+            "http://evil.example/v3-flatcontainer/foo/{content_version}/foo.{content_version}.nupkg"
+        )
     } else {
         format!(
-            "http://nuget.example:{}/v3-flatcontainer/foo/1.0.0/foo.1.0.0.nupkg",
-            address.port()
+            "http://nuget.example:{}/v3-flatcontainer/foo/{content_version}/foo.{content_version}.nupkg",
+            address.port(),
         )
     };
     let service_index = format!(
@@ -163,12 +219,13 @@ async fn start_registration_server(external_content: bool) -> (Url, SocketAddr) 
             "count":1,
             "items":[{{
                 "@id":"http://nuget.example:{}/v3/registration/foo/1.0.0.json",
-                "catalogEntry":{{"id":"foo","version":"1.0.0"}},
+                "catalogEntry":{{"id":"foo","version":"{}"}},
                 "packageContent":"{}"
             }}]
         }}"#,
         address.port(),
         address.port(),
+        content_version,
         content_url
     );
     let router = Router::new()

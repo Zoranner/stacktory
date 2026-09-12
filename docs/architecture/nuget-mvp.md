@@ -106,6 +106,11 @@ selected_proxy
 service index、registration 和 package content 分别缓存。相同 package ID/version
 在不同命名入口或不同 selected proxy 下不能共享没有来源绑定的文件。
 
+本 MVP 不做隐式 stale-while-revalidate 或跨来源拼接。metadata 缓存只有在 JSON、
+restore 资源 sidecar 和 selected proxy 仍有效时命中；package content 缓存每次命中
+仍执行已声明摘要或本地 SHA-256 校验。需要强制重新获取时由管理员清理对应
+`data_dir/nuget` 缓存。
+
 - 未知入口、非法资源路径、未知 package/version 或未被 restore metadata 引用
   的 content：`404`。
 - 上游明确的客户端错误直接返回，不无条件回退。
