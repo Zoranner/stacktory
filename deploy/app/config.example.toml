@@ -8,18 +8,183 @@ refresh_interval_secs = 3600
 channels = ["stable", "beta", "nightly"]
 
 [[rustup.sources]]
-name = "rust-lang"
+name = "official"
 type = "proxy"
 base_url = "https://static.rust-lang.org"
 
 [[rustup.sources]]
+name = "tsinghua"
+type = "proxy"
+base_url = "https://mirrors.tuna.tsinghua.edu.cn/rustup"
+
+[[rustup.sources]]
+name = "aliyun"
+type = "proxy"
+base_url = "https://mirrors.aliyun.com/rustup"
+
+[[rustup.sources]]
 name = "group"
 type = "group"
-members = ["rust-lang"]
+members = ["official", "tsinghua", "aliyun"]
 
 [cargo]
 
 [[cargo.sources]]
-name = "crates-io"
+name = "official"
 type = "proxy"
 base_url = "https://index.crates.io"
+
+[[cargo.sources]]
+name = "ustc"
+type = "proxy"
+base_url = "https://mirrors.ustc.edu.cn/crates.io-index"
+
+[[cargo.sources]]
+name = "group"
+type = "group"
+members = ["official", "ustc"]
+
+[docker]
+
+[[docker.sources]]
+name = "official"
+type = "proxy"
+base_url = "https://registry-1.docker.io"
+
+[[docker.sources]]
+name = "microsoft"
+type = "proxy"
+base_url = "https://mcr.microsoft.com"
+
+[[docker.sources]]
+name = "ghcr"
+type = "proxy"
+base_url = "https://ghcr.io"
+
+[[docker.sources]]
+name = "quay"
+type = "proxy"
+base_url = "https://quay.io"
+
+[[docker.sources]]
+name = "aliyun"
+type = "proxy"
+base_url = "https://registry.cn-hangzhou.aliyuncs.com"
+
+[[docker.sources]]
+name = "xuanyuan"
+type = "proxy"
+base_url = "https://docker.xuanyuan.me"
+
+[[docker.sources]]
+name = "unstructured"
+type = "proxy"
+base_url = "https://downloads.unstructured.io"
+
+[[docker.sources]]
+name = "group"
+type = "group"
+members = [
+  "official",
+  "microsoft",
+  "ghcr",
+  "quay",
+  "aliyun",
+  "xuanyuan",
+  "unstructured",
+]
+
+[npm]
+
+[[npm.sources]]
+name = "npmjs"
+type = "proxy"
+base_url = "https://registry.npmjs.org"
+
+[[npm.sources]]
+name = "npmmirror"
+type = "proxy"
+base_url = "https://registry.npmmirror.com"
+
+[[npm.sources]]
+name = "huawei"
+type = "proxy"
+base_url = "https://repo.huaweicloud.com/repository/npm"
+
+[[npm.sources]]
+name = "binary"
+type = "proxy"
+base_url = "https://cdn.npmmirror.com/binaries"
+
+[[npm.sources]]
+name = "group"
+type = "group"
+members = ["npmjs", "npmmirror", "huawei", "binary"]
+
+[nuget]
+
+[[nuget.sources]]
+name = "official"
+type = "proxy"
+base_url = "https://api.nuget.org/v3"
+
+[[nuget.sources]]
+name = "group"
+type = "group"
+members = ["official"]
+
+[pypi]
+
+[[pypi.sources]]
+name = "official"
+type = "proxy"
+base_url = "https://pypi.org"
+
+[[pypi.sources]]
+name = "tsinghua"
+type = "proxy"
+base_url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web"
+
+[[pypi.sources]]
+name = "ustc"
+type = "proxy"
+base_url = "https://mirrors.ustc.edu.cn/pypi"
+
+[[pypi.sources]]
+name = "group"
+type = "group"
+members = ["official", "tsinghua", "ustc"]
+
+[upm]
+
+[[upm.sources]]
+name = "unity"
+type = "proxy"
+base_url = "https://packages.unity.com"
+
+[[upm.sources]]
+name = "openupm"
+type = "proxy"
+base_url = "https://package.openupm.com"
+
+[[upm.sources]]
+name = "cesium"
+type = "proxy"
+base_url = "https://unity.pkg.cesium.com"
+
+[[upm.sources]]
+name = "group"
+type = "group"
+members = ["unity", "openupm", "cesium"]
+
+[vscode]
+
+[[vscode.sources]]
+name = "official"
+type = "proxy"
+base_url = "https://marketplace.visualstudio.com/_apis/public/gallery"
+
+[[vscode.sources]]
+name = "group"
+type = "group"
+members = ["official"]
