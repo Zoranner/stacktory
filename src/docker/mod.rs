@@ -13,6 +13,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use url::Url;
@@ -46,6 +47,8 @@ pub enum DockerError {
     MissingDigest,
     #[error("Docker manifest digest mismatch: expected `{expected}`, got `{actual}`")]
     DigestMismatch { expected: String, actual: String },
+    #[error("Docker blob `{0}` has no descriptor metadata")]
+    UnknownBlob(String),
     #[error("Docker metadata storage failed: {0}")]
     Storage(#[from] io::Error),
     #[error("Docker metadata serialization failed: {0}")]
@@ -59,6 +62,14 @@ struct ManifestMetadata {
     digest: String,
     selected_proxy: String,
     content_type: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct BlobMetadata {
+    repository: String,
+    digest: String,
+    object_type: String,
+    content_type: String,
 }
 
 impl DockerAdapter {
@@ -110,7 +121,13 @@ impl DockerService {
                 Ok(response) => response,
                 Err(error) => docker_error_response(&error),
             },
-            Ok(DockerRequest::Blob { .. }) => StatusCode::NOT_IMPLEMENTED.into_response(),
+            Ok(DockerRequest::Blob { repository, digest }) => match self
+                .blob(entry_name, &repository, &digest, &request.headers, pool)
+                .await
+            {
+                Ok(response) => response,
+                Err(error) => docker_error_response(&error),
+            },
             Err(_) => StatusCode::NOT_FOUND.into_response(),
         }
     }
@@ -170,14 +187,14 @@ impl DockerService {
                 actual: actual_digest,
             });
         }
-        self.write_manifest_metadata(
-            entry_name,
-            repository,
-            reference,
-            &actual_digest,
-            &source_name,
-            upstream.content_type.as_deref(),
-        )?;
+        let metadata = ManifestMetadata {
+            repository: repository.to_owned(),
+            reference: reference.as_str().to_owned(),
+            digest: actual_digest.clone(),
+            selected_proxy: source_name,
+            content_type: upstream.content_type.clone(),
+        };
+        self.write_manifest_metadata(entry_name, &metadata, &upstream.body)?;
         let mut response = (StatusCode::OK, Body::from(upstream.body)).into_response();
         if let Some(content_type) = upstream.content_type
             && let Ok(value) = header::HeaderValue::from_str(&content_type)
@@ -194,28 +211,67 @@ impl DockerService {
     fn write_manifest_metadata(
         &self,
         entry_name: &str,
-        repository: &str,
-        reference: &ManifestReference,
-        digest: &str,
-        selected_proxy: &str,
-        content_type: Option<&str>,
+        metadata: &ManifestMetadata,
+        body: &[u8],
     ) -> Result<(), DockerError> {
-        let metadata = ManifestMetadata {
-            repository: repository.to_owned(),
-            reference: reference.as_str().to_owned(),
-            digest: digest.to_owned(),
-            selected_proxy: selected_proxy.to_owned(),
-            content_type: content_type.map(str::to_owned),
-        };
         let path = self
             .data_dir
             .join("docker")
             .join("metadata")
             .join(entry_name)
-            .join(repository)
+            .join(&metadata.repository)
             .join("manifests")
-            .join(format!("{}.json", metadata_file_key(reference.as_str())));
-        atomic_write(&path, &serde_json::to_vec(&metadata)?).map_err(DockerError::Storage)
+            .join(format!("{}.json", metadata_file_key(&metadata.reference)));
+        atomic_write(&path, &serde_json::to_vec(&metadata)?).map_err(DockerError::Storage)?;
+        write_blob_descriptors(&self.data_dir, entry_name, &metadata.repository, body)?;
+        Ok(())
+    }
+
+    async fn blob(
+        &self,
+        entry_name: &str,
+        repository: &str,
+        digest: &str,
+        request_headers: &HeaderMap,
+        pool: &SourcePool,
+    ) -> Result<Response, DockerError> {
+        let metadata = read_blob_metadata(&self.data_dir, entry_name, repository, digest)?
+            .ok_or_else(|| DockerError::UnknownBlob(digest.to_owned()))?;
+        let source_name = pool
+            .proxy_members(entry_name)
+            .and_then(|members| members.into_iter().next())
+            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?
+            .name;
+        let mut headers = HeaderMap::new();
+        if let Some(range) = request_headers.get(header::RANGE) {
+            headers.insert(header::RANGE, range.clone());
+        }
+        let upstream = pool
+            .fetch_proxy_path_with_headers(
+                &source_name,
+                &format!("v2/{repository}/blobs/{digest}"),
+                headers,
+                FetchOperation::Artifact,
+            )
+            .await?;
+        let actual_digest = sha256_digest(&upstream.body);
+        if actual_digest != digest {
+            return Err(DockerError::DigestMismatch {
+                expected: digest.to_owned(),
+                actual: actual_digest,
+            });
+        }
+        let mut response = (StatusCode::OK, Body::from(upstream.body)).into_response();
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            header::HeaderValue::from_str(&metadata.content_type)
+                .unwrap_or_else(|_| header::HeaderValue::from_static("application/octet-stream")),
+        );
+        response.headers_mut().insert(
+            header::HeaderName::from_static("docker-content-digest"),
+            header::HeaderValue::from_str(digest).expect("SHA-256 digest is valid"),
+        );
+        Ok(response)
     }
 }
 
@@ -257,6 +313,7 @@ fn docker_error_response(error: &DockerError) -> Response {
         DockerError::Source(_)
         | DockerError::MissingDigest
         | DockerError::DigestMismatch { .. } => StatusCode::BAD_GATEWAY,
+        DockerError::UnknownBlob(_) => StatusCode::NOT_FOUND,
         DockerError::Storage(_) | DockerError::Serialization(_) => {
             StatusCode::INTERNAL_SERVER_ERROR
         }
@@ -276,6 +333,89 @@ fn is_sha256_digest(value: &str) -> bool {
 
 fn metadata_file_key(reference: &str) -> String {
     reference.replace(':', "-")
+}
+
+fn write_blob_descriptors(
+    data_dir: &Path,
+    entry_name: &str,
+    repository: &str,
+    body: &[u8],
+) -> Result<(), DockerError> {
+    let manifest: Value = serde_json::from_slice(body).map_err(DockerError::Serialization)?;
+    if let Some(config) = manifest.get("config") {
+        write_blob_descriptor(data_dir, entry_name, repository, config, "config")?;
+    }
+    if let Some(layers) = manifest.get("layers").and_then(Value::as_array) {
+        for layer in layers {
+            write_blob_descriptor(data_dir, entry_name, repository, layer, "layer")?;
+        }
+    }
+    Ok(())
+}
+
+fn write_blob_descriptor(
+    data_dir: &Path,
+    entry_name: &str,
+    repository: &str,
+    descriptor: &Value,
+    object_type: &str,
+) -> Result<(), DockerError> {
+    let digest = descriptor
+        .get("digest")
+        .and_then(Value::as_str)
+        .filter(|value| is_sha256_digest(value))
+        .ok_or_else(|| DockerError::UnknownBlob(object_type.to_owned()))?;
+    let content_type = descriptor
+        .get("mediaType")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| DockerError::UnknownBlob(digest.to_owned()))?;
+    let metadata = BlobMetadata {
+        repository: repository.to_owned(),
+        digest: digest.to_owned(),
+        object_type: object_type.to_owned(),
+        content_type: content_type.to_owned(),
+    };
+    let path = blob_metadata_path(data_dir, entry_name, repository, digest);
+    atomic_write(&path, &serde_json::to_vec(&metadata)?).map_err(DockerError::Storage)
+}
+
+fn read_blob_metadata(
+    data_dir: &Path,
+    entry_name: &str,
+    repository: &str,
+    digest: &str,
+) -> Result<Option<BlobMetadata>, DockerError> {
+    let path = blob_metadata_path(data_dir, entry_name, repository, digest);
+    let Some(contents) = read_if_present(&path)? else {
+        return Ok(None);
+    };
+    serde_json::from_slice(&contents)
+        .map(Some)
+        .map_err(DockerError::Serialization)
+}
+
+fn blob_metadata_path(
+    data_dir: &Path,
+    entry_name: &str,
+    repository: &str,
+    digest: &str,
+) -> PathBuf {
+    data_dir
+        .join("docker")
+        .join("metadata")
+        .join(entry_name)
+        .join(repository)
+        .join("blobs")
+        .join(format!("{}.json", metadata_file_key(digest)))
+}
+
+fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>, io::Error> {
+    match fs::read(path) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), io::Error> {
