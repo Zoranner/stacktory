@@ -70,6 +70,7 @@ struct BlobMetadata {
     digest: String,
     object_type: String,
     content_type: String,
+    selected_proxy: String,
 }
 
 impl DockerAdapter {
@@ -140,6 +141,23 @@ impl DockerService {
         request_headers: &HeaderMap,
         pool: &SourcePool,
     ) -> Result<Response, DockerError> {
+        if let Some(metadata) =
+            read_manifest_metadata(&self.data_dir, entry_name, repository, reference.as_str())?
+            && source_is_member(pool, entry_name, &metadata.selected_proxy)
+            && let Some(body) = read_verified_artifact(
+                &self.data_dir,
+                &metadata.selected_proxy,
+                repository,
+                manifest_object_type(metadata.content_type.as_deref()),
+                &metadata.digest,
+            )?
+        {
+            return Ok(manifest_response(
+                body,
+                metadata.content_type.as_deref(),
+                &metadata.digest,
+            ));
+        }
         let source_name = pool
             .proxy_members(entry_name)
             .and_then(|members| members.into_iter().next())
@@ -194,18 +212,20 @@ impl DockerService {
             selected_proxy: source_name,
             content_type: upstream.content_type.clone(),
         };
+        write_verified_artifact(
+            &self.data_dir,
+            &metadata.selected_proxy,
+            repository,
+            manifest_object_type(metadata.content_type.as_deref()),
+            &metadata.digest,
+            &upstream.body,
+        )?;
         self.write_manifest_metadata(entry_name, &metadata, &upstream.body)?;
-        let mut response = (StatusCode::OK, Body::from(upstream.body)).into_response();
-        if let Some(content_type) = upstream.content_type
-            && let Ok(value) = header::HeaderValue::from_str(&content_type)
-        {
-            response.headers_mut().insert(header::CONTENT_TYPE, value);
-        }
-        response.headers_mut().insert(
-            header::HeaderName::from_static("docker-content-digest"),
-            header::HeaderValue::from_str(&actual_digest).expect("SHA-256 digest is valid"),
-        );
-        Ok(response)
+        Ok(manifest_response(
+            upstream.body,
+            upstream.content_type.as_deref(),
+            &metadata.digest,
+        ))
     }
 
     fn write_manifest_metadata(
@@ -223,7 +243,13 @@ impl DockerService {
             .join("manifests")
             .join(format!("{}.json", metadata_file_key(&metadata.reference)));
         atomic_write(&path, &serde_json::to_vec(&metadata)?).map_err(DockerError::Storage)?;
-        write_blob_descriptors(&self.data_dir, entry_name, &metadata.repository, body)?;
+        write_blob_descriptors(
+            &self.data_dir,
+            entry_name,
+            &metadata.repository,
+            &metadata.selected_proxy,
+            body,
+        )?;
         Ok(())
     }
 
@@ -237,6 +263,17 @@ impl DockerService {
     ) -> Result<Response, DockerError> {
         let metadata = read_blob_metadata(&self.data_dir, entry_name, repository, digest)?
             .ok_or_else(|| DockerError::UnknownBlob(digest.to_owned()))?;
+        if source_is_member(pool, entry_name, &metadata.selected_proxy)
+            && let Some(body) = read_verified_artifact(
+                &self.data_dir,
+                &metadata.selected_proxy,
+                repository,
+                &metadata.object_type,
+                digest,
+            )?
+        {
+            return Ok(blob_response(body, &metadata.content_type, digest));
+        }
         let source_name = pool
             .proxy_members(entry_name)
             .and_then(|members| members.into_iter().next())
@@ -261,17 +298,15 @@ impl DockerService {
                 actual: actual_digest,
             });
         }
-        let mut response = (StatusCode::OK, Body::from(upstream.body)).into_response();
-        response.headers_mut().insert(
-            header::CONTENT_TYPE,
-            header::HeaderValue::from_str(&metadata.content_type)
-                .unwrap_or_else(|_| header::HeaderValue::from_static("application/octet-stream")),
-        );
-        response.headers_mut().insert(
-            header::HeaderName::from_static("docker-content-digest"),
-            header::HeaderValue::from_str(digest).expect("SHA-256 digest is valid"),
-        );
-        Ok(response)
+        write_verified_artifact(
+            &self.data_dir,
+            &source_name,
+            repository,
+            &metadata.object_type,
+            digest,
+            &upstream.body,
+        )?;
+        Ok(blob_response(upstream.body, &metadata.content_type, digest))
     }
 }
 
@@ -339,15 +374,30 @@ fn write_blob_descriptors(
     data_dir: &Path,
     entry_name: &str,
     repository: &str,
+    selected_proxy: &str,
     body: &[u8],
 ) -> Result<(), DockerError> {
     let manifest: Value = serde_json::from_slice(body).map_err(DockerError::Serialization)?;
     if let Some(config) = manifest.get("config") {
-        write_blob_descriptor(data_dir, entry_name, repository, config, "config")?;
+        write_blob_descriptor(
+            data_dir,
+            entry_name,
+            repository,
+            selected_proxy,
+            config,
+            "config",
+        )?;
     }
     if let Some(layers) = manifest.get("layers").and_then(Value::as_array) {
         for layer in layers {
-            write_blob_descriptor(data_dir, entry_name, repository, layer, "layer")?;
+            write_blob_descriptor(
+                data_dir,
+                entry_name,
+                repository,
+                selected_proxy,
+                layer,
+                "layer",
+            )?;
         }
     }
     Ok(())
@@ -357,6 +407,7 @@ fn write_blob_descriptor(
     data_dir: &Path,
     entry_name: &str,
     repository: &str,
+    selected_proxy: &str,
     descriptor: &Value,
     object_type: &str,
 ) -> Result<(), DockerError> {
@@ -375,6 +426,7 @@ fn write_blob_descriptor(
         digest: digest.to_owned(),
         object_type: object_type.to_owned(),
         content_type: content_type.to_owned(),
+        selected_proxy: selected_proxy.to_owned(),
     };
     let path = blob_metadata_path(data_dir, entry_name, repository, digest);
     atomic_write(&path, &serde_json::to_vec(&metadata)?).map_err(DockerError::Storage)
@@ -387,6 +439,27 @@ fn read_blob_metadata(
     digest: &str,
 ) -> Result<Option<BlobMetadata>, DockerError> {
     let path = blob_metadata_path(data_dir, entry_name, repository, digest);
+    let Some(contents) = read_if_present(&path)? else {
+        return Ok(None);
+    };
+    serde_json::from_slice(&contents)
+        .map(Some)
+        .map_err(DockerError::Serialization)
+}
+
+fn read_manifest_metadata(
+    data_dir: &Path,
+    entry_name: &str,
+    repository: &str,
+    reference: &str,
+) -> Result<Option<ManifestMetadata>, DockerError> {
+    let path = data_dir
+        .join("docker")
+        .join("metadata")
+        .join(entry_name)
+        .join(repository)
+        .join("manifests")
+        .join(format!("{}.json", metadata_file_key(reference)));
     let Some(contents) = read_if_present(&path)? else {
         return Ok(None);
     };
@@ -416,6 +489,108 @@ fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>, io::Error> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
+}
+
+fn artifact_path(
+    data_dir: &Path,
+    selected_proxy: &str,
+    repository: &str,
+    object_type: &str,
+    digest: &str,
+) -> PathBuf {
+    data_dir
+        .join("docker")
+        .join("artifacts")
+        .join(selected_proxy)
+        .join(repository)
+        .join(object_type)
+        .join(metadata_file_key(digest))
+}
+
+fn read_verified_artifact(
+    data_dir: &Path,
+    selected_proxy: &str,
+    repository: &str,
+    object_type: &str,
+    digest: &str,
+) -> Result<Option<Vec<u8>>, DockerError> {
+    let path = artifact_path(data_dir, selected_proxy, repository, object_type, digest);
+    let Some(contents) = read_if_present(&path)? else {
+        return Ok(None);
+    };
+    if sha256_digest(&contents) == digest {
+        Ok(Some(contents))
+    } else {
+        fs::remove_file(path)?;
+        Ok(None)
+    }
+}
+
+fn write_verified_artifact(
+    data_dir: &Path,
+    selected_proxy: &str,
+    repository: &str,
+    object_type: &str,
+    digest: &str,
+    contents: &[u8],
+) -> Result<(), DockerError> {
+    let actual_digest = sha256_digest(contents);
+    if actual_digest != digest {
+        return Err(DockerError::DigestMismatch {
+            expected: digest.to_owned(),
+            actual: actual_digest,
+        });
+    }
+    atomic_write(
+        &artifact_path(data_dir, selected_proxy, repository, object_type, digest),
+        contents,
+    )
+    .map_err(DockerError::Storage)
+}
+
+fn source_is_member(pool: &SourcePool, entry_name: &str, source_name: &str) -> bool {
+    pool.proxy_members(entry_name)
+        .is_some_and(|members| members.iter().any(|member| member.name == source_name))
+}
+
+fn manifest_object_type(content_type: Option<&str>) -> &'static str {
+    let media_type = content_type
+        .and_then(|value| value.split(';').next())
+        .unwrap_or_default()
+        .trim();
+    if media_type.contains("manifest.list") || media_type.contains("image.index") {
+        "image-index"
+    } else {
+        "manifest"
+    }
+}
+
+fn manifest_response(body: Vec<u8>, content_type: Option<&str>, digest: &str) -> Response {
+    let mut response = (StatusCode::OK, Body::from(body)).into_response();
+    if let Some(content_type) = content_type
+        && let Ok(value) = header::HeaderValue::from_str(content_type)
+    {
+        response.headers_mut().insert(header::CONTENT_TYPE, value);
+    }
+    response.headers_mut().insert(
+        header::HeaderName::from_static("docker-content-digest"),
+        header::HeaderValue::from_str(digest).expect("SHA-256 digest is valid"),
+    );
+    response
+}
+
+fn blob_response(body: Vec<u8>, content_type: &str, digest: &str) -> Response {
+    let mut response = (StatusCode::OK, Body::from(body)).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_str(content_type)
+            .unwrap_or_else(|_| header::HeaderValue::from_static("application/octet-stream")),
+    );
+    response.headers_mut().insert(
+        header::HeaderName::from_static("docker-content-digest"),
+        header::HeaderValue::from_str(digest).expect("SHA-256 digest is valid"),
+    );
+    response
 }
 
 fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), io::Error> {
