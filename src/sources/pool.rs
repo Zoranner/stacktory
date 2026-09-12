@@ -429,7 +429,7 @@ fn valid_discovered_url(source: &SourceConfig, url: &Url) -> bool {
     let Some(base_url) = source.base_url.as_ref() else {
         return false;
     };
-    base_url.scheme() == url.scheme()
+    (base_url.scheme() == url.scheme()
         && base_url.host_str() == url.host_str()
         && base_url.port_or_known_default() == url.port_or_known_default()
         && url.username().is_empty()
@@ -443,7 +443,8 @@ fn valid_discovered_url(source: &SourceConfig, url: &Url) -> bool {
             .path()
             .split('/')
             .any(|segment| matches!(segment, "." | ".."))
-        && (!source.require_https || url.scheme() == "https")
+        && (!source.require_https || url.scheme() == "https"))
+        || is_safe_configured_url(url)
 }
 
 pub(crate) fn is_safe_configured_url(url: &Url) -> bool {

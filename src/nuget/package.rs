@@ -34,10 +34,81 @@ pub(crate) async fn serve(
     path: &str,
     pool: &SourcePool,
 ) -> Response {
+    if path.ends_with("/index.json") {
+        return match serve_package_index(service, entry_name, path, pool).await {
+            Ok(body) => response(StatusCode::OK, "application/json", body),
+            Err(error) => package_error_response(&error),
+        };
+    }
     match serve_package(service, entry_name, path, pool).await {
         Ok(body) => response(StatusCode::OK, "application/octet-stream", body),
         Err(error) => package_error_response(&error),
     }
+}
+
+async fn serve_package_index(
+    service: &NugetService,
+    entry_name: &str,
+    path: &str,
+    pool: &SourcePool,
+) -> Result<Vec<u8>, NugetError> {
+    let package_id = parse_package_index_path(path)?;
+    let snapshot = service.service_index(entry_name, pool).await?;
+    let package_base = snapshot.package_base_url.ok_or_else(|| {
+        NugetError::InvalidPackageIndex("service index has no package content resource".to_owned())
+    })?;
+    let cache_path = package_index_path(&service.data_dir, entry_name, &package_id);
+    let descriptor_path = package_index_descriptor_path(&service.data_dir, entry_name, &package_id);
+    if let (Some(body), Some(selected_proxy)) = (
+        read_if_present(&cache_path)?,
+        read_selected_proxy(&descriptor_path)?,
+    ) && selected_proxy == snapshot.selected_proxy
+        && valid_package_index(&body)
+    {
+        service.record_object(
+            "nuget_package_index_read",
+            NugetAuditDetails {
+                object_key: &format!("package/{package_id}/index.json"),
+                entry_name,
+                selected_proxy: &selected_proxy,
+                object_type: "package-index",
+                cache_status: "hit",
+                failure_category: None,
+            },
+        )?;
+        return Ok(body);
+    }
+
+    let upstream_url = append_path(&package_base, &format!("{package_id}/index.json"));
+    let upstream = pool
+        .fetch_discovered_url(
+            &snapshot.selected_proxy,
+            upstream_url,
+            FetchOperation::Metadata,
+        )
+        .await?;
+    if !valid_package_index(&upstream.body) {
+        return Err(NugetError::InvalidPackageIndex(
+            "versions is missing or contains an unsafe version".to_owned(),
+        ));
+    }
+    atomic_write(&cache_path, &upstream.body)?;
+    atomic_write(
+        &descriptor_path,
+        format!("{}\n", snapshot.selected_proxy).as_bytes(),
+    )?;
+    service.record_object(
+        "nuget_package_index_published",
+        NugetAuditDetails {
+            object_key: &format!("package/{package_id}/index.json"),
+            entry_name,
+            selected_proxy: &snapshot.selected_proxy,
+            object_type: "package-index",
+            cache_status: "published",
+            failure_category: None,
+        },
+    )?;
+    Ok(upstream.body)
 }
 
 async fn serve_package(
@@ -211,6 +282,21 @@ async fn serve_package(
         return Ok(upstream.body);
     }
 
+    service.record_object(
+        "nuget_package_fetch_failed",
+        NugetAuditDetails {
+            object_key: &format!("package/{package_id}/{version}"),
+            entry_name,
+            selected_proxy: "",
+            object_type: "package-content",
+            cache_status: "failed",
+            failure_category: Some(if all_not_found {
+                "not_found"
+            } else {
+                "source_failed"
+            }),
+        },
+    )?;
     Err(SourcePoolError::AllSourcesFailed {
         entry_name: entry_name.to_owned(),
         request_key: format!("package/{package_id}/{version}"),
@@ -247,6 +333,49 @@ fn parse_package_path(path: &str) -> Result<(String, String), NugetError> {
         ));
     }
     Ok((package_id, version))
+}
+
+fn parse_package_index_path(path: &str) -> Result<String, NugetError> {
+    let relative = path
+        .strip_prefix("package/")
+        .ok_or_else(|| NugetError::InvalidPackage("package path is invalid".to_owned()))?;
+    let parts = relative.split('/').collect::<Vec<_>>();
+    if parts.len() != 2
+        || !is_safe_segment(parts[0])
+        || matches!(parts[0], "." | "..")
+        || parts[1] != "index.json"
+    {
+        return Err(NugetError::InvalidPackage(
+            "package version index path is invalid".to_owned(),
+        ));
+    }
+    Ok(parts[0].to_ascii_lowercase())
+}
+
+fn valid_package_index(body: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("versions")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+        })
+        .is_some_and(|versions| {
+            !versions.is_empty()
+                && versions.iter().all(|version| {
+                    version
+                        .as_str()
+                        .is_some_and(is_safe_segment)
+                })
+        })
+}
+
+fn append_path(base_url: &Url, relative: &str) -> Url {
+    let mut url = base_url.clone();
+    let base_path = url.path().trim_end_matches('/');
+    url.set_path(&format!("{base_path}/{relative}"));
+    url
 }
 
 fn verify_package(bytes: &[u8], binding: &PackageBinding) -> Result<bool, NugetError> {
@@ -387,6 +516,27 @@ fn package_cache_path(
         ))
 }
 
+fn package_index_path(data_dir: &Path, entry_name: &str, package_id: &str) -> PathBuf {
+    data_dir
+        .join("nuget")
+        .join("metadata")
+        .join(entry_name)
+        .join("package-index")
+        .join(format!("{package_id}.json"))
+}
+
+fn package_index_descriptor_path(data_dir: &Path, entry_name: &str, package_id: &str) -> PathBuf {
+    package_index_path(data_dir, entry_name, package_id)
+        .with_file_name(format!("{package_id}.source"))
+}
+
+fn read_selected_proxy(path: &Path) -> Result<Option<String>, NugetError> {
+    Ok(read_if_present(path)?
+        .and_then(|contents| String::from_utf8(contents).ok())
+        .map(|contents| contents.trim().to_owned())
+        .filter(|proxy| !proxy.is_empty()))
+}
+
 fn package_cache_metadata_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(
         "{}.meta.json",
@@ -431,7 +581,14 @@ fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), NugetError> {
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| io::Error::other("NuGet package metadata has no file name"))?;
-    let temporary = parent.join(format!(".{file_name}.{}.tmp", std::process::id()));
+    let temporary = parent.join(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(io::Error::other)?
+            .as_nanos()
+    ));
     fs::write(&temporary, contents)?;
     fs::rename(&temporary, path).map_err(|error| {
         let _ = fs::remove_file(&temporary);
@@ -462,6 +619,7 @@ fn package_error_response(error: &NugetError) -> Response {
         NugetError::Source(_) | NugetError::InvalidServiceIndex(_) => StatusCode::BAD_GATEWAY,
         NugetError::InvalidRegistration(_) => StatusCode::BAD_GATEWAY,
         NugetError::InvalidRegistrationPath(_) => StatusCode::NOT_FOUND,
+        NugetError::InvalidPackageIndex(_) => StatusCode::BAD_GATEWAY,
         NugetError::PackageIntegrityFailure(_) => StatusCode::BAD_GATEWAY,
         NugetError::Storage(_) | NugetError::Serialization(_) | NugetError::Audit(_) => {
             StatusCode::INTERNAL_SERVER_ERROR

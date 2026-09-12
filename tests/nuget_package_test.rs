@@ -164,6 +164,29 @@ async fn package_content_without_upstream_digest_rejects_non_nupkg_content() {
     );
 }
 
+#[tokio::test]
+async fn package_version_index_is_available_for_restore_clients() {
+    let package = b"version index package".to_vec();
+    let package_hash = STANDARD.encode(Sha512::digest(&package));
+    let (upstream, address) =
+        start_package_server(package, package_hash, Arc::new(AtomicUsize::new(0))).await;
+    let router = nuget_router(upstream, address, tempdir().expect("data directory").path());
+
+    let response = router
+        .oneshot(get_request("/mirror/nuget/official/package/foo/index.json"))
+        .await
+        .expect("package version index response");
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("package version index body"),
+    )
+    .expect("package version index JSON");
+    assert_eq!(body["versions"], serde_json::json!(["1.0.0"]));
+}
+
 async fn prime_registration(router: &axum::Router) {
     let service_index = router
         .clone()
@@ -270,6 +293,10 @@ async fn start_package_server(
             }),
         )
         .route(
+            "/v3-flatcontainer/foo/index.json",
+            get(|| async { r#"{"versions":["1.0.0"]}"# }),
+        )
+        .route(
             "/v3-flatcontainer/foo/1.0.0/foo.1.0.0.nupkg",
             get(move || {
                 let package = package.clone();
@@ -339,6 +366,10 @@ async fn start_package_server_without_hash(
                     async move { registration }
                 }
             }),
+        )
+        .route(
+            "/v3-flatcontainer/foo/index.json",
+            get(|| async { r#"{"versions":["1.0.0"]}"# }),
         )
         .route(
             "/v3-flatcontainer/foo/1.0.0/foo.1.0.0.nupkg",

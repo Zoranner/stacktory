@@ -53,6 +53,8 @@ pub enum NugetError {
     InvalidRegistrationPath(String),
     #[error("NuGet package content is invalid: {0}")]
     InvalidPackage(String),
+    #[error("NuGet package version index is invalid: {0}")]
+    InvalidPackageIndex(String),
     #[error("NuGet package content integrity check failed: {0}")]
     PackageIntegrityFailure(String),
     #[error("NuGet storage I/O failed: {0}")]
@@ -193,6 +195,10 @@ impl NugetService {
             {
                 Ok(response) => response,
                 Err(error) if is_retryable(&error) => {
+                    eprintln!(
+                        "NuGet service index source failed: {}: {error}",
+                        member.name
+                    );
                     failures.push(format!("{}: {error}", member.name));
                     all_not_found = false;
                     continue;
@@ -441,14 +447,12 @@ fn rewrite_service_index(
             continue;
         };
         if resource_type.starts_with(REGISTRATIONS_BASE_URL) {
+            if registration_url.is_some() {
+                continue;
+            }
             if !safe_resource_url(base_url, require_https, &upstream_url) {
                 return Err(NugetError::InvalidServiceIndex(
                     "registration resource URL is outside the configured source".to_owned(),
-                ));
-            }
-            if registration_url.is_some() {
-                return Err(NugetError::InvalidServiceIndex(
-                    "service index contains duplicate registration resources".to_owned(),
                 ));
             }
             registration_url = Some(upstream_url);
@@ -457,14 +461,12 @@ fn rewrite_service_index(
                 local_resource_url(root_url, entry_name, "registration/"),
             ));
         } else if resource_type.starts_with(PACKAGE_BASE_ADDRESS) {
+            if package_base_url.is_some() {
+                continue;
+            }
             if !safe_resource_url(base_url, require_https, &upstream_url) {
                 return Err(NugetError::InvalidServiceIndex(
                     "package resource URL is outside the configured source".to_owned(),
-                ));
-            }
-            if package_base_url.is_some() {
-                return Err(NugetError::InvalidServiceIndex(
-                    "service index contains duplicate package resources".to_owned(),
                 ));
             }
             package_base_url = Some(upstream_url);
@@ -495,6 +497,7 @@ fn is_supported_resource(resource_type: &str) -> bool {
 fn rewrite_resource(resource: &Map<String, Value>, local_url: Url) -> Value {
     let mut resource = resource.clone();
     resource.insert("@id".to_owned(), Value::String(local_url.to_string()));
+    resource.remove("comment");
     Value::Object(resource)
 }
 
@@ -613,6 +616,7 @@ fn nuget_error_response(error: &NugetError) -> Response {
         | NugetError::InvalidRegistration(_)
         | NugetError::InvalidRegistrationPath(_)
         | NugetError::InvalidPackage(_)
+        | NugetError::InvalidPackageIndex(_)
         | NugetError::PackageIntegrityFailure(_) => StatusCode::BAD_GATEWAY,
         NugetError::Storage(_) | NugetError::Serialization(_) | NugetError::Audit(_) => {
             StatusCode::INTERNAL_SERVER_ERROR

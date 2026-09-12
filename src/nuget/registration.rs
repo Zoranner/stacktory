@@ -213,6 +213,21 @@ async fn serve_registration(
         return Ok(body);
     }
 
+    service.record_object(
+        "nuget_registration_fetch_failed",
+        NugetAuditDetails {
+            object_key: &request.relative,
+            entry_name,
+            selected_proxy: "",
+            object_type: "registration",
+            cache_status: "failed",
+            failure_category: Some(if all_not_found {
+                "not_found"
+            } else {
+                "source_failed"
+            }),
+        },
+    )?;
     Err(SourcePoolError::AllSourcesFailed {
         entry_name: entry_name.to_owned(),
         request_key: request.relative,
@@ -738,6 +753,7 @@ fn registration_error_response(error: &NugetError) -> Response {
         NugetError::InvalidRegistrationPath(_) => StatusCode::NOT_FOUND,
         NugetError::Source(_) | NugetError::InvalidServiceIndex(_) => StatusCode::BAD_GATEWAY,
         NugetError::InvalidPackage(_) => StatusCode::NOT_FOUND,
+        NugetError::InvalidPackageIndex(_) => StatusCode::BAD_GATEWAY,
         NugetError::PackageIntegrityFailure(_) => StatusCode::BAD_GATEWAY,
         NugetError::Storage(_) | NugetError::Serialization(_) | NugetError::Audit(_) => {
             StatusCode::INTERNAL_SERVER_ERROR

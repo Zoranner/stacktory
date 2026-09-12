@@ -90,7 +90,7 @@ async fn service_index_rejects_unknown_resource_relationships() {
     let upstream = start_server(Router::new().route(
         "/v3/index.json",
         get(|| async {
-            r#"{"version":"3.0.0","resources":[{"@id":"https://evil.example/resource","@type":"PackageBaseAddress/3.0.0.0"}]}"#
+            r#"{"version":"3.0.0","resources":[{"@id":"http://127.0.0.2/resource","@type":"PackageBaseAddress/3.0.0.0"}]}"#
         }),
     ))
     .await;
@@ -164,7 +164,7 @@ async fn service_index_rejects_incomplete_restore_resources() {
 }
 
 #[tokio::test]
-async fn service_index_rejects_duplicate_restore_resources() {
+async fn service_index_selects_one_restore_resource_from_duplicate_aliases() {
     let upstream = start_service_index_with_body(|port| {
         format!(
             r#"{{"version":"3.0.0","resources":[
@@ -183,7 +183,39 @@ async fn service_index_rejects_duplicate_restore_resources() {
         .await
         .expect("service index response");
 
-    assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("service index body");
+    let index: serde_json::Value = serde_json::from_slice(&body).expect("service index JSON");
+    assert_eq!(index["resources"].as_array().expect("resources").len(), 2);
+}
+
+#[tokio::test]
+async fn service_index_accepts_a_declared_public_cross_origin_package_resource() {
+    let upstream = start_service_index_with_body(|port| {
+        format!(
+            r#"{{"version":"3.0.0","resources":[
+                {{"@id":"http://127.0.0.1:{port}/v3/registration/","@type":"RegistrationsBaseUrl/3.6.0"}},
+                {{"@id":"https://api.nuget.org/v3-flatcontainer/","@type":"PackageBaseAddress/3.0.0","comment":"https://api.nuget.org/v3-flatcontainer/{{id}}"}}
+            ]}}"#
+        )
+    })
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = nuget_router(upstream, data_dir.path());
+
+    let response = router
+        .oneshot(get_request("/mirror/nuget/official/v3/index.json"))
+        .await
+        .expect("service index response");
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("service index body");
+    assert!(String::from_utf8_lossy(&body).contains("/mirror/nuget/official/package/"));
+    assert!(!String::from_utf8_lossy(&body).contains("api.nuget.org"));
 }
 
 fn get_request(path: &str) -> Request<Body> {

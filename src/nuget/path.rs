@@ -1,5 +1,7 @@
 use url::Url;
 
+use crate::sources::pool::is_safe_configured_url;
+
 pub(crate) fn validate_service_index_url(url: &Url, require_https: bool) -> bool {
     matches!(url.scheme(), "http" | "https")
         && url.host_str().is_some()
@@ -33,7 +35,7 @@ pub(crate) fn safe_resource_url(base_url: &Url, require_https: bool, candidate: 
         || base_url.host_str() != candidate.host_str()
         || base_url.port_or_known_default() != candidate.port_or_known_default()
     {
-        return false;
+        return is_safe_configured_url(candidate);
     }
     true
 }
