@@ -17,7 +17,7 @@ Stacktory 为公司内网开发机提供统一的工具链和软件包下载入�
 
 ## 开始使用
 
-请阅读 [Stacktory 用户文档](docs/user/README.md)。
+请阅读 [Stacktory 使用指南](docs/guides/README.md)。
 
 管理员需要提供：
 
