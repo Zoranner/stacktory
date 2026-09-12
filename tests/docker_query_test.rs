@@ -125,6 +125,35 @@ async fn catalog_and_tags_queries_use_entry_bound_verified_cache() {
     assert_eq!(hits.load(Ordering::SeqCst), 2);
 }
 
+#[tokio::test]
+async fn group_query_falls_back_after_invalid_json_response() {
+    let first = start_json_server(b"not-json".to_vec(), StatusCode::OK).await;
+    let second = start_json_server(
+        br#"{"repositories":["from-second"]}"#.to_vec(),
+        StatusCode::OK,
+    )
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = docker_router_with_sources(first, second, data_dir.path());
+
+    let response = router
+        .oneshot(
+            Request::get("/mirror/docker/fallbacks/v2/_catalog")
+                .body(Body::empty())
+                .expect("group catalog request"),
+        )
+        .await
+        .expect("group catalog response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("group catalog body"),
+        br#"{"repositories":["from-second"]}"#.to_vec()
+    );
+}
+
 fn docker_router(upstream: Url, data_dir: &std::path::Path) -> axum::Router {
     docker_router_with_sources(upstream.clone(), upstream, data_dir)
 }

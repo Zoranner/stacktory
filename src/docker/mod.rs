@@ -367,10 +367,19 @@ impl DockerService {
                 .await
             {
                 Ok(upstream) => {
-                    let value: Value = serde_json::from_slice(&upstream.body).map_err(|_| {
-                        DockerError::InvalidManifest(format!("{object_type} is not valid JSON"))
-                    })?;
-                    validate_list_response(&value, object_type)?;
+                    let validation = serde_json::from_slice::<Value>(&upstream.body)
+                        .map_err(|_| {
+                            DockerError::InvalidManifest(format!("{object_type} is not valid JSON"))
+                        })
+                        .and_then(|value| validate_list_response(&value, object_type));
+                    if let Err(error) = validation {
+                        if pool.is_group(entry_name) && is_fallback_search_error(&error) {
+                            all_not_found = false;
+                            failures.push(format!("{source_name}: {error}"));
+                            continue;
+                        }
+                        return Err(error);
+                    }
                     let digest = sha256_digest(&upstream.body);
                     let metadata = QueryMetadata {
                         namespace: namespace.to_owned(),
@@ -1633,6 +1642,8 @@ fn is_fallback_source_error(error: &SourcePoolError) -> bool {
 fn is_fallback_search_error(error: &DockerError) -> bool {
     match error {
         DockerError::InvalidCatalog => true,
+        DockerError::InvalidTags => true,
+        DockerError::InvalidManifest(_) => true,
         DockerError::Source(source) => is_fallback_source_error(source),
         _ => false,
     }
