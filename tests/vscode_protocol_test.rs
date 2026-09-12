@@ -9,16 +9,12 @@ use std::{
 use axum::{
     Router,
     body::Body,
-    http::{Request, StatusCode},
-    response::IntoResponse,
-    routing::get,
+    http::{HeaderMap, Request, StatusCode},
+    routing::{get, post},
 };
-use sha2::{Digest, Sha256};
 use stacktory::{
-    SourceConfig, SourceGraph, SourcePool, SourceType,
-    http::router_with_registry,
-    sources::registry::AdapterRegistry,
-    vscode::{VscodeAdapter, VscodePath},
+    SourceConfig, SourceGraph, SourcePool, SourceType, http::router_with_registry,
+    sources::registry::AdapterRegistry, vscode::VscodeAdapter,
 };
 use tempfile::tempdir;
 use tokio::net::TcpListener;
@@ -26,321 +22,262 @@ use tower::ServiceExt;
 use url::Url;
 
 #[tokio::test]
-async fn metadata_is_rewritten_to_the_named_stacktory_route_and_cached() {
-    let requests = Arc::new(AtomicUsize::new(0));
-    let vsix_hash = format!("{:x}", Sha256::digest(b"vsix payload"));
-    let upstream = start_server({
-        let requests = requests.clone();
-        let vsix_hash = vsix_hash.clone();
-        Router::new().route(
-            "/api/redhat/vscode-yaml",
-            get(move || {
-                let requests = requests.clone();
-                let vsix_hash = vsix_hash.clone();
-                async move {
-                    requests.fetch_add(1, Ordering::SeqCst);
-                    if requests.load(Ordering::SeqCst) > 1 {
-                        return StatusCode::BAD_GATEWAY.into_response();
-                    }
-                    axum::Json(serde_json::json!({
-                        "namespace": "redhat",
-                        "name": "vscode-yaml",
-                        "version": "1.17.0",
-                        "files": {
-                            "download": "https://open-vsx.example/api/redhat/vscode-yaml/1.17.0/file/redhat.vscode-yaml-1.17.0.vsix",
-                            "sha256": vsix_hash
-                        }
-                    }))
-                    .into_response()
-                }
-            }),
-        )
-    })
-    .await;
-    let data_dir = tempdir().expect("data directory");
-    let router = vscode_router(upstream, data_dir.path());
-
-    let first = router
-        .clone()
-        .oneshot(get_request(
-            "/mirror/vscode/official/api/redhat/vscode-yaml",
-        ))
-        .await
-        .expect("first metadata response");
-    assert_eq!(first.status(), StatusCode::OK);
-    let first_body = axum::body::to_bytes(first.into_body(), usize::MAX)
-        .await
-        .expect("first metadata body");
-    let first_json: serde_json::Value = serde_json::from_slice(&first_body).expect("metadata JSON");
-    assert_eq!(
-        first_json["files"]["download"],
-        "http://127.0.0.1:18761/mirror/vscode/official/api/redhat/vscode-yaml/1.17.0/file/redhat.vscode-yaml-1.17.0.vsix"
-    );
-
-    let second = router
-        .oneshot(get_request(
-            "/mirror/vscode/official/api/redhat/vscode-yaml",
-        ))
-        .await
-        .expect("cached metadata response");
-    assert_eq!(second.status(), StatusCode::OK);
-    assert_eq!(
-        axum::body::to_bytes(second.into_body(), usize::MAX)
-            .await
-            .expect("cached metadata body"),
-        first_body
-    );
-    assert_eq!(requests.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
-async fn version_metadata_requires_the_requested_version_and_verified_sha256() {
-    let upstream = start_server(Router::new().route(
-        "/api/redhat/vscode-yaml/1.17.0",
-        get(|| async {
-            axum::Json(serde_json::json!({
-                "namespace": "redhat",
-                "name": "vscode-yaml",
-                "version": "1.16.0",
-                "files": {
-                    "download": "https://open-vsx.example/api/redhat/vscode-yaml/1.16.0/file/redhat.vscode-yaml-1.16.0.vsix",
-                    "sha256": "not-a-sha256"
-                }
-            }))
-        }),
-    ))
-    .await;
-    let router = vscode_router(upstream, tempdir().expect("data directory").path());
-
-    let response = router
-        .oneshot(get_request(
-            "/mirror/vscode/official/api/redhat/vscode-yaml/1.17.0",
-        ))
-        .await
-        .expect("invalid version metadata response");
-
-    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-}
-
-#[tokio::test]
-async fn vsix_download_falls_back_after_hash_mismatch_and_then_uses_cache() {
-    let vsix = b"verified vsix".to_vec();
-    let expected_hash = format!("{:x}", Sha256::digest(&vsix));
-    let first_file_requests = Arc::new(AtomicUsize::new(0));
-    let second_file_requests = Arc::new(AtomicUsize::new(0));
-    let metadata = metadata_body(&expected_hash);
-    let first = start_server({
-        let latest_metadata = metadata.clone();
-        let version_metadata = metadata.clone();
-        let first_file_requests = first_file_requests.clone();
-        Router::new()
-            .route(
-                "/api/redhat/vscode-yaml",
-                get(move || {
-                    let metadata = latest_metadata.clone();
-                    async move { metadata }
-                }),
-            )
-            .route(
-                "/api/redhat/vscode-yaml/1.17.0",
-                get(move || {
-                    let metadata = version_metadata.clone();
-                    async move { metadata }
-                }),
-            )
-            .route(
-                "/api/redhat/vscode-yaml/1.17.0/file/redhat.vscode-yaml-1.17.0.vsix",
-                get(move || {
-                    let first_file_requests = first_file_requests.clone();
-                    async move {
-                        first_file_requests.fetch_add(1, Ordering::SeqCst);
-                        "tampered vsix"
-                    }
-                }),
-            )
-    })
-    .await;
-    let second = start_server({
-        let latest_metadata = metadata.clone();
-        let version_metadata = metadata.clone();
-        let second_file_requests = second_file_requests.clone();
-        let expected_vsix = vsix.clone();
-        Router::new()
-            .route(
-                "/api/redhat/vscode-yaml",
-                get(move || {
-                    let metadata = latest_metadata.clone();
-                    async move { metadata }
-                }),
-            )
-            .route(
-                "/api/redhat/vscode-yaml/1.17.0",
-                get(move || {
-                    let metadata = version_metadata.clone();
-                    async move { metadata }
-                }),
-            )
-            .route(
-                "/api/redhat/vscode-yaml/1.17.0/file/redhat.vscode-yaml-1.17.0.vsix",
-                get(move || {
-                    let second_file_requests = second_file_requests.clone();
-                    let vsix = expected_vsix.clone();
-                    async move {
-                        second_file_requests.fetch_add(1, Ordering::SeqCst);
-                        vsix
-                    }
-                }),
-            )
-    })
-    .await;
-    let data_dir = tempdir().expect("data directory");
-    let router = vscode_group_router(first, second, data_dir.path());
-
-    let metadata_response = router
-        .clone()
-        .oneshot(get_request("/mirror/vscode/group/api/redhat/vscode-yaml"))
-        .await
-        .expect("metadata response");
-    assert_eq!(metadata_response.status(), StatusCode::OK);
-
-    let first_download = router
-        .clone()
-        .oneshot(get_request(
-            "/mirror/vscode/group/api/redhat/vscode-yaml/1.17.0/file/redhat.vscode-yaml-1.17.0.vsix",
-        ))
-        .await
-        .expect("first VSIX response");
-    assert_eq!(first_download.status(), StatusCode::OK);
-    assert_eq!(
-        axum::body::to_bytes(first_download.into_body(), usize::MAX)
-            .await
-            .expect("first VSIX body"),
-        vsix
-    );
-    assert_eq!(first_file_requests.load(Ordering::SeqCst), 1);
-    assert_eq!(second_file_requests.load(Ordering::SeqCst), 1);
-
-    let second_download = router
-        .oneshot(get_request(
-            "/mirror/vscode/group/api/redhat/vscode-yaml/1.17.0/file/redhat.vscode-yaml-1.17.0.vsix",
-        ))
-        .await
-        .expect("cached VSIX response");
-    assert_eq!(second_download.status(), StatusCode::OK);
-    assert_eq!(
-        axum::body::to_bytes(second_download.into_body(), usize::MAX)
-            .await
-            .expect("cached VSIX body"),
-        vsix
-    );
-    assert_eq!(first_file_requests.load(Ordering::SeqCst), 1);
-    assert_eq!(second_file_requests.load(Ordering::SeqCst), 1);
-
-    let audit = std::fs::read_to_string(data_dir.path().join("audit/events.jsonl"))
-        .expect("VS Code audit log");
-    assert!(audit.contains(r#""ecosystem":"vscode""#));
-    assert!(audit.contains(r#""entry_name":"group""#));
-    assert!(audit.contains(r#""selected_proxy":"first""#));
-    assert!(audit.contains(r#""selected_proxy":"second""#));
-    assert!(audit.contains(r#""cache_status":"fallback""#));
-    assert!(audit.contains(r#""cache_status":"hit""#));
-    assert!(audit.contains(r#""failure_category":"integrity_mismatch""#));
-}
-
-#[tokio::test]
-async fn mismatched_vsix_is_not_published_to_cache() {
-    let expected_hash = format!("{:x}", Sha256::digest(b"expected vsix"));
-    let metadata = metadata_body(&expected_hash);
-    let upstream = start_server(
-        Router::new()
-            .route(
-                "/api/redhat/vscode-yaml/1.17.0",
-                get(move || {
-                    let metadata = metadata.clone();
-                    async move { metadata }
-                }),
-            )
-            .route(
-                "/api/redhat/vscode-yaml/1.17.0/file/redhat.vscode-yaml-1.17.0.vsix",
-                get(|| async { "tampered vsix" }),
-            ),
+async fn marketplace_query_rewrites_assets_and_publishes_descriptors() {
+    let vsix = b"verified marketplace VSIX".to_vec();
+    let (upstream, asset_address) = start_gallery_server(
+        vsix.clone(),
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
     )
     .await;
     let data_dir = tempdir().expect("data directory");
-    let router = vscode_router(upstream, data_dir.path());
+    let router = vscode_group_router(upstream, asset_address, data_dir.path());
 
     let response = router
+        .clone()
+        .oneshot(query_request())
+        .await
+        .expect("query response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let query: serde_json::Value =
+        serde_json::from_slice(&body_bytes(response).await).expect("query JSON");
+    let source = query["results"][0]["extensions"][0]["versions"][0]["files"][0]["source"]
+        .as_str()
+        .expect("rewritten source");
+    assert!(source.starts_with("http://127.0.0.1:18761/mirror/vscode/group/asset/"));
+    let asset_base = query["results"][0]["extensions"][0]["versions"][0]["assetUri"]
+        .as_str()
+        .expect("rewritten asset base");
+    assert!(asset_base.starts_with("http://127.0.0.1:18761/mirror/vscode/group/asset-base/"));
+    let asset_id = source.rsplit('/').next().expect("asset ID");
+    assert_eq!(asset_id.len(), 64);
+    assert!(
+        data_dir
+            .path()
+            .join(format!(
+                "vscode/metadata/group/marketplace/assets/{asset_id}.toml"
+            ))
+            .exists()
+    );
+
+    let asset = router
+        .clone()
+        .oneshot(get_request(&format!(
+            "/mirror/vscode/group/asset/{asset_id}"
+        )))
+        .await
+        .expect("asset response");
+    assert_eq!(asset.status(), StatusCode::OK);
+    assert_eq!(
+        asset
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("application/vnd.ms-vsix")
+    );
+    assert_eq!(body_bytes(asset).await, vsix);
+
+    let asset_base_id = asset_base.rsplit('/').next().expect("asset base ID");
+    let gallery_asset = router
+        .clone()
+        .oneshot(get_request(&format!(
+            "/mirror/vscode/group/asset-base/{asset_base_id}/Microsoft.VisualStudio.Services.VSIXPackage"
+        )))
+        .await
+        .expect("asset base response");
+    assert_eq!(gallery_asset.status(), StatusCode::OK);
+    assert_eq!(
+        body_bytes(gallery_asset).await,
+        b"verified marketplace VSIX"
+    );
+
+    let resource = router
+        .clone()
         .oneshot(get_request(
-            "/mirror/vscode/official/api/redhat/vscode-yaml/1.17.0/file/redhat.vscode-yaml-1.17.0.vsix",
+            "/mirror/vscode/group/resource/redhat/vscode-yaml/1.25.0/extension",
         ))
         .await
-        .expect("mismatched VSIX response");
+        .expect("resource response");
+    assert_eq!(resource.status(), StatusCode::OK);
+    assert_eq!(
+        resource
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("application/json")
+    );
+    assert_eq!(body_bytes(resource).await, br#"{"name":"vscode-yaml"}"#);
 
-    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let extension = router
+        .oneshot(get_request(
+            "/mirror/vscode/group/extension/redhat/vscode-yaml/latest",
+        ))
+        .await
+        .expect("extension package response");
+    assert_eq!(extension.status(), StatusCode::OK);
+    assert_eq!(
+        extension
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("application/vnd.ms-vsix")
+    );
+    assert_eq!(body_bytes(extension).await, b"verified marketplace VSIX");
+}
+
+#[tokio::test]
+async fn marketplace_query_uses_fixed_gallery_headers_and_preserves_request_body() {
+    let observed = Arc::new(AtomicUsize::new(0));
+    let (upstream, asset_address) = start_gallery_server(
+        b"VSIX".to_vec(),
+        observed.clone(),
+        Arc::new(AtomicUsize::new(0)),
+    )
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = vscode_group_router(upstream, asset_address, data_dir.path());
+
+    let response = router
+        .oneshot(query_request())
+        .await
+        .expect("query response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(observed.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn marketplace_rejects_unbound_assets_and_unsupported_methods() {
+    let (upstream, asset_address) = start_gallery_server(
+        b"VSIX".to_vec(),
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+    )
+    .await;
+    let router = vscode_group_router(
+        upstream,
+        asset_address,
+        tempdir().expect("data directory").path(),
+    );
+
+    let missing_asset = router
+        .clone()
+        .oneshot(get_request(&format!(
+            "/mirror/vscode/group/asset/{}",
+            "a".repeat(64)
+        )))
+        .await
+        .expect("missing asset response");
+    let get_query = router
+        .oneshot(get_request("/mirror/vscode/group/extensionquery"))
+        .await
+        .expect("GET query response");
+
+    assert_eq!(missing_asset.status(), StatusCode::NOT_FOUND);
+    assert_eq!(get_query.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
+async fn marketplace_asset_cache_is_shared_by_group_and_its_proxy() {
+    let vsix = b"shared marketplace VSIX".to_vec();
+    let asset_requests = Arc::new(AtomicUsize::new(0));
+    let (upstream, asset_address) = start_gallery_server(
+        vsix.clone(),
+        Arc::new(AtomicUsize::new(0)),
+        asset_requests.clone(),
+    )
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = vscode_group_router(upstream, asset_address, data_dir.path());
+
+    let group_query = router
+        .clone()
+        .oneshot(query_request_for("group"))
+        .await
+        .expect("group query response");
+    let group_asset_url = asset_url(group_query).await;
+    let group_asset = router
+        .clone()
+        .oneshot(get_request(&group_asset_url))
+        .await
+        .expect("group asset response");
+    assert_eq!(group_asset.status(), StatusCode::OK);
+
+    let direct_query = router
+        .clone()
+        .oneshot(query_request_for("official"))
+        .await
+        .expect("direct query response");
+    let direct_asset_url = asset_url(direct_query).await;
+    let direct_asset = router
+        .oneshot(get_request(&direct_asset_url))
+        .await
+        .expect("direct asset response");
+    assert_eq!(direct_asset.status(), StatusCode::OK);
+    assert_eq!(asset_requests.load(Ordering::SeqCst), 1);
     assert!(
-        !data_dir
+        data_dir
             .path()
-            .join(
-                "vscode/artifacts/official/redhat/vscode-yaml/1.17.0/redhat.vscode-yaml-1.17.0.vsix"
-            )
+            .join("vscode/artifacts/official/objects/marketplace")
             .exists()
     );
 }
 
-#[test]
-fn vscode_path_rejects_unbounded_or_non_vsix_file_paths() {
-    for path in [
-        "",
-        "api/redhat/vscode-yaml/",
-        "api/redhat/vscode-yaml/1.17.0/file/other.vsix",
-        "api/redhat/vscode-yaml/1.17.0/file/redhat.vscode-yaml-1.17.0.zip",
-        "api/redhat/../vscode-yaml",
-    ] {
-        assert!(
-            VscodePath::parse(path).is_err(),
-            "path should be rejected: {path}"
-        );
-    }
+fn query_request() -> Request<Body> {
+    query_request_for("group")
+}
+
+fn query_request_for(entry_name: &str) -> Request<Body> {
+    Request::post(format!("/mirror/vscode/{entry_name}/extensionquery"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"filters":[{"criteria":[{"filterType":10,"value":"redhat.vscode-yaml"}]}],"assetTypes":[],"flags":914}"#,
+        ))
+        .expect("query request")
 }
 
 fn get_request(path: &str) -> Request<Body> {
-    Request::get(path).body(Body::empty()).expect("request")
+    Request::get(path).body(Body::empty()).expect("GET request")
 }
 
-fn vscode_router(upstream: Url, data_dir: &std::path::Path) -> axum::Router {
+async fn asset_url(response: axum::response::Response) -> String {
+    assert_eq!(response.status(), StatusCode::OK);
+    let query: serde_json::Value =
+        serde_json::from_slice(&body_bytes(response).await).expect("query JSON");
+    query["results"][0]["extensions"][0]["versions"][0]["files"][0]["source"]
+        .as_str()
+        .expect("asset URL")
+        .replace("http://127.0.0.1:18761", "")
+}
+
+async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
+    axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response body")
+        .to_vec()
+}
+
+fn vscode_group_router(
+    upstream: Url,
+    asset_address: SocketAddr,
+    data_dir: &std::path::Path,
+) -> axum::Router {
     let registry = AdapterRegistry::new()
         .with_adapter(
             "vscode",
             Arc::new(
-                SourcePool::new(
-                    "vscode",
-                    SourceGraph::new(vec![proxy("official", upstream.as_str())])
-                        .expect("source graph"),
-                )
-                .expect("source pool"),
-            ),
-            Arc::new(VscodeAdapter::new(
-                Url::parse("http://127.0.0.1:18761").expect("root URL"),
-                data_dir,
-            )),
-        )
-        .expect("registry");
-    router_with_registry(registry)
-}
-
-fn vscode_group_router(first: Url, second: Url, data_dir: &std::path::Path) -> axum::Router {
-    let registry = AdapterRegistry::new()
-        .with_adapter(
-            "vscode",
-            Arc::new(
-                SourcePool::new(
+                SourcePool::new_with_resolvers(
                     "vscode",
                     SourceGraph::new(vec![
-                        proxy("first", first.as_str()),
-                        proxy("second", second.as_str()),
-                        group("group", &["first", "second"]),
+                        proxy("official", upstream.as_str()),
+                        group("group", &["official"]),
                     ])
                     .expect("source graph"),
+                    &[
+                        ("redhat.vscode-unpkg.net", asset_address),
+                        ("www.vscode-unpkg.net", asset_address),
+                    ],
                 )
                 .expect("source pool"),
             ),
@@ -373,24 +310,118 @@ fn group(name: &str, members: &[&str]) -> SourceConfig {
     }
 }
 
-fn metadata_body(checksum: &str) -> String {
-    serde_json::json!({
-        "namespace": "redhat",
-        "name": "vscode-yaml",
-        "version": "1.17.0",
-        "files": {
-            "download": "https://open-vsx.example/api/redhat/vscode-yaml/1.17.0/file/redhat.vscode-yaml-1.17.0.vsix",
-            "sha256": checksum
-        }
-    })
-    .to_string()
-}
-
-async fn start_server(router: Router) -> Url {
+async fn start_gallery_server(
+    vsix: Vec<u8>,
+    query_requests: Arc<AtomicUsize>,
+    asset_requests: Arc<AtomicUsize>,
+) -> (Url, SocketAddr) {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
     let address: SocketAddr = listener.local_addr().expect("address");
+    let asset_url = format!(
+        "http://redhat.vscode-unpkg.net:{}/assets/redhat.vscode-yaml.vsix",
+        address.port()
+    );
+    let asset_base_url = format!(
+        "http://redhat.vscode-unpkg.net:{}/asset-base/redhat/vscode-yaml/1.25.0/1000",
+        address.port()
+    );
+    let router = Router::new()
+        .route(
+            "/extensionquery",
+            post({
+                let asset_url = asset_url.clone();
+                let asset_base_url = asset_base_url.clone();
+                move |headers: HeaderMap, body: String| {
+                    let asset_url = asset_url.clone();
+                    let asset_base_url = asset_base_url.clone();
+                    let query_requests = query_requests.clone();
+                    async move {
+                        assert_eq!(
+                            headers
+                                .get("accept")
+                                .and_then(|value| value.to_str().ok()),
+                            Some("application/json;api-version=3.0-preview.1")
+                        );
+                        assert_eq!(
+                            headers
+                                .get("content-type")
+                                .and_then(|value| value.to_str().ok()),
+                            Some("application/json")
+                        );
+                        assert_eq!(
+                            headers
+                                .get("x-market-client-id")
+                                .and_then(|value| value.to_str().ok()),
+                            Some("VSCode")
+                        );
+                        assert!(body.contains("redhat.vscode-yaml"));
+                        query_requests.fetch_add(1, Ordering::SeqCst);
+                        axum::Json(serde_json::json!({
+                            "results": [{
+                                "extensions": [{
+                                    "publisher": { "publisherName": "redhat" },
+                                    "extensionName": "vscode-yaml",
+                                    "versions": [{
+                                        "version": "1.25.0",
+                                        "assetUri": asset_base_url,
+                                        "files": [{
+                                            "assetType": "Microsoft.VisualStudio.Services.VSIXPackage",
+                                            "source": asset_url
+                                        }]
+                                    }]
+                                }]
+                            }]
+                        }))
+                    }
+                }
+            }),
+        )
+        .route(
+            "/assets/redhat.vscode-yaml.vsix",
+            get(move || {
+                let vsix = vsix.clone();
+                let asset_requests = asset_requests.clone();
+                async move {
+                    asset_requests.fetch_add(1, Ordering::SeqCst);
+                    (
+                        [("content-type", "application/vnd.ms-vsix")],
+                        vsix,
+                    )
+                }
+            }),
+        )
+        .route(
+            "/asset-base/redhat/vscode-yaml/1.25.0/1000/Microsoft.VisualStudio.Services.VSIXPackage",
+            get(|| async {
+                (
+                    [("content-type", "application/vnd.ms-vsix")],
+                    b"verified marketplace VSIX".as_slice(),
+                )
+            }),
+        )
+        .route(
+            "/redhat/vscode-yaml/1.25.0/extension",
+            get(|| async {
+                (
+                    [("content-type", "application/json")],
+                    r#"{"name":"vscode-yaml"}"#,
+                )
+            }),
+        )
+        .route(
+            "/_gallery/redhat/vscode-yaml/latest",
+            get(|| async {
+                (
+                    [("content-type", "application/vnd.ms-vsix")],
+                    b"verified marketplace VSIX".as_slice(),
+                )
+            }),
+        );
     tokio::spawn(async move {
-        axum::serve(listener, router).await.expect("server");
+        axum::serve(listener, router).await.expect("gallery server");
     });
-    Url::parse(&format!("http://{address}")).expect("server URL")
+    (
+        Url::parse(&format!("http://{address}")).expect("gallery URL"),
+        address,
+    )
 }

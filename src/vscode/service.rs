@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs, io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -7,9 +8,10 @@ use std::{
 
 use axum::{
     body::Body,
-    http::{StatusCode, header::CONTENT_TYPE},
+    http::{Method, StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -20,11 +22,10 @@ use crate::{
     audit::{AuditDetails, AuditSink},
     sources::{
         FetchOperation, SourcePoolError,
-        registry::{Adapter, AdapterFuture},
+        pool::is_safe_configured_url,
+        registry::{Adapter, AdapterFuture, AdapterRequest},
     },
 };
-
-use super::path::{VscodePath, VscodePathError};
 
 #[derive(Debug)]
 pub struct VscodeAdapter {
@@ -41,15 +42,48 @@ pub struct VscodeService {
 #[derive(Debug, Error)]
 pub enum VscodeError {
     #[error(transparent)]
-    Path(#[from] VscodePathError),
-    #[error(transparent)]
     Source(#[from] SourcePoolError),
-    #[error("VS Code metadata JSON is invalid: {0}")]
-    MetadataJson(#[from] serde_json::Error),
-    #[error("VS Code metadata is invalid: {0}")]
-    InvalidMetadata(String),
-    #[error("VS Code storage I/O failed: {0}")]
+    #[error("VS Code Marketplace request JSON is invalid: {0}")]
+    RequestJson(#[from] serde_json::Error),
+    #[error("VS Code Marketplace response is invalid: {0}")]
+    InvalidGalleryResponse(String),
+    #[error("VS Code Marketplace asset `{0}` was not found")]
+    MissingAsset(String),
+    #[error("VS Code Marketplace storage I/O failed: {0}")]
     Storage(#[from] io::Error),
+    #[error("VS Code Marketplace descriptor is invalid: {0}")]
+    DescriptorParse(#[from] toml::de::Error),
+    #[error("VS Code Marketplace descriptor cannot be serialized: {0}")]
+    DescriptorSerialize(#[from] toml::ser::Error),
+}
+
+#[derive(Deserialize, Serialize)]
+struct AssetDescriptor {
+    source_name: String,
+    source_url: String,
+    asset_type: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct ResourceDescriptor {
+    source_name: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct ExtensionDescriptor {
+    source_name: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct AssetBaseDescriptor {
+    source_name: String,
+    asset_uri: String,
+    fallback_asset_uri: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct AssetCacheMetadata {
+    content_type: Option<String>,
 }
 
 impl VscodeAdapter {
@@ -74,370 +108,509 @@ impl VscodeService {
         }
     }
 
-    pub async fn handle_request(
+    async fn handle_request(
         &self,
         entry_name: &str,
-        path: &str,
+        mut request: AdapterRequest,
         pool: &SourcePool,
     ) -> Response {
-        match self.serve(entry_name, path, pool).await {
-            Ok((content_type, body)) => response(StatusCode::OK, content_type, body),
+        request.path = request.path.trim_start_matches('/').to_owned();
+        if request.path == "extensionquery" && request.method != Method::POST {
+            return StatusCode::METHOD_NOT_ALLOWED.into_response();
+        }
+        if request.path.starts_with("asset/") && request.method != Method::GET {
+            return StatusCode::METHOD_NOT_ALLOWED.into_response();
+        }
+        if request.path.starts_with("resource/") && request.method != Method::GET {
+            return StatusCode::METHOD_NOT_ALLOWED.into_response();
+        }
+        if request.path.starts_with("extension/") && request.method != Method::GET {
+            return StatusCode::METHOD_NOT_ALLOWED.into_response();
+        }
+        if request.path.starts_with("asset-base/") && request.method != Method::GET {
+            return StatusCode::METHOD_NOT_ALLOWED.into_response();
+        }
+        let result = match request.method {
+            Method::POST if request.path == "extensionquery" => self
+                .query(entry_name, &request.body, pool)
+                .await
+                .map(|body| response(StatusCode::OK, "application/json", body)),
+            Method::GET => {
+                if let Some(asset_id) = parse_asset_id(&request.path) {
+                    self.asset(entry_name, asset_id, pool)
+                        .await
+                        .map(asset_response)
+                } else if let Some(resource) = parse_resource_request(&request.path) {
+                    self.resource(entry_name, resource, pool)
+                        .await
+                        .map(asset_response)
+                } else if let Some(extension) = parse_extension_request(&request.path) {
+                    self.extension(entry_name, extension, pool)
+                        .await
+                        .map(asset_response)
+                } else if let Some(asset_base) = parse_asset_base_request(&request.path) {
+                    self.asset_base(entry_name, asset_base, pool)
+                        .await
+                        .map(asset_response)
+                } else {
+                    Err(VscodeError::MissingAsset(request.path))
+                }
+            }
+            _ => return StatusCode::METHOD_NOT_ALLOWED.into_response(),
+        };
+
+        match result {
+            Ok(response) => response,
             Err(error) => vscode_error_response(&error),
         }
     }
 
-    async fn serve(
+    async fn query(
         &self,
         entry_name: &str,
-        path: &str,
-        pool: &SourcePool,
-    ) -> Result<(&'static str, Vec<u8>), VscodeError> {
-        if pool.proxy_members(entry_name).is_none() {
-            return Err(SourcePoolError::UnknownEntry(entry_name.to_owned()).into());
-        }
-
-        match VscodePath::parse(path)? {
-            metadata @ VscodePath::Metadata { .. } => self
-                .metadata(entry_name, metadata, pool)
-                .await
-                .map(|body| ("application/json", body)),
-            file @ VscodePath::File { .. } => self
-                .artifact(entry_name, file, pool)
-                .await
-                .map(|body| ("application/zip", body)),
-        }
-    }
-
-    async fn metadata(
-        &self,
-        entry_name: &str,
-        path: VscodePath,
+        request_body: &[u8],
         pool: &SourcePool,
     ) -> Result<Vec<u8>, VscodeError> {
-        let cache_path = self.metadata_path(entry_name, &path);
-        let sidecar_path = self.metadata_sidecar_path(entry_name, &path);
-        if let Some(contents) = read_if_present(&cache_path)? {
-            if validate_cached_metadata(&contents).is_ok() {
-                let selected_proxy = read_source_name(&sidecar_path)?;
-                self.record_vscode(
-                    "vscode_metadata_read",
-                    entry_name,
-                    &path.request_key(),
-                    VscodeAuditDetails {
-                        selected_proxy: selected_proxy.as_deref(),
-                        object_type: "metadata",
-                        cache_status: "hit",
+        serde_json::from_slice::<Value>(request_body)?;
+        let response = pool
+            .post_json(entry_name, "extensionquery", request_body)
+            .await?;
+        let rewritten = rewrite_gallery_query(
+            &response.body,
+            &self.root_url,
+            entry_name,
+            &response.source_name,
+        )?;
+        for (asset_id, descriptor) in rewritten.asset_descriptors {
+            atomic_write(
+                &self.asset_descriptor_path(entry_name, &asset_id),
+                toml::to_string(&descriptor)?.as_bytes(),
+            )?;
+        }
+        for (key, descriptor) in rewritten.resource_descriptors {
+            atomic_write(
+                &self.resource_descriptor_path(entry_name, &key),
+                toml::to_string(&descriptor)?.as_bytes(),
+            )?;
+        }
+        for (key, descriptor) in rewritten.extension_descriptors {
+            atomic_write(
+                &self.extension_descriptor_path(entry_name, &key),
+                toml::to_string(&descriptor)?.as_bytes(),
+            )?;
+        }
+        for (key, descriptor) in rewritten.asset_base_descriptors {
+            atomic_write(
+                &self.asset_base_descriptor_path(entry_name, &key),
+                toml::to_string(&descriptor)?.as_bytes(),
+            )?;
+        }
+        atomic_write(&self.query_path(entry_name, request_body), &rewritten.body)?;
+        self.record(
+            "vscode_marketplace_query_published",
+            AuditDetails {
+                ecosystem: Some("vscode"),
+                entry_name: Some(entry_name),
+                object_key: Some("extensionquery"),
+                selected_proxy: Some(&response.source_name),
+                object_type: Some("metadata"),
+                cache_status: Some("published"),
+                failure_category: None,
+            },
+        );
+        Ok(rewritten.body)
+    }
+
+    async fn asset(
+        &self,
+        entry_name: &str,
+        asset_id: String,
+        pool: &SourcePool,
+    ) -> Result<MarketplaceAsset, VscodeError> {
+        let descriptor_path = self.asset_descriptor_path(entry_name, &asset_id);
+        let descriptor_contents = fs::read_to_string(&descriptor_path).map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                VscodeError::MissingAsset(asset_id.clone())
+            } else {
+                VscodeError::Storage(error)
+            }
+        })?;
+        let descriptor: AssetDescriptor = toml::from_str(&descriptor_contents)?;
+        if !pool.proxy_members(entry_name).is_some_and(|members| {
+            members
+                .iter()
+                .any(|member| member.name == descriptor.source_name)
+        }) {
+            return Err(VscodeError::MissingAsset(asset_id));
+        }
+        self.fetch_bound_asset(
+            entry_name,
+            &asset_id,
+            &descriptor.source_name,
+            &descriptor.source_url,
+            None,
+            pool,
+        )
+        .await
+    }
+
+    async fn resource(
+        &self,
+        entry_name: &str,
+        resource: ResourceRequest,
+        pool: &SourcePool,
+    ) -> Result<MarketplaceAsset, VscodeError> {
+        let descriptor_path = self.resource_descriptor_path(entry_name, &resource.extension_key());
+        let descriptor_contents = fs::read_to_string(&descriptor_path).map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                VscodeError::MissingAsset(resource.path.clone())
+            } else {
+                VscodeError::Storage(error)
+            }
+        })?;
+        let descriptor: ResourceDescriptor = toml::from_str(&descriptor_contents)?;
+        let source = pool
+            .proxy_members(entry_name)
+            .and_then(|members| {
+                members
+                    .into_iter()
+                    .find(|member| member.name == descriptor.source_name)
+            })
+            .ok_or_else(|| VscodeError::MissingAsset(resource.path.clone()))?;
+        let scheme = source
+            .base_url
+            .as_ref()
+            .expect("validated proxy source must have a base URL")
+            .scheme();
+        let source_url = Url::parse(&format!(
+            "{}://{}.vscode-unpkg.net/{}/{}/{}/{}",
+            scheme,
+            resource.publisher,
+            resource.publisher,
+            resource.extension,
+            resource.version,
+            resource.path
+        ))
+        .expect("validated resource segments must produce a valid URL");
+        if !is_safe_configured_url(&source_url) {
+            return Err(VscodeError::InvalidGalleryResponse(
+                "extension resource URL is unsafe".to_owned(),
+            ));
+        }
+        let cache_id = sha256(source_url.as_str().as_bytes());
+        self.fetch_bound_asset(
+            entry_name,
+            &cache_id,
+            &descriptor.source_name,
+            source_url.as_str(),
+            None,
+            pool,
+        )
+        .await
+    }
+
+    async fn extension(
+        &self,
+        entry_name: &str,
+        extension: ExtensionRequest,
+        pool: &SourcePool,
+    ) -> Result<MarketplaceAsset, VscodeError> {
+        let descriptor_path =
+            self.extension_descriptor_path(entry_name, &extension.extension_key());
+        let descriptor_contents = fs::read_to_string(&descriptor_path).map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                VscodeError::MissingAsset(extension.name.clone())
+            } else {
+                VscodeError::Storage(error)
+            }
+        })?;
+        let descriptor: ExtensionDescriptor = toml::from_str(&descriptor_contents)?;
+        let source = pool
+            .proxy_members(entry_name)
+            .and_then(|members| {
+                members
+                    .into_iter()
+                    .find(|member| member.name == descriptor.source_name)
+            })
+            .ok_or_else(|| VscodeError::MissingAsset(extension.name.clone()))?;
+        let scheme = source
+            .base_url
+            .as_ref()
+            .expect("validated proxy source must have a base URL")
+            .scheme();
+        let source_url = Url::parse(&format!(
+            "{}://www.vscode-unpkg.net/_gallery/{}/{}/latest",
+            scheme, extension.publisher, extension.name
+        ))
+        .expect("validated extension segments must produce a valid URL");
+        if !is_safe_configured_url(&source_url) {
+            return Err(VscodeError::InvalidGalleryResponse(
+                "extension package URL is unsafe".to_owned(),
+            ));
+        }
+        let cache_id = sha256(source_url.as_str().as_bytes());
+        self.fetch_bound_asset(
+            entry_name,
+            &cache_id,
+            &descriptor.source_name,
+            source_url.as_str(),
+            None,
+            pool,
+        )
+        .await
+    }
+
+    async fn asset_base(
+        &self,
+        entry_name: &str,
+        request: AssetBaseRequest,
+        pool: &SourcePool,
+    ) -> Result<MarketplaceAsset, VscodeError> {
+        let descriptor_path = self.asset_base_descriptor_path(entry_name, &request.asset_base_id);
+        let descriptor_contents = fs::read_to_string(&descriptor_path).map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                VscodeError::MissingAsset(request.asset_base_id.clone())
+            } else {
+                VscodeError::Storage(error)
+            }
+        })?;
+        let descriptor: AssetBaseDescriptor = toml::from_str(&descriptor_contents)?;
+        if !pool.proxy_members(entry_name).is_some_and(|members| {
+            members
+                .iter()
+                .any(|member| member.name == descriptor.source_name)
+        }) {
+            return Err(VscodeError::MissingAsset(request.asset_base_id));
+        }
+        let source_url = append_asset_type(&descriptor.asset_uri, &request.asset_type)?;
+        let fallback_url = descriptor
+            .fallback_asset_uri
+            .as_deref()
+            .map(|url| append_asset_type(url, &request.asset_type))
+            .transpose()?;
+        let cache_id = sha256(source_url.as_str().as_bytes());
+        self.fetch_bound_asset(
+            entry_name,
+            &cache_id,
+            &descriptor.source_name,
+            source_url.as_str(),
+            fallback_url.as_ref().map(Url::as_str),
+            pool,
+        )
+        .await
+    }
+
+    async fn fetch_bound_asset(
+        &self,
+        entry_name: &str,
+        cache_id: &str,
+        source_name: &str,
+        source_url: &str,
+        fallback_url: Option<&str>,
+        pool: &SourcePool,
+    ) -> Result<MarketplaceAsset, VscodeError> {
+        let cache_path = self.asset_path(source_name, cache_id);
+        if let Some(bytes) = read_if_present(&cache_path)? {
+            let content_type =
+                read_asset_cache_metadata(&self.asset_cache_metadata_path(source_name, cache_id))?;
+            if !is_stale_compressed_cache(&bytes, content_type.as_deref()) {
+                self.record(
+                    "vscode_marketplace_asset_read",
+                    AuditDetails {
+                        ecosystem: Some("vscode"),
+                        entry_name: Some(entry_name),
+                        object_key: Some(cache_id),
+                        selected_proxy: Some(source_name),
+                        object_type: Some("artifact"),
+                        cache_status: Some("hit"),
                         failure_category: None,
                     },
                 );
-                return Ok(contents);
+                return Ok(MarketplaceAsset {
+                    bytes,
+                    content_type,
+                });
             }
-            fs::remove_file(&cache_path)?;
-            let _ = fs::remove_file(&sidecar_path);
-            self.record_vscode(
-                "vscode_metadata_cache_invalid",
-                entry_name,
-                &path.request_key(),
-                VscodeAuditDetails {
-                    selected_proxy: None,
-                    object_type: "metadata",
-                    cache_status: "miss",
-                    failure_category: Some("invalid_cache"),
-                },
-            );
         }
 
-        let request_key = path.request_key();
+        let source_url = Url::parse(source_url).map_err(|_| {
+            VscodeError::InvalidGalleryResponse("stored asset URL is invalid".to_owned())
+        })?;
         let response = match pool
-            .fetch(entry_name, &request_key, FetchOperation::Get)
+            .fetch_configured_url(source_name, source_url, FetchOperation::Artifact)
             .await
         {
             Ok(response) => response,
             Err(error) => {
-                self.record_vscode(
-                    "vscode_metadata_fetch_failed",
-                    entry_name,
-                    &request_key,
-                    VscodeAuditDetails {
-                        selected_proxy: None,
-                        object_type: "metadata",
-                        cache_status: "failed",
-                        failure_category: Some("source_failed"),
-                    },
-                );
-                return Err(error.into());
+                let Some(fallback_url) = fallback_url else {
+                    return Err(error.into());
+                };
+                let fallback_url = Url::parse(fallback_url).map_err(|_| {
+                    VscodeError::InvalidGalleryResponse(
+                        "stored fallback asset URL is invalid".to_owned(),
+                    )
+                })?;
+                pool.fetch_configured_url(source_name, fallback_url, FetchOperation::Artifact)
+                    .await?
             }
         };
-        let contents = rewrite_metadata(&response.body, &self.root_url, entry_name, &path)?;
-        atomic_write(&cache_path, &contents)?;
+        atomic_write(&cache_path, &response.body)?;
         atomic_write(
-            &sidecar_path,
-            format!("{}\n", response.source_name).as_bytes(),
+            &self.asset_cache_metadata_path(source_name, cache_id),
+            toml::to_string(&AssetCacheMetadata {
+                content_type: response.content_type.clone(),
+            })?
+            .as_bytes(),
         )?;
-        self.record_vscode(
-            "vscode_metadata_published",
-            entry_name,
-            &request_key,
-            VscodeAuditDetails {
-                selected_proxy: Some(&response.source_name),
-                object_type: "metadata",
-                cache_status: "published",
+        self.record(
+            "vscode_marketplace_asset_published",
+            AuditDetails {
+                ecosystem: Some("vscode"),
+                entry_name: Some(entry_name),
+                object_key: Some(cache_id),
+                selected_proxy: Some(source_name),
+                object_type: Some("artifact"),
+                cache_status: Some("published"),
                 failure_category: None,
             },
         );
-        Ok(contents)
+        Ok(MarketplaceAsset {
+            bytes: response.body,
+            content_type: response.content_type,
+        })
     }
 
-    async fn artifact(
-        &self,
-        entry_name: &str,
-        path: VscodePath,
-        pool: &SourcePool,
-    ) -> Result<Vec<u8>, VscodeError> {
-        let publisher = path.publisher().to_owned();
-        let extension = path.extension().to_owned();
-        let version = path
-            .version()
-            .ok_or_else(|| VscodePathError::Invalid(path.request_key()))?
-            .to_owned();
-        let filename = path
-            .filename()
-            .ok_or_else(|| VscodePathError::Invalid(path.request_key()))?
-            .to_owned();
-        let metadata_path = path.exact_metadata();
-        let metadata = self
-            .metadata(entry_name, metadata_path.clone(), pool)
-            .await?;
-        let expected_checksum = metadata_checksum(&metadata)?;
-        let cache_path =
-            self.artifact_path(entry_name, &publisher, &extension, &version, &filename);
-        if let Some(contents) = read_if_present(&cache_path)? {
-            if checksum(&contents).eq_ignore_ascii_case(&expected_checksum) {
-                self.record_vscode(
-                    "vscode_artifact_read",
-                    entry_name,
-                    &path.request_key(),
-                    VscodeAuditDetails {
-                        selected_proxy: read_source_name(
-                            &self.metadata_sidecar_path(entry_name, &metadata_path),
-                        )?
-                        .as_deref(),
-                        object_type: "artifact",
-                        cache_status: "hit",
-                        failure_category: None,
-                    },
-                );
-                return Ok(contents);
-            }
-            fs::remove_file(&cache_path)?;
-            self.record_vscode(
-                "vscode_artifact_cache_invalid",
-                entry_name,
-                &path.request_key(),
-                VscodeAuditDetails {
-                    selected_proxy: None,
-                    object_type: "artifact",
-                    cache_status: "miss",
-                    failure_category: Some("integrity_mismatch"),
-                },
-            );
-        }
-
-        let mut members = pool
-            .proxy_members(entry_name)
-            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
-        if let Some(selected_proxy) = read_source_sidecar(
-            &self.metadata_sidecar_path(entry_name, &metadata_path),
-            &members,
-        )? && let Some(position) = members
-            .iter()
-            .position(|member| member.name == selected_proxy)
-        {
-            let selected = members.remove(position);
-            members.insert(0, selected);
-        }
-
-        let request_key = format!("api/{publisher}/{extension}/{version}/file/{filename}");
-        let is_group = pool.is_group(entry_name);
-        let mut failures = Vec::new();
-        let mut saw_failure = false;
-        let mut all_not_found = true;
-        self.record_vscode(
-            "vscode_artifact_read",
-            entry_name,
-            &request_key,
-            VscodeAuditDetails {
-                selected_proxy: read_source_name(
-                    &self.metadata_sidecar_path(entry_name, &metadata_path),
-                )?
-                .as_deref(),
-                object_type: "artifact",
-                cache_status: "miss",
-                failure_category: None,
-            },
-        );
-        for member in members {
-            match pool
-                .fetch(&member.name, &request_key, FetchOperation::Get)
-                .await
-            {
-                Ok(response) if checksum(&response.body) == expected_checksum => {
-                    atomic_write(&cache_path, &response.body)?;
-                    atomic_write(
-                        &self.metadata_sidecar_path(entry_name, &metadata_path),
-                        format!("{}\n", member.name).as_bytes(),
-                    )?;
-                    self.record_vscode(
-                        "vscode_artifact_published",
-                        entry_name,
-                        &request_key,
-                        VscodeAuditDetails {
-                            selected_proxy: Some(&member.name),
-                            object_type: "artifact",
-                            cache_status: "published",
-                            failure_category: None,
-                        },
-                    );
-                    return Ok(response.body);
-                }
-                Ok(_) => {
-                    saw_failure = true;
-                    all_not_found = false;
-                    failures.push(format!("{}: VSIX SHA-256 mismatch", member.name));
-                    self.record_vscode(
-                        "vscode_artifact_fallback",
-                        entry_name,
-                        &request_key,
-                        VscodeAuditDetails {
-                            selected_proxy: Some(&member.name),
-                            object_type: "artifact",
-                            cache_status: "fallback",
-                            failure_category: Some("integrity_mismatch"),
-                        },
-                    );
-                }
-                Err(error) if is_retryable(&error) => {
-                    saw_failure = true;
-                    all_not_found = false;
-                    failures.push(format!("{}: {error}", member.name));
-                    self.record_vscode(
-                        "vscode_artifact_fallback",
-                        entry_name,
-                        &request_key,
-                        VscodeAuditDetails {
-                            selected_proxy: Some(&member.name),
-                            object_type: "artifact",
-                            cache_status: "fallback",
-                            failure_category: Some("source_unavailable"),
-                        },
-                    );
-                }
-                Err(error) if terminal_status(&error) == Some(404) && is_group => {
-                    saw_failure = true;
-                    failures.push(format!("{}: {error}", member.name));
-                    self.record_vscode(
-                        "vscode_artifact_fallback",
-                        entry_name,
-                        &request_key,
-                        VscodeAuditDetails {
-                            selected_proxy: Some(&member.name),
-                            object_type: "artifact",
-                            cache_status: "fallback",
-                            failure_category: Some("not_found"),
-                        },
-                    );
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
-
-        self.record_vscode(
-            "vscode_artifact_fetch_failed",
-            entry_name,
-            &request_key,
-            VscodeAuditDetails {
-                selected_proxy: None,
-                object_type: "artifact",
-                cache_status: "failed",
-                failure_category: Some(if saw_failure && all_not_found {
-                    "not_found"
-                } else {
-                    "source_failed"
-                }),
-            },
-        );
-        Err(SourcePoolError::AllSourcesFailed {
-            entry_name: entry_name.to_owned(),
-            request_key,
-            failures: failures.join("; "),
-            status: (is_group && saw_failure && all_not_found).then_some(404),
-        }
-        .into())
-    }
-
-    fn metadata_path(&self, entry_name: &str, path: &VscodePath) -> PathBuf {
+    fn query_path(&self, entry_name: &str, request_body: &[u8]) -> PathBuf {
         self.data_dir
             .join("vscode")
             .join("metadata")
             .join(entry_name)
-            .join(path.metadata_key())
+            .join("marketplace")
+            .join(format!("{}.json", sha256(request_body)))
     }
 
-    fn metadata_sidecar_path(&self, entry_name: &str, path: &VscodePath) -> PathBuf {
-        let path = self.metadata_path(entry_name, path);
-        let file_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .expect("VS Code metadata path must have a file name");
-        path.with_file_name(format!("{file_name}.source"))
+    fn asset_descriptor_path(&self, entry_name: &str, asset_id: &str) -> PathBuf {
+        self.data_dir
+            .join("vscode")
+            .join("metadata")
+            .join(entry_name)
+            .join("marketplace")
+            .join("assets")
+            .join(format!("{asset_id}.toml"))
     }
 
-    fn artifact_path(
-        &self,
-        entry_name: &str,
-        publisher: &str,
-        extension: &str,
-        version: &str,
-        filename: &str,
-    ) -> PathBuf {
+    fn resource_descriptor_path(&self, entry_name: &str, extension_key: &str) -> PathBuf {
+        self.data_dir
+            .join("vscode")
+            .join("metadata")
+            .join(entry_name)
+            .join("marketplace")
+            .join("resources")
+            .join(format!("{extension_key}.toml"))
+    }
+
+    fn extension_descriptor_path(&self, entry_name: &str, extension_key: &str) -> PathBuf {
+        self.data_dir
+            .join("vscode")
+            .join("metadata")
+            .join(entry_name)
+            .join("marketplace")
+            .join("extensions")
+            .join(format!("{extension_key}.toml"))
+    }
+
+    fn asset_base_descriptor_path(&self, entry_name: &str, asset_base_id: &str) -> PathBuf {
+        self.data_dir
+            .join("vscode")
+            .join("metadata")
+            .join(entry_name)
+            .join("marketplace")
+            .join("asset-bases")
+            .join(format!("{asset_base_id}.toml"))
+    }
+
+    fn asset_path(&self, source_name: &str, asset_id: &str) -> PathBuf {
         self.data_dir
             .join("vscode")
             .join("artifacts")
-            .join(entry_name)
-            .join(publisher)
-            .join(extension)
-            .join(version)
-            .join(filename)
+            .join(source_name)
+            .join("objects")
+            .join("marketplace")
+            .join(asset_id)
     }
 
-    fn record_vscode(
-        &self,
-        event: &str,
-        entry_name: &str,
-        object_key: &str,
-        details: VscodeAuditDetails<'_>,
-    ) {
+    fn asset_cache_metadata_path(&self, source_name: &str, asset_id: &str) -> PathBuf {
+        self.asset_path(source_name, asset_id)
+            .with_file_name(format!("{asset_id}.toml"))
+    }
+
+    fn record(&self, event: &str, details: AuditDetails<'_>) {
         if let Err(error) = self.audit.record_detailed(
             event,
-            object_key,
+            details.object_key.unwrap_or_default(),
             if details.failure_category.is_some() {
                 "failure"
             } else {
                 "success"
             },
-            AuditDetails {
-                ecosystem: Some("vscode"),
-                entry_name: Some(entry_name),
-                object_key: Some(object_key),
-                selected_proxy: details.selected_proxy,
-                object_type: Some(details.object_type),
-                cache_status: Some(details.cache_status),
-                failure_category: details.failure_category,
-            },
+            details,
         ) {
             eprintln!("Stacktory audit write failed: {error}");
         }
     }
+}
+
+struct MarketplaceAsset {
+    bytes: Vec<u8>,
+    content_type: Option<String>,
+}
+
+fn asset_response(asset: MarketplaceAsset) -> Response {
+    response(
+        StatusCode::OK,
+        asset
+            .content_type
+            .as_deref()
+            .unwrap_or("application/octet-stream"),
+        asset.bytes,
+    )
+}
+
+struct ResourceRequest {
+    publisher: String,
+    extension: String,
+    version: String,
+    path: String,
+}
+
+impl ResourceRequest {
+    fn extension_key(&self) -> String {
+        sha256(format!("{}/{}/{}", self.publisher, self.extension, self.version).as_bytes())
+    }
+}
+
+struct ExtensionRequest {
+    publisher: String,
+    name: String,
+}
+
+struct AssetBaseRequest {
+    asset_base_id: String,
+    asset_type: String,
+}
+
+impl ExtensionRequest {
+    fn extension_key(&self) -> String {
+        sha256(format!("{}/{}", self.publisher, self.name).as_bytes())
+    }
+}
+
+struct RewrittenGalleryQuery {
+    body: Vec<u8>,
+    asset_descriptors: BTreeMap<String, AssetDescriptor>,
+    resource_descriptors: BTreeMap<String, ResourceDescriptor>,
+    extension_descriptors: BTreeMap<String, ExtensionDescriptor>,
+    asset_base_descriptors: BTreeMap<String, AssetBaseDescriptor>,
 }
 
 impl Adapter for VscodeAdapter {
@@ -445,158 +618,346 @@ impl Adapter for VscodeAdapter {
         "vscode"
     }
 
-    fn handle(&self, source_name: String, path: String, pool: Arc<SourcePool>) -> AdapterFuture {
+    fn handle(
+        &self,
+        source_name: String,
+        request: AdapterRequest,
+        pool: Arc<SourcePool>,
+    ) -> AdapterFuture {
         let service = self.service.clone();
-        Box::pin(async move { service.handle_request(&source_name, &path, &pool).await })
+        Box::pin(async move { service.handle_request(&source_name, request, &pool).await })
     }
 }
 
-fn rewrite_metadata(
-    body: &[u8],
+fn rewrite_gallery_query(
+    source: &[u8],
     root_url: &Url,
     entry_name: &str,
-    path: &VscodePath,
-) -> Result<Vec<u8>, VscodeError> {
-    let mut metadata: Value = serde_json::from_slice(body)?;
-    let object = metadata
-        .as_object_mut()
-        .ok_or_else(|| VscodeError::InvalidMetadata("metadata must be a JSON object".to_owned()))?;
-    let publisher = path.publisher();
-    let extension = path.extension();
-    if object.get("namespace").and_then(Value::as_str) != Some(publisher)
-        || object.get("name").and_then(Value::as_str) != Some(extension)
-    {
-        return Err(VscodeError::InvalidMetadata(
-            "metadata namespace/name does not match the request".to_owned(),
-        ));
+    source_name: &str,
+) -> Result<RewrittenGalleryQuery, VscodeError> {
+    let mut query: Value = serde_json::from_slice(source)?;
+    let results = query
+        .get_mut("results")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| VscodeError::InvalidGalleryResponse("results is missing".to_owned()))?;
+    let mut asset_descriptors = BTreeMap::new();
+    let mut resource_descriptors = BTreeMap::new();
+    let mut extension_descriptors = BTreeMap::new();
+    let mut asset_base_descriptors = BTreeMap::new();
+
+    for result in results {
+        let extensions = result
+            .get_mut("extensions")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| {
+                VscodeError::InvalidGalleryResponse("result extensions is missing".to_owned())
+            })?;
+        for extension in extensions {
+            let publisher = extension
+                .get("publisher")
+                .and_then(Value::as_object)
+                .and_then(|publisher| publisher.get("publisherName"))
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| {
+                    VscodeError::InvalidGalleryResponse(
+                        "extension publisher.publisherName is missing".to_owned(),
+                    )
+                })?
+                .to_owned();
+            let extension_name = extension
+                .get("extensionName")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| {
+                    VscodeError::InvalidGalleryResponse(
+                        "extension extensionName is missing".to_owned(),
+                    )
+                })?
+                .to_owned();
+            if !is_safe_resource_segment(&publisher) || !is_safe_resource_segment(&extension_name) {
+                return Err(VscodeError::InvalidGalleryResponse(
+                    "extension identity is invalid".to_owned(),
+                ));
+            }
+            let extension_key = sha256(format!("{publisher}/{extension_name}").as_bytes());
+            extension_descriptors.insert(
+                extension_key,
+                ExtensionDescriptor {
+                    source_name: source_name.to_owned(),
+                },
+            );
+            let versions = extension
+                .get_mut("versions")
+                .and_then(Value::as_array_mut)
+                .ok_or_else(|| {
+                    VscodeError::InvalidGalleryResponse("extension versions is missing".to_owned())
+                })?;
+            for version in versions {
+                let version_object = version.as_object_mut().ok_or_else(|| {
+                    VscodeError::InvalidGalleryResponse("extension version is invalid".to_owned())
+                })?;
+                let version_name = version_object
+                    .get("version")
+                    .and_then(Value::as_str)
+                    .filter(|version| is_safe_resource_segment(version))
+                    .ok_or_else(|| {
+                        VscodeError::InvalidGalleryResponse(
+                            "extension version is missing or invalid".to_owned(),
+                        )
+                    })?
+                    .to_owned();
+                let resource_key =
+                    sha256(format!("{publisher}/{extension_name}/{version_name}").as_bytes());
+                resource_descriptors.insert(
+                    resource_key,
+                    ResourceDescriptor {
+                        source_name: source_name.to_owned(),
+                    },
+                );
+                if let Some(asset_uri) = version_object.get("assetUri").and_then(Value::as_str) {
+                    let asset_uri = Url::parse(asset_uri).map_err(|_| {
+                        VscodeError::InvalidGalleryResponse(
+                            "extension assetUri is invalid".to_owned(),
+                        )
+                    })?;
+                    if !is_safe_configured_url(&asset_uri) {
+                        return Err(VscodeError::InvalidGalleryResponse(
+                            "extension assetUri is unsafe".to_owned(),
+                        ));
+                    }
+                    let fallback_asset_uri = version_object
+                        .get("fallbackAssetUri")
+                        .and_then(Value::as_str)
+                        .map(|fallback| {
+                            let fallback = Url::parse(fallback).map_err(|_| {
+                                VscodeError::InvalidGalleryResponse(
+                                    "extension fallbackAssetUri is invalid".to_owned(),
+                                )
+                            })?;
+                            if !is_safe_configured_url(&fallback) {
+                                return Err(VscodeError::InvalidGalleryResponse(
+                                    "extension fallbackAssetUri is unsafe".to_owned(),
+                                ));
+                            }
+                            Ok(fallback.to_string())
+                        })
+                        .transpose()?;
+                    let asset_base_id = sha256(asset_uri.as_str().as_bytes());
+                    asset_base_descriptors.insert(
+                        asset_base_id.clone(),
+                        AssetBaseDescriptor {
+                            source_name: source_name.to_owned(),
+                            asset_uri: asset_uri.to_string(),
+                            fallback_asset_uri,
+                        },
+                    );
+                    version_object.insert(
+                        "assetUri".to_owned(),
+                        Value::String(local_asset_base_url(root_url, entry_name, &asset_base_id)),
+                    );
+                    if version_object.contains_key("fallbackAssetUri") {
+                        version_object.insert(
+                            "fallbackAssetUri".to_owned(),
+                            Value::String(local_asset_base_url(
+                                root_url,
+                                entry_name,
+                                &asset_base_id,
+                            )),
+                        );
+                    }
+                }
+                let files = version_object
+                    .get_mut("files")
+                    .and_then(Value::as_array_mut)
+                    .ok_or_else(|| {
+                        VscodeError::InvalidGalleryResponse("version files is missing".to_owned())
+                    })?;
+                for file in files {
+                    let object = file.as_object_mut().ok_or_else(|| {
+                        VscodeError::InvalidGalleryResponse("version file is invalid".to_owned())
+                    })?;
+                    let asset_type = object
+                        .get("assetType")
+                        .and_then(Value::as_str)
+                        .filter(|asset_type| !asset_type.is_empty())
+                        .ok_or_else(|| {
+                            VscodeError::InvalidGalleryResponse(
+                                "version file assetType is missing".to_owned(),
+                            )
+                        })?
+                        .to_owned();
+                    let source_url = object
+                        .get("source")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            VscodeError::InvalidGalleryResponse(
+                                "version file source is missing".to_owned(),
+                            )
+                        })?
+                        .to_owned();
+                    let source_url = Url::parse(&source_url).map_err(|_| {
+                        VscodeError::InvalidGalleryResponse(
+                            "version file source URL is invalid".to_owned(),
+                        )
+                    })?;
+                    if !is_safe_configured_url(&source_url) {
+                        return Err(VscodeError::InvalidGalleryResponse(
+                            "version file source URL is unsafe".to_owned(),
+                        ));
+                    }
+                    let asset_id = sha256(source_url.as_str().as_bytes());
+                    asset_descriptors.insert(
+                        asset_id.clone(),
+                        AssetDescriptor {
+                            source_name: source_name.to_owned(),
+                            source_url: source_url.to_string(),
+                            asset_type,
+                        },
+                    );
+                    object.insert(
+                        "source".to_owned(),
+                        Value::String(local_asset_url(root_url, entry_name, &asset_id)),
+                    );
+                }
+            }
+        }
     }
 
-    let version = object
-        .get("version")
-        .and_then(Value::as_str)
-        .ok_or_else(|| VscodeError::InvalidMetadata("metadata version is missing".to_owned()))?
-        .to_owned();
-    if path.version().is_some_and(|requested| requested != version) {
-        return Err(VscodeError::InvalidMetadata(
-            "metadata version does not match the request".to_owned(),
-        ));
-    }
-    semver::Version::parse(&version)
-        .map_err(|_| VscodeError::InvalidMetadata("metadata version is invalid".to_owned()))?;
-
-    let files = object
-        .get_mut("files")
-        .and_then(Value::as_object_mut)
-        .ok_or_else(|| VscodeError::InvalidMetadata("metadata files are missing".to_owned()))?;
-    let download = files
-        .get("download")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            VscodeError::InvalidMetadata("metadata download URL is missing".to_owned())
-        })?;
-    let expected_filename = format!("{publisher}.{extension}-{version}.vsix");
-    validate_download_url(download, &expected_filename)?;
-    let checksum = files
-        .get("sha256")
-        .and_then(Value::as_str)
-        .ok_or_else(|| VscodeError::InvalidMetadata("metadata SHA-256 is missing".to_owned()))?;
-    validate_checksum(checksum)?;
-
-    files.insert(
-        "download".to_owned(),
-        Value::String(local_download_url(
-            root_url,
-            entry_name,
-            publisher,
-            extension,
-            &version,
-            &expected_filename,
-        )),
-    );
-    serde_json::to_vec(&metadata).map_err(VscodeError::MetadataJson)
+    serde_json::to_vec(&query)
+        .map(|body| RewrittenGalleryQuery {
+            body,
+            asset_descriptors,
+            resource_descriptors,
+            extension_descriptors,
+            asset_base_descriptors,
+        })
+        .map_err(VscodeError::RequestJson)
 }
 
-fn validate_cached_metadata(body: &[u8]) -> Result<(), VscodeError> {
-    let metadata: Value = serde_json::from_slice(body)?;
-    let files = metadata
-        .get("files")
-        .and_then(Value::as_object)
-        .ok_or_else(|| VscodeError::InvalidMetadata("metadata files are missing".to_owned()))?;
-    let download = files
-        .get("download")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            VscodeError::InvalidMetadata("metadata download URL is missing".to_owned())
-        })?;
-    let checksum = files
-        .get("sha256")
-        .and_then(Value::as_str)
-        .ok_or_else(|| VscodeError::InvalidMetadata("metadata SHA-256 is missing".to_owned()))?;
-    Url::parse(download)
-        .map_err(|_| VscodeError::InvalidMetadata("cached download URL is invalid".to_owned()))?;
-    validate_checksum(checksum)
+fn parse_asset_id(path: &str) -> Option<String> {
+    let asset_id = path.strip_prefix("asset/")?;
+    (asset_id.len() == 64
+        && asset_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && !asset_id.contains('/'))
+    .then_some(asset_id.to_owned())
 }
 
-fn validate_download_url(value: &str, expected_filename: &str) -> Result<(), VscodeError> {
-    let url = Url::parse(value)
-        .map_err(|_| VscodeError::InvalidMetadata("metadata download URL is invalid".to_owned()))?;
-    if !matches!(url.scheme(), "http" | "https")
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-        || !url.path().ends_with(&format!("/file/{expected_filename}"))
-    {
-        return Err(VscodeError::InvalidMetadata(
-            "metadata download URL is outside the Open VSX-compatible file path".to_owned(),
-        ));
-    }
-    Ok(())
+fn parse_resource_request(path: &str) -> Option<ResourceRequest> {
+    let mut segments = path.strip_prefix("resource/")?.split('/');
+    let publisher = segments.next()?.to_owned();
+    let extension = segments.next()?.to_owned();
+    let version = segments.next()?.to_owned();
+    let resource_path = segments.collect::<Vec<_>>().join("/");
+    (!resource_path.is_empty()
+        && [publisher.as_str(), extension.as_str(), version.as_str()]
+            .into_iter()
+            .all(is_safe_resource_segment)
+        && is_safe_resource_path(&resource_path))
+    .then_some(ResourceRequest {
+        publisher,
+        extension,
+        version,
+        path: resource_path,
+    })
 }
 
-fn validate_checksum(value: &str) -> Result<(), VscodeError> {
-    if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        Ok(())
-    } else {
-        Err(VscodeError::InvalidMetadata(
-            "metadata SHA-256 must be 64 hexadecimal characters".to_owned(),
-        ))
+fn parse_extension_request(path: &str) -> Option<ExtensionRequest> {
+    let parts = path
+        .strip_prefix("extension/")?
+        .split('/')
+        .collect::<Vec<_>>();
+    match parts.as_slice() {
+        [publisher, name, "latest"]
+            if is_safe_resource_segment(publisher) && is_safe_resource_segment(name) =>
+        {
+            Some(ExtensionRequest {
+                publisher: (*publisher).to_owned(),
+                name: (*name).to_owned(),
+            })
+        }
+        _ => None,
     }
 }
 
-fn metadata_checksum(body: &[u8]) -> Result<String, VscodeError> {
-    let metadata: Value = serde_json::from_slice(body)?;
-    let checksum = metadata
-        .get("files")
-        .and_then(Value::as_object)
-        .and_then(|files| files.get("sha256"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| VscodeError::InvalidMetadata("metadata SHA-256 is missing".to_owned()))?;
-    validate_checksum(checksum)?;
-    Ok(checksum.to_ascii_lowercase())
+fn parse_asset_base_request(path: &str) -> Option<AssetBaseRequest> {
+    let parts = path
+        .strip_prefix("asset-base/")?
+        .split('/')
+        .collect::<Vec<_>>();
+    match parts.as_slice() {
+        [asset_base_id, asset_type]
+            if asset_base_id.len() == 64
+                && asset_base_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && is_safe_resource_segment(asset_type) =>
+        {
+            Some(AssetBaseRequest {
+                asset_base_id: (*asset_base_id).to_owned(),
+                asset_type: (*asset_type).to_owned(),
+            })
+        }
+        _ => None,
+    }
 }
 
-fn local_download_url(
-    root_url: &Url,
-    entry_name: &str,
-    publisher: &str,
-    extension: &str,
-    version: &str,
-    filename: &str,
-) -> String {
+fn is_safe_resource_segment(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+'))
+}
+
+fn is_safe_resource_path(value: &str) -> bool {
+    !value.is_empty()
+        && !value.contains('\\')
+        && !value.contains('%')
+        && !value.contains('?')
+        && !value.contains('#')
+        && value
+            .split('/')
+            .all(|segment| is_safe_resource_segment(segment) && segment != "." && segment != "..")
+}
+
+fn local_asset_url(root_url: &Url, entry_name: &str, asset_id: &str) -> String {
     let mut url = root_url.clone();
     let base_path = root_url.path().trim_end_matches('/');
     url.set_path(&format!(
-        "{base_path}/mirror/vscode/{entry_name}/api/{publisher}/{extension}/{version}/file/{filename}"
+        "{base_path}/mirror/vscode/{entry_name}/asset/{asset_id}"
     ));
     url.set_query(None);
     url.set_fragment(None);
     url.to_string()
 }
 
+fn local_asset_base_url(root_url: &Url, entry_name: &str, asset_base_id: &str) -> String {
+    let mut url = root_url.clone();
+    let base_path = root_url.path().trim_end_matches('/');
+    url.set_path(&format!(
+        "{base_path}/mirror/vscode/{entry_name}/asset-base/{asset_base_id}"
+    ));
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string()
+}
+
+fn append_asset_type(base_url: &str, asset_type: &str) -> Result<Url, VscodeError> {
+    let mut url = Url::parse(base_url).map_err(|_| {
+        VscodeError::InvalidGalleryResponse("stored asset base URL is invalid".to_owned())
+    })?;
+    if !is_safe_configured_url(&url) || !is_safe_resource_segment(asset_type) {
+        return Err(VscodeError::InvalidGalleryResponse(
+            "stored asset base URL is unsafe".to_owned(),
+        ));
+    }
+    let base_path = url.path().trim_end_matches('/');
+    url.set_path(&format!("{base_path}/{asset_type}"));
+    Ok(url)
+}
+
 fn vscode_error_response(error: &VscodeError) -> Response {
     let status = match error {
-        VscodeError::Path(_) => StatusCode::NOT_FOUND,
+        VscodeError::MissingAsset(_) => StatusCode::NOT_FOUND,
+        VscodeError::RequestJson(_) => StatusCode::BAD_REQUEST,
         VscodeError::Source(SourcePoolError::UnknownEntry(_)) => StatusCode::NOT_FOUND,
         VscodeError::Source(SourcePoolError::TerminalSourceError { status, .. }) => {
             StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY)
@@ -605,16 +966,20 @@ fn vscode_error_response(error: &VscodeError) -> Response {
             status: Some(status),
             ..
         }) => StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
-        VscodeError::Source(_) | VscodeError::MetadataJson(_) | VscodeError::InvalidMetadata(_) => {
-            StatusCode::BAD_GATEWAY
-        }
-        VscodeError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        VscodeError::Source(_) | VscodeError::InvalidGalleryResponse(_) => StatusCode::BAD_GATEWAY,
+        VscodeError::Storage(_)
+        | VscodeError::DescriptorParse(_)
+        | VscodeError::DescriptorSerialize(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     status.into_response()
 }
 
-fn response(status: StatusCode, content_type: &'static str, body: Vec<u8>) -> Response {
-    (status, [(CONTENT_TYPE, content_type)], Body::from(body)).into_response()
+fn response(status: StatusCode, content_type: &str, body: Vec<u8>) -> Response {
+    let mut response = (status, Body::from(body)).into_response();
+    let content_type = axum::http::HeaderValue::from_str(content_type)
+        .unwrap_or_else(|_| axum::http::HeaderValue::from_static("application/octet-stream"));
+    response.headers_mut().insert(CONTENT_TYPE, content_type);
+    response
 }
 
 fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>, io::Error> {
@@ -625,15 +990,34 @@ fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>, io::Error> {
     }
 }
 
+fn read_asset_cache_metadata(path: &Path) -> Result<Option<String>, VscodeError> {
+    let Some(contents) = read_if_present(path)? else {
+        return Ok(None);
+    };
+    Ok(toml::from_str::<AssetCacheMetadata>(&String::from_utf8_lossy(&contents))?.content_type)
+}
+
+fn is_stale_compressed_cache(bytes: &[u8], content_type: Option<&str>) -> bool {
+    if !bytes.starts_with(&[0x1f, 0x8b, 0x08]) {
+        return false;
+    }
+
+    let Some(content_type) = content_type else {
+        return true;
+    };
+    let media_type = content_type.split(';').next().unwrap_or_default().trim();
+    !matches!(media_type, "application/gzip" | "application/x-gzip")
+}
+
 fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), io::Error> {
     let parent = path
         .parent()
-        .ok_or_else(|| io::Error::other("VS Code cache path has no parent"))?;
+        .ok_or_else(|| io::Error::other("VS Code storage path has no parent"))?;
     fs::create_dir_all(parent)?;
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| io::Error::other("VS Code cache path has no file name"))?;
+        .ok_or_else(|| io::Error::other("VS Code storage path has no file name"))?;
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(io::Error::other)?
@@ -649,43 +1033,27 @@ fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), io::Error> {
     }
 }
 
-fn read_source_sidecar(
-    path: &Path,
-    members: &[crate::SourceConfig],
-) -> Result<Option<String>, io::Error> {
-    let Some(source_name) = read_source_name(path)? else {
-        return Ok(None);
-    };
-    Ok((members.iter().any(|member| member.name == source_name)).then_some(source_name))
-}
-
-fn read_source_name(path: &Path) -> Result<Option<String>, io::Error> {
-    let Some(contents) = read_if_present(path)? else {
-        return Ok(None);
-    };
-    let source_name = String::from_utf8_lossy(&contents).trim().to_owned();
-    Ok((!source_name.is_empty()).then_some(source_name))
-}
-
-fn checksum(contents: &[u8]) -> String {
+fn sha256(contents: &[u8]) -> String {
     format!("{:x}", Sha256::digest(contents))
 }
 
-fn is_retryable(error: &SourcePoolError) -> bool {
-    matches!(error, SourcePoolError::AllSourcesFailed { .. })
-}
+#[cfg(test)]
+mod tests {
+    use super::is_stale_compressed_cache;
 
-fn terminal_status(error: &SourcePoolError) -> Option<u16> {
-    match error {
-        SourcePoolError::TerminalSourceError { status, .. } => Some(*status),
-        SourcePoolError::AllSourcesFailed { status, .. } => *status,
-        _ => None,
+    #[test]
+    fn gzip_bytes_with_json_content_type_are_stale() {
+        assert!(is_stale_compressed_cache(
+            &[0x1f, 0x8b, 0x08],
+            Some("application/json")
+        ));
     }
-}
 
-struct VscodeAuditDetails<'a> {
-    selected_proxy: Option<&'a str>,
-    object_type: &'a str,
-    cache_status: &'a str,
-    failure_category: Option<&'a str>,
+    #[test]
+    fn gzip_bytes_with_gzip_content_type_are_valid() {
+        assert!(!is_stale_compressed_cache(
+            &[0x1f, 0x8b, 0x08],
+            Some("application/gzip")
+        ));
+    }
 }
