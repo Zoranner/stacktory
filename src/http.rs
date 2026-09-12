@@ -35,7 +35,16 @@ pub fn router_with_rustup(service: Arc<RustupService>) -> Router {
 pub fn router_with_registry(registry: AdapterRegistry) -> Router {
     Router::new()
         .route("/healthz", get(health))
-        .merge(registry_routes(registry))
+        .merge(registry_routes(registry, None))
+}
+
+pub fn router_with_docker_entry(
+    registry: AdapterRegistry,
+    entry_name: impl Into<String>,
+) -> Router {
+    Router::new()
+        .route("/healthz", get(health))
+        .merge(registry_routes(registry, Some(entry_name.into())))
 }
 
 pub fn router_with_rustup_and_cargo(
@@ -55,14 +64,26 @@ pub fn router_with_rustup_and_registry(
     rustup: Arc<RustupService>,
     registry: AdapterRegistry,
 ) -> Router {
-    router_with_rustup(rustup).merge(registry_routes(registry))
+    router_with_rustup(rustup).merge(registry_routes(registry, None))
 }
 
-fn registry_routes(registry: AdapterRegistry) -> Router {
-    Router::new()
+#[derive(Clone)]
+struct RegistryRouteState {
+    registry: AdapterRegistry,
+    docker_entry: Option<String>,
+}
+
+fn registry_routes(registry: AdapterRegistry, docker_entry: Option<String>) -> Router {
+    let mut router = Router::new()
         .route("/mirror/{ecosystem}/{name}/{*path}", any(named_source))
-        .layer(middleware::from_fn(registry_cors))
-        .with_state(registry)
+        .layer(middleware::from_fn(registry_cors));
+    if docker_entry.is_some() {
+        router = router.route("/v2/{*path}", any(docker_root_source));
+    }
+    router.with_state(RegistryRouteState {
+        registry,
+        docker_entry,
+    })
 }
 
 async fn health() -> StatusCode {
@@ -111,14 +132,14 @@ async fn registry_cors(request: Request<Body>, next: Next) -> axum::response::Re
 }
 
 async fn named_source(
-    State(registry): State<AdapterRegistry>,
+    State(state): State<RegistryRouteState>,
     Path((ecosystem, name, path)): Path<(String, String, String)>,
     OriginalUri(uri): OriginalUri,
     method: Method,
     headers: header::HeaderMap,
     body: Body,
 ) -> axum::response::Response {
-    let Some(registered) = registry.get(&ecosystem) else {
+    let Some(registered) = state.registry.get(&ecosystem) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     if registered.pool.proxy_members(&name).is_none() {
@@ -134,6 +155,45 @@ async fn named_source(
         .adapter
         .handle(
             name,
+            AdapterRequest {
+                method,
+                path,
+                raw_path,
+                query: uri.query().map(str::to_owned),
+                headers,
+                body,
+            },
+            registered.pool.clone(),
+        )
+        .await
+}
+
+async fn docker_root_source(
+    State(state): State<RegistryRouteState>,
+    Path(path): Path<String>,
+    OriginalUri(uri): OriginalUri,
+    method: Method,
+    headers: header::HeaderMap,
+    body: Body,
+) -> axum::response::Response {
+    let Some(entry_name) = state.docker_entry.as_deref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Some(registered) = state.registry.get("docker") else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if registered.pool.proxy_members(entry_name).is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let body = match to_bytes(body, 1024 * 1024).await {
+        Ok(body) => body.to_vec(),
+        Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+    };
+    let raw_path = uri.path().strip_prefix('/').unwrap_or(&path).to_owned();
+    registered
+        .adapter
+        .handle(
+            entry_name.to_owned(),
             AdapterRequest {
                 method,
                 path,

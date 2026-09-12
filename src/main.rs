@@ -1,9 +1,15 @@
 use std::{fs, sync::Arc};
 
 use stacktory::{
-    Config, SourcePool, cargo::CargoAdapter, docker::register_adapter,
-    http::router_with_rustup_and_registry, npm::NpmAdapter, nuget::NugetAdapter,
-    service::RustupService, sources::registry::AdapterRegistry, upm::UpmAdapter,
+    Config, SourcePool,
+    cargo::CargoAdapter,
+    docker::register_adapter,
+    http::{router_with_docker_entry, router_with_rustup_and_registry},
+    npm::NpmAdapter,
+    nuget::NugetAdapter,
+    service::RustupService,
+    sources::registry::AdapterRegistry,
+    upm::UpmAdapter,
     vscode::VscodeAdapter,
 };
 use tokio::net::TcpListener;
@@ -11,14 +17,33 @@ use tokio::net::TcpListener;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = Config::from_toml(&fs::read_to_string("config.toml")?)?;
-    let registry = configured_registry(&mut config)?;
+    let mut docker_listeners = Vec::new();
+    let registry = configured_registry(&mut config, &mut docker_listeners)?;
     let listener = TcpListener::bind((config.listen_address, config.listen_port)).await?;
     let service = Arc::new(RustupService::new(config)?);
+    for docker_listener in docker_listeners {
+        let listener = TcpListener::bind((docker_listener.address, docker_listener.port)).await?;
+        let router = router_with_docker_entry(registry.clone(), docker_listener.entry_name);
+        tokio::spawn(async move {
+            if let Err(error) = axum::serve(listener, router).await {
+                eprintln!("Stacktory Docker listener failed: {error}");
+            }
+        });
+    }
     axum::serve(listener, router_with_rustup_and_registry(service, registry)).await?;
     Ok(())
 }
 
-fn configured_registry(config: &mut Config) -> Result<AdapterRegistry, Box<dyn std::error::Error>> {
+struct DockerListener {
+    address: std::net::IpAddr,
+    port: u16,
+    entry_name: String,
+}
+
+fn configured_registry(
+    config: &mut Config,
+    docker_listeners: &mut Vec<DockerListener>,
+) -> Result<AdapterRegistry, Box<dyn std::error::Error>> {
     let mut registry = AdapterRegistry::new();
     if let Some(cargo) = config.cargo.take() {
         registry.register(
@@ -71,6 +96,13 @@ fn configured_registry(config: &mut Config) -> Result<AdapterRegistry, Box<dyn s
         )?;
     }
     if let Some(docker) = config.docker.take() {
+        docker_listeners.extend(docker.listen_ports.clone().into_iter().map(
+            |(entry_name, port)| DockerListener {
+                address: config.listen_address,
+                port,
+                entry_name,
+            },
+        ));
         register_adapter(
             &mut registry,
             docker,
@@ -127,7 +159,9 @@ mod tests {
             }),
         };
 
-        let registry = super::configured_registry(&mut config).expect("configured registry");
+        let mut docker_listeners = Vec::new();
+        let registry = super::configured_registry(&mut config, &mut docker_listeners)
+            .expect("configured registry");
         let router = router_with_registry(registry);
         let npm_response = router
             .clone()

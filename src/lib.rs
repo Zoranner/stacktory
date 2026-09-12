@@ -18,5 +18,7 @@ pub use config::{
     CargoConfig, Config, ConfigError, DockerConfig, EcosystemConfig, NpmConfig, NugetConfig,
     PypiConfig, RustupConfig, SourceConfig, SourceGraph, SourceType, UpmConfig, VscodeConfig,
 };
-pub use http::{router_with_rustup_and_cargo, router_with_rustup_and_registry};
+pub use http::{
+    router_with_docker_entry, router_with_rustup_and_cargo, router_with_rustup_and_registry,
+};
 pub use sources::SourcePool;
