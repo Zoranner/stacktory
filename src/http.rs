@@ -2,17 +2,22 @@ use std::sync::Arc;
 
 use axum::{
     Router,
+    body::{Body, to_bytes},
     extract::{Path, State},
-    http::StatusCode,
+    http::{Method, Request, StatusCode, header},
+    middleware::{self, Next},
     response::IntoResponse,
-    routing::get,
+    routing::{any, get},
 };
 
 use crate::{
     cargo::CargoAdapter,
     rustup::DistPath,
     service::{RustupService, ServiceError},
-    sources::{SourcePool, registry::AdapterRegistry},
+    sources::{
+        SourcePool,
+        registry::{AdapterRegistry, AdapterRequest},
+    },
     storage::StorageError,
 };
 
@@ -37,19 +42,26 @@ pub fn router_with_rustup_and_cargo(
     rustup: Arc<RustupService>,
     cargo: Option<(Arc<CargoAdapter>, Arc<SourcePool>)>,
 ) -> Router {
-    let rustup_router = router_with_rustup(rustup);
-    let Some((adapter, pool)) = cargo else {
-        return rustup_router;
-    };
-    let registry = AdapterRegistry::new()
-        .with_adapter("cargo", pool, adapter)
-        .expect("cargo adapter and source pool must share their ecosystem");
-    rustup_router.merge(registry_routes(registry))
+    let mut registry = AdapterRegistry::new();
+    if let Some((adapter, pool)) = cargo {
+        registry
+            .register("cargo", pool, adapter)
+            .expect("cargo adapter and source pool must share their ecosystem");
+    }
+    router_with_rustup_and_registry(rustup, registry)
+}
+
+pub fn router_with_rustup_and_registry(
+    rustup: Arc<RustupService>,
+    registry: AdapterRegistry,
+) -> Router {
+    router_with_rustup(rustup).merge(registry_routes(registry))
 }
 
 fn registry_routes(registry: AdapterRegistry) -> Router {
     Router::new()
-        .route("/mirror/{ecosystem}/{name}/{*path}", get(named_source))
+        .route("/mirror/{ecosystem}/{name}/{*path}", any(named_source))
+        .layer(middleware::from_fn(registry_cors))
         .with_state(registry)
 }
 
@@ -57,9 +69,52 @@ async fn health() -> StatusCode {
     StatusCode::OK
 }
 
+async fn registry_cors(request: Request<Body>, next: Next) -> axum::response::Response {
+    let origin = request.headers().get(header::ORIGIN).cloned();
+    let requested_headers = request
+        .headers()
+        .get(header::ACCESS_CONTROL_REQUEST_HEADERS)
+        .cloned();
+    let mut response = if request.method() == Method::OPTIONS {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        next.run(request).await
+    };
+    let headers = response.headers_mut();
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        origin.unwrap_or_else(|| header::HeaderValue::from_static("*")),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        header::HeaderValue::from_static("GET, POST, OPTIONS"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        requested_headers.unwrap_or_else(|| {
+            header::HeaderValue::from_static("Accept, Content-Type, X-Market-Client-Id")
+        }),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+        header::HeaderValue::from_static("true"),
+    );
+    headers.insert(
+        header::HeaderName::from_static("access-control-allow-private-network"),
+        header::HeaderValue::from_static("true"),
+    );
+    headers.insert(
+        header::VARY,
+        header::HeaderValue::from_static("Origin, Access-Control-Request-Headers"),
+    );
+    response
+}
+
 async fn named_source(
     State(registry): State<AdapterRegistry>,
     Path((ecosystem, name, path)): Path<(String, String, String)>,
+    method: Method,
+    body: Body,
 ) -> axum::response::Response {
     let Some(registered) = registry.get(&ecosystem) else {
         return StatusCode::NOT_FOUND.into_response();
@@ -67,9 +122,17 @@ async fn named_source(
     if registered.pool.proxy_members(&name).is_none() {
         return StatusCode::NOT_FOUND.into_response();
     }
+    let body = match to_bytes(body, 1024 * 1024).await {
+        Ok(body) => body.to_vec(),
+        Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+    };
     registered
         .adapter
-        .handle(name, path, registered.pool.clone())
+        .handle(
+            name,
+            AdapterRequest { method, path, body },
+            registered.pool.clone(),
+        )
         .await
 }
 

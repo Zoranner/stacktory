@@ -1,16 +1,28 @@
 use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc};
 
-use axum::response::Response;
+use axum::{http::Method, response::Response};
 use thiserror::Error;
 
 use super::SourcePool;
 
 pub type AdapterFuture = Pin<Box<dyn Future<Output = Response> + Send>>;
 
+#[derive(Debug)]
+pub struct AdapterRequest {
+    pub method: Method,
+    pub path: String,
+    pub body: Vec<u8>,
+}
+
 pub trait Adapter: Send + Sync + 'static {
     fn ecosystem(&self) -> &str;
 
-    fn handle(&self, source_name: String, path: String, pool: Arc<SourcePool>) -> AdapterFuture;
+    fn handle(
+        &self,
+        source_name: String,
+        request: AdapterRequest,
+        pool: Arc<SourcePool>,
+    ) -> AdapterFuture;
 }
 
 #[derive(Clone, Default)]

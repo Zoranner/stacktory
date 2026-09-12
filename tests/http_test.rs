@@ -104,6 +104,12 @@ async fn public_rustup_artifact_route_serves_only_a_verified_published_artifact(
             .expect("source graph"),
         },
         cargo: None,
+        vscode: None,
+        docker: None,
+        npm: None,
+        nuget: None,
+        pypi: None,
+        upm: None,
     })
     .expect("service");
     service.refresh("test", "stable").await.expect("refresh");
@@ -182,6 +188,12 @@ async fn rustup_group_route_serves_manifest() {
             .expect("source graph"),
         },
         cargo: None,
+        vscode: None,
+        docker: None,
+        npm: None,
+        nuget: None,
+        pypi: None,
+        upm: None,
     })
     .expect("service");
 
@@ -291,6 +303,12 @@ async fn rustup_group_artifact_stays_with_the_manifest_source() {
             .expect("source graph"),
         },
         cargo: None,
+        vscode: None,
+        docker: None,
+        npm: None,
+        nuget: None,
+        pypi: None,
+        upm: None,
     })
     .expect("service");
     let router = router_with_rustup(Arc::new(service));
@@ -355,6 +373,12 @@ async fn rustup_proxy_route_serves_only_its_proxy() {
             .expect("source graph"),
         },
         cargo: None,
+        vscode: None,
+        docker: None,
+        npm: None,
+        nuget: None,
+        pypi: None,
+        upm: None,
     })
     .expect("service");
 
@@ -386,6 +410,12 @@ async fn unknown_rustup_artifact_source_returns_not_found_before_snapshot_lookup
                 .expect("source graph"),
         },
         cargo: None,
+        vscode: None,
+        docker: None,
+        npm: None,
+        nuget: None,
+        pypi: None,
+        upm: None,
     })
     .expect("service");
     let router = router_with_rustup(Arc::new(service));
@@ -468,6 +498,12 @@ async fn legacy_rustup_route_returns_not_found() {
                 .expect("source graph"),
         },
         cargo: None,
+        vscode: None,
+        docker: None,
+        npm: None,
+        nuget: None,
+        pypi: None,
+        upm: None,
     })
     .expect("service");
 
