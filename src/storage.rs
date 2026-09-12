@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::rustup::{DistPath, RewrittenManifest};
+use crate::rustup::{ArtifactSource, DistPath, RewrittenManifest};
 
 #[derive(Debug)]
 pub struct SnapshotStore {
@@ -27,7 +27,7 @@ pub struct StoredSnapshot {
     pub checksum: String,
     pub source_name: String,
     pub published_at_unix_secs: u64,
-    pub artifact_hashes: BTreeMap<DistPath, String>,
+    pub artifact_sources: BTreeMap<DistPath, ArtifactSource>,
 }
 
 #[derive(Debug, Error)]
@@ -48,6 +48,8 @@ pub enum StorageError {
     InvalidChecksum(String),
     #[error("current snapshot for channel `{0}` is inconsistent")]
     InconsistentSnapshot(String),
+    #[error("current snapshot for channel `{0}` uses an incompatible artifact index")]
+    IncompatibleSnapshot(String),
     #[error("artifact `{0}` does not match its expected SHA-256")]
     ArtifactHashMismatch(String),
 }
@@ -61,7 +63,7 @@ struct CurrentPointer {
 
 #[derive(Deserialize, Serialize)]
 struct ArtifactIndex {
-    artifact_hashes: BTreeMap<String, String>,
+    artifact_sources: BTreeMap<String, ArtifactSource>,
 }
 
 impl SnapshotStore {
@@ -93,17 +95,18 @@ impl SnapshotStore {
             format!("{}\n", snapshot.checksum),
         )?;
 
-        let artifact_hashes = snapshot
-            .artifact_hashes
+        let artifact_sources = snapshot
+            .artifact_sources
             .into_iter()
-            .map(|(path, hash)| {
-                validate_checksum(&hash)?;
-                Ok((path.to_string(), hash))
+            .map(|(path, artifact_source)| {
+                validate_checksum(&artifact_source.checksum)?;
+                validate_source_name(&artifact_source.source_name)?;
+                Ok((path.to_string(), artifact_source))
             })
             .collect::<Result<BTreeMap<_, _>, StorageError>>()?;
         fs::write(
             snapshot_dir.join("artifacts.toml"),
-            toml::to_string(&ArtifactIndex { artifact_hashes })?,
+            toml::to_string(&ArtifactIndex { artifact_sources })?,
         )?;
 
         let pointer = toml::to_string(&CurrentPointer {
@@ -144,16 +147,18 @@ impl SnapshotStore {
         validate_checksum(&checksum)?;
 
         let artifact_index: ArtifactIndex =
-            toml::from_str(&fs::read_to_string(snapshot_dir.join("artifacts.toml"))?)?;
-        let artifact_hashes = artifact_index
-            .artifact_hashes
+            toml::from_str(&fs::read_to_string(snapshot_dir.join("artifacts.toml"))?)
+                .map_err(|_| StorageError::IncompatibleSnapshot(channel.to_owned()))?;
+        let artifact_sources = artifact_index
+            .artifact_sources
             .into_iter()
-            .map(|(path, hash)| {
-                validate_checksum(&hash)?;
+            .map(|(path, artifact_source)| {
+                validate_checksum(&artifact_source.checksum)?;
+                validate_source_name(&artifact_source.source_name)?;
                 Ok((
                     DistPath::parse(&path)
                         .map_err(|_| StorageError::InconsistentSnapshot(channel.to_owned()))?,
-                    hash,
+                    artifact_source,
                 ))
             })
             .collect::<Result<BTreeMap<_, _>, StorageError>>()?;
@@ -163,7 +168,7 @@ impl SnapshotStore {
             checksum,
             source_name: pointer.source_name,
             published_at_unix_secs: pointer.published_at_unix_secs,
-            artifact_hashes,
+            artifact_sources,
         })
     }
 
@@ -192,40 +197,29 @@ impl ArtifactCache {
 
     pub fn publish_verified(
         &self,
-        entry_name: &str,
-        channel: &str,
         source_name: &str,
         path: &DistPath,
         contents: &[u8],
         expected_checksum: &str,
     ) -> Result<(), StorageError> {
-        validate_source_name(entry_name)?;
-        validate_channel(channel)?;
         validate_source_name(source_name)?;
         validate_checksum(expected_checksum)?;
         if checksum(contents) != expected_checksum {
             return Err(StorageError::ArtifactHashMismatch(path.to_string()));
         }
 
-        atomic_write(
-            &self.artifact_path(entry_name, channel, source_name, path),
-            contents,
-        )
+        atomic_write(&self.artifact_path(source_name, path), contents)
     }
 
     pub fn get_verified(
         &self,
-        entry_name: &str,
-        channel: &str,
         source_name: &str,
         path: &DistPath,
         expected_checksum: &str,
     ) -> Result<Option<Vec<u8>>, StorageError> {
-        validate_source_name(entry_name)?;
-        validate_channel(channel)?;
         validate_source_name(source_name)?;
         validate_checksum(expected_checksum)?;
-        let artifact_path = self.artifact_path(entry_name, channel, source_name, path);
+        let artifact_path = self.artifact_path(source_name, path);
         let contents = match fs::read(&artifact_path) {
             Ok(contents) => contents,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -240,19 +234,12 @@ impl ArtifactCache {
         }
     }
 
-    fn artifact_path(
-        &self,
-        entry_name: &str,
-        channel: &str,
-        source_name: &str,
-        path: &DistPath,
-    ) -> PathBuf {
+    fn artifact_path(&self, source_name: &str, path: &DistPath) -> PathBuf {
         self.data_dir
             .join("rustup")
             .join("artifacts")
-            .join(entry_name)
-            .join(channel)
             .join(source_name)
+            .join("objects")
             .join(path.as_str())
     }
 }

@@ -106,7 +106,10 @@ impl RustupService {
                 }
             }
             Ok(snapshot) => Ok(snapshot),
-            Err(ServiceError::Storage(StorageError::MissingSnapshot(_))) => {
+            Err(
+                ServiceError::Storage(StorageError::MissingSnapshot(_))
+                | ServiceError::Storage(StorageError::IncompatibleSnapshot(_)),
+            ) => {
                 self.refresh(source_name, channel).await?;
                 self.manifest(source_name, channel)
             }
@@ -141,19 +144,17 @@ impl RustupService {
         self.ensure_entry(entry_name)?;
         self.ensure_channel(channel)?;
         let snapshot = self.snapshots.current(entry_name, channel)?;
-        let expected_checksum = snapshot
-            .artifact_hashes
+        let artifact_source = snapshot
+            .artifact_sources
             .get(path)
             .cloned()
             .ok_or_else(|| ServiceError::UnknownArtifact(path.clone()))?;
-        let selected_source = snapshot.source_name;
-        if let Some(contents) = self.cache.get_verified(
-            entry_name,
-            channel,
-            &selected_source,
-            path,
-            &expected_checksum,
-        )? {
+        let expected_checksum = artifact_source.checksum;
+        let selected_source = artifact_source.source_name;
+        if let Some(contents) =
+            self.cache
+                .get_verified(&selected_source, path, &expected_checksum)?
+        {
             self.record_audit("artifact_cache_hit", path.as_str(), "success");
             return Ok(contents);
         }
@@ -163,7 +164,7 @@ impl RustupService {
             .fetch(
                 &selected_source,
                 &format!("dist/{}", path.as_str()),
-                FetchOperation::Get,
+                FetchOperation::Artifact,
             )
             .await
         {
@@ -179,14 +180,8 @@ impl RustupService {
                 return Err(error.into());
             }
         };
-        self.cache.publish_verified(
-            entry_name,
-            channel,
-            &selected_source,
-            path,
-            &contents,
-            &expected_checksum,
-        )?;
+        self.cache
+            .publish_verified(&selected_source, path, &contents, &expected_checksum)?;
         self.record_audit("artifact_cached", path.as_str(), "success");
         Ok(contents)
     }
@@ -220,12 +215,28 @@ impl RustupService {
         let checksum_key = format!("{manifest_key}.sha256");
         let entry_root = self.entry_root_url(source_name);
         let file_name = format!("channel-rust-{channel}.toml");
+        let policy = ManifestPolicy::with_sources(
+            self.sources
+                .proxies()
+                .iter()
+                .map(|member| {
+                    (
+                        member.name.clone(),
+                        member
+                            .base_url
+                            .as_ref()
+                            .expect("validated proxy source must have a base URL")
+                            .clone(),
+                    )
+                })
+                .collect(),
+        );
         let mut failures = Vec::new();
 
         for member in members {
             let manifest = match self
                 .sources
-                .fetch(&member.name, &manifest_key, FetchOperation::Get)
+                .fetch(&member.name, &manifest_key, FetchOperation::Metadata)
                 .await
             {
                 Ok(response) => response.body,
@@ -237,7 +248,7 @@ impl RustupService {
             };
             let checksum_file = match self
                 .sources
-                .fetch(&member.name, &checksum_key, FetchOperation::Get)
+                .fetch(&member.name, &checksum_key, FetchOperation::Metadata)
                 .await
             {
                 Ok(response) => response.body,
@@ -268,11 +279,6 @@ impl RustupService {
                 continue;
             }
 
-            let base_url = member
-                .base_url
-                .as_ref()
-                .expect("validated proxy source must have a base URL");
-            let policy = ManifestPolicy::new(vec![base_url.clone()]);
             match rewrite_manifest(&manifest, &policy, &entry_root, channel) {
                 Ok(rewritten) => return Ok((member.name, rewritten)),
                 Err(error) => failures.push(format!("{}: {error}", member.name)),

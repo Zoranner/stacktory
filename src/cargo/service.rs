@@ -18,7 +18,7 @@ use url::Url;
 use crate::{
     SourcePool,
     audit::{AuditDetails, AuditSink},
-    sources::registry::{Adapter, AdapterFuture},
+    sources::registry::{Adapter, AdapterFuture, AdapterRequest},
     sources::{FetchOperation, SourcePoolError},
 };
 
@@ -196,7 +196,7 @@ impl CargoService {
             .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?
         {
             match pool
-                .fetch(&member.name, &request_key, FetchOperation::Get)
+                .fetch(&member.name, &request_key, FetchOperation::Metadata)
                 .await
             {
                 Ok(response) => {
@@ -326,7 +326,7 @@ impl CargoService {
                 version: version.to_owned(),
             })?;
 
-        let cache_path = self.artifact_path(entry_name, crate_name, version);
+        let cache_path = self.artifact_path(&snapshot.selected_proxy, crate_name, version);
         if let Some(contents) = read_if_present(&cache_path)? {
             if checksum(&contents).eq_ignore_ascii_case(&expected) {
                 self.record_cargo(
@@ -373,7 +373,7 @@ impl CargoService {
         );
         for member in members {
             let config = match pool
-                .fetch(&member.name, "config.json", FetchOperation::Get)
+                .fetch(&member.name, "config.json", FetchOperation::Metadata)
                 .await
             {
                 Ok(response) => match parse_registry_config(&response.body) {
@@ -450,9 +450,15 @@ impl CargoService {
                     continue;
                 }
             };
-            match pool.fetch_configured_url(&member.name, download_url).await {
+            match pool
+                .fetch_configured_url(&member.name, download_url, FetchOperation::Artifact)
+                .await
+            {
                 Ok(response) if checksum(&response.body).eq_ignore_ascii_case(&expected) => {
-                    atomic_write(&cache_path, &response.body)?;
+                    atomic_write(
+                        &self.artifact_path(&member.name, crate_name, version),
+                        &response.body,
+                    )?;
                     atomic_write(
                         &self.metadata_sidecar_path(entry_name, &index_path),
                         format!("{}\n", member.name).as_bytes(),
@@ -557,11 +563,12 @@ impl CargoService {
         path.with_file_name(format!("{file_name}.source"))
     }
 
-    fn artifact_path(&self, entry_name: &str, crate_name: &str, version: &str) -> PathBuf {
+    fn artifact_path(&self, source_name: &str, crate_name: &str, version: &str) -> PathBuf {
         self.data_dir
             .join("cargo")
             .join("artifacts")
-            .join(entry_name)
+            .join(source_name)
+            .join("objects")
             .join("crates")
             .join(crate_name)
             .join(format!("{version}.crate"))
@@ -609,9 +616,21 @@ impl Adapter for CargoAdapter {
         "cargo"
     }
 
-    fn handle(&self, source_name: String, path: String, pool: Arc<SourcePool>) -> AdapterFuture {
+    fn handle(
+        &self,
+        source_name: String,
+        request: AdapterRequest,
+        pool: Arc<SourcePool>,
+    ) -> AdapterFuture {
         let service = self.service.clone();
-        Box::pin(async move { service.handle_request(&source_name, &path, &pool).await })
+        Box::pin(async move {
+            if request.method != axum::http::Method::GET {
+                return axum::http::StatusCode::METHOD_NOT_ALLOWED.into_response();
+            }
+            service
+                .handle_request(&source_name, &request.path, &pool)
+                .await
+        })
     }
 }
 

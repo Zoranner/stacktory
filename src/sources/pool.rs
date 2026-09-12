@@ -1,6 +1,7 @@
 use std::{
     net::{IpAddr, SocketAddr},
     sync::Arc,
+    time::Duration,
 };
 
 use thiserror::Error;
@@ -17,13 +18,30 @@ pub struct SourcePool {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FetchOperation {
-    Get,
+    Metadata,
+    Artifact,
+}
+
+impl FetchOperation {
+    const fn timeout(self) -> Duration {
+        match self {
+            Self::Metadata => Duration::from_secs(30),
+            Self::Artifact => Duration::from_secs(300),
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct SourceResponse {
     pub source_name: String,
     pub body: Vec<u8>,
+    pub content_type: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum SourceRequest<'a> {
+    Get,
+    MarketplaceQuery(&'a [u8]),
 }
 
 #[derive(Debug, Error)]
@@ -69,6 +87,14 @@ impl SourcePool {
         )
     }
 
+    pub fn new_with_resolvers(
+        ecosystem: impl Into<String>,
+        graph: SourceGraph,
+        resolvers: &[(&str, SocketAddr)],
+    ) -> Result<Self, SourcePoolError> {
+        Self::with_fetcher(ecosystem, graph, HttpFetcher::new_with_resolvers(resolvers))
+    }
+
     fn with_fetcher(
         ecosystem: impl Into<String>,
         graph: SourceGraph,
@@ -93,6 +119,10 @@ impl SourcePool {
             .map(|members| members.into_iter().cloned().collect())
     }
 
+    pub fn proxies(&self) -> Vec<SourceConfig> {
+        self.graph.proxies().into_iter().cloned().collect()
+    }
+
     pub fn is_group(&self, entry_name: &str) -> bool {
         self.graph
             .get(entry_name)
@@ -104,6 +134,32 @@ impl SourcePool {
         entry_name: &str,
         request_key: &str,
         operation: FetchOperation,
+    ) -> Result<SourceResponse, SourcePoolError> {
+        self.fetch_request(entry_name, request_key, operation, SourceRequest::Get)
+            .await
+    }
+
+    pub async fn post_json(
+        &self,
+        entry_name: &str,
+        request_key: &str,
+        body: &[u8],
+    ) -> Result<SourceResponse, SourcePoolError> {
+        self.fetch_request(
+            entry_name,
+            request_key,
+            FetchOperation::Metadata,
+            SourceRequest::MarketplaceQuery(body),
+        )
+        .await
+    }
+
+    async fn fetch_request(
+        &self,
+        entry_name: &str,
+        request_key: &str,
+        operation: FetchOperation,
+        request: SourceRequest<'_>,
     ) -> Result<SourceResponse, SourcePoolError> {
         let members = self
             .proxy_members(entry_name)
@@ -119,14 +175,20 @@ impl SourcePool {
 
         for source in members {
             let url = source_url(&source, &request_key)?;
-            let result = match operation {
-                FetchOperation::Get => self.fetcher.fetch(url).await,
+            let result = match request {
+                SourceRequest::Get => self.fetcher.fetch(url, operation.timeout()).await,
+                SourceRequest::MarketplaceQuery(body) => {
+                    self.fetcher
+                        .post_marketplace_query(url, body, operation.timeout())
+                        .await
+                }
             };
             match result {
-                Ok(body) => {
+                Ok(response) => {
                     return Ok(SourceResponse {
                         source_name: source.name,
-                        body,
+                        body: response.body,
+                        content_type: response.content_type,
                     });
                 }
                 Err(error) if error.is_retryable() => {
@@ -162,6 +224,7 @@ impl SourcePool {
         &self,
         source_name: &str,
         url: Url,
+        operation: FetchOperation,
     ) -> Result<SourceResponse, SourcePoolError> {
         let source = self
             .graph
@@ -171,10 +234,11 @@ impl SourcePool {
             return Err(SourcePoolError::InvalidConfiguredUrl(url.to_string()));
         }
 
-        match self.fetcher.fetch(url.clone()).await {
-            Ok(body) => Ok(SourceResponse {
+        match self.fetcher.fetch(url.clone(), operation.timeout()).await {
+            Ok(response) => Ok(SourceResponse {
                 source_name: source_name.to_owned(),
-                body,
+                body: response.body,
+                content_type: response.content_type,
             }),
             Err(error) if error.is_retryable() => Err(SourcePoolError::AllSourcesFailed {
                 entry_name: source_name.to_owned(),

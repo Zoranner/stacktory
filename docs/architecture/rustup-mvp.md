@@ -21,8 +21,8 @@ Registry 和 OpenUPM。本期不接收任意 URL，也不写入或访问生产 N
 | --- | --- |
 | `RustupAdapter` | 识别 Rustup 原生路径；刷新、读取并重写 channel manifest；为 dist 请求构造受限制品键。 |
 | `SourcePool` | 仅向当前命名入口解析出的 proxy 发起请求；group 按成员顺序回退，proxy 只访问自身。 |
-| `SnapshotStore` | 将已校验的原始与重写 manifest 放入版本化快照目录，并用当前指针切换公开版本；快照保存 `source_name`，即公共模型的 `selected_proxy`。 |
-| `ArtifactCache` | 以 dist 相对路径定位磁盘文件；核对 manifest 哈希后才原子发布。 |
+| `SnapshotStore` | 将已校验的原始与重写 manifest 放入版本化快照目录，并用当前指针切换公开版本；快照为每个 dist 制品保存 SHA-256 和匹配的 proxy。 |
+| `ArtifactCache` | 以实际 proxy 和 dist 相对路径定位磁盘文件；核对 manifest 哈希后才原子发布。 |
 | `AuditSink` | 对 manifest 发布、缓存命中、缓存写入和上游失败写入结构化 JSONL。 |
 
 适配器是未来扩展点，而不是万能代理。每个生态适配器独立声明：可接受的
@@ -112,9 +112,9 @@ rustup
 rustup
   -> GET /mirror/rustup/{name}/dist/{channel}/{path}
   -> 严格路径解析，拒绝编码绕过、.. 和非 dist 路径
-  -> 读取当前 channel 快照的 source_name（公共 selected_proxy）
+  -> 读取当前 channel 快照中该制品的 source_name
   -> 已校验缓存命中则返回
-  -> 按 source_name 对应的 proxy 下载，SHA-256 与当前 manifest 记录相同才发布缓存
+  -> 按该制品 source_name 对应的 proxy 下载，SHA-256 与当前 manifest 记录相同才发布缓存
   -> 返回文件；所有失败保留为协议错误，不产生半成品缓存
 ```
 
@@ -122,13 +122,18 @@ rustup
 channel 的并发刷新请求；刷新成功后发布新快照。刷新失败但已有旧快照时继续返回
 旧快照，没有任何快照才返回上游失败。刷新时，按命名入口解析出的 proxy 顺序取得
 manifest 及 `.sha256`，验证原始 manifest
-散列，解析并拒绝不属于已配置上游 `dist/**` 的 URL，重写 URL 后计算新的
-manifest SHA-256。完整 manifest、匹配 checksum 和提取出的制品哈希一同写入
-新的命名入口版本化快照目录；快照同时记录实际选中的 `source_name`，即
-`selected_proxy`；制品缓存按 proxy 隔离，目录完成后原子替换
-`current.toml` 指针。读取请求始终先读取入口指针再读取同一快照，因此不会观察到
-不配对的公开 manifest/checksum；artifact 请求沿用该快照记录的 proxy，不回退到
-该 group 的其他成员。
+散列，解析并拒绝不属于当前命名入口任一已配置 proxy 的 `dist/**` URL，重写 URL 后
+计算新的 manifest SHA-256。完整 manifest、匹配 checksum 和每个制品的
+`SHA-256 + source_name` 一同写入新的命名入口版本化快照目录；制品缓存按该
+source_name 隔离，目录完成后原子替换 `current.toml` 指针。读取请求始终先读取
+入口指针再读取同一快照，因此不会观察到不配对的公开 manifest/checksum；同一份
+manifest 可以为不同制品绑定不同 proxy，不按每次 artifact 请求重新选择来源。
+制品目录为 `data_dir/rustup/artifacts/{proxy}/objects/{dist-path}`；入口名和 channel
+属于 snapshot，不属于二进制制品缓存键。
+
+direct proxy 入口只从自身获取 channel manifest；但 manifest 中的 dist URL 可以匹配
+同一 Rustup 配置图内其他已声明 proxy。这样镜像 manifest 指向官方制品时仍可安全
+发布，而未声明的 host 或路径始终被拒绝。
 
 ## 错误与安全边界
 
@@ -144,6 +149,7 @@ manifest SHA-256。完整 manifest、匹配 checksum 和提取出的制品哈希
 单元测试覆盖配置校验、路径白名单、manifest URL 重写、散列计算和缓存发布
 规则。集成测试使用本地 HTTP 模拟两个上游，验证第一个上游失败时回退、首次和
 过期 manifest 请求触发刷新、被重写
-的 manifest 与 checksum 配对、首次 dist 请求缓存且第二次不访问上游、散列不符
-时返回失败并且磁盘没有可命中的文件。每次 Rust 代码改动执行 `cargo fmt --all`、
+的 manifest 与 checksum 配对、跨 proxy manifest URL 的制品来源绑定、首次 dist
+请求缓存且第二次不访问上游、散列不符时返回失败并且磁盘没有可命中的文件。每次
+Rust 代码改动执行 `cargo fmt --all`、
 `cargo clippy --all-targets --all-features -- -D warnings` 和完整测试。

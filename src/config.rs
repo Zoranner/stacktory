@@ -12,6 +12,12 @@ pub struct Config {
     pub root_url: Url,
     pub rustup: RustupConfig,
     pub cargo: Option<CargoConfig>,
+    pub vscode: Option<VscodeConfig>,
+    pub docker: Option<DockerConfig>,
+    pub npm: Option<NpmConfig>,
+    pub nuget: Option<NugetConfig>,
+    pub pypi: Option<PypiConfig>,
+    pub upm: Option<UpmConfig>,
 }
 
 #[derive(Debug)]
@@ -22,9 +28,17 @@ pub struct RustupConfig {
 }
 
 #[derive(Debug)]
-pub struct CargoConfig {
+pub struct EcosystemConfig {
     pub sources: SourceGraph,
 }
+
+pub type CargoConfig = EcosystemConfig;
+pub type VscodeConfig = EcosystemConfig;
+pub type DockerConfig = EcosystemConfig;
+pub type NpmConfig = EcosystemConfig;
+pub type NugetConfig = EcosystemConfig;
+pub type PypiConfig = EcosystemConfig;
+pub type UpmConfig = EcosystemConfig;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -146,6 +160,13 @@ impl SourceGraph {
             ),
         }
     }
+
+    pub fn proxies(&self) -> Vec<&SourceConfig> {
+        self.entries
+            .values()
+            .filter(|source| source.source_type == SourceType::Proxy)
+            .collect()
+    }
 }
 
 #[derive(Debug, Error)]
@@ -196,6 +217,12 @@ struct RawConfig {
     root_url: Url,
     rustup: RawRustupConfig,
     cargo: Option<RawEcosystemConfig>,
+    vscode: Option<RawEcosystemConfig>,
+    docker: Option<RawEcosystemConfig>,
+    npm: Option<RawEcosystemConfig>,
+    nuget: Option<RawEcosystemConfig>,
+    pypi: Option<RawEcosystemConfig>,
+    upm: Option<RawEcosystemConfig>,
 }
 
 #[derive(Deserialize)]
@@ -262,11 +289,13 @@ impl Config {
             }
         }
         let rustup_sources = SourceGraph::from_raw(raw.rustup.sources)?;
-        let cargo = raw
-            .cargo
-            .map(|cargo| SourceGraph::from_raw(cargo.sources))
-            .transpose()?
-            .map(|sources| CargoConfig { sources });
+        let cargo = ecosystem_config(raw.cargo)?;
+        let vscode = ecosystem_config(raw.vscode)?;
+        let docker = ecosystem_config(raw.docker)?;
+        let npm = ecosystem_config(raw.npm)?;
+        let nuget = ecosystem_config(raw.nuget)?;
+        let pypi = ecosystem_config(raw.pypi)?;
+        let upm = ecosystem_config(raw.upm)?;
 
         Ok(Self {
             listen_address: raw.listen_address,
@@ -279,8 +308,22 @@ impl Config {
                 sources: rustup_sources,
             },
             cargo,
+            vscode,
+            docker,
+            npm,
+            nuget,
+            pypi,
+            upm,
         })
     }
+}
+
+fn ecosystem_config(
+    raw: Option<RawEcosystemConfig>,
+) -> Result<Option<EcosystemConfig>, ConfigError> {
+    raw.map(|ecosystem| SourceGraph::from_raw(ecosystem.sources))
+        .transpose()
+        .map(|sources| sources.map(|sources| EcosystemConfig { sources }))
 }
 
 const fn requires_https() -> bool {

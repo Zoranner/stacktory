@@ -1,7 +1,7 @@
 mod manifest;
 mod path;
 
-pub use manifest::{ManifestPolicy, RewrittenManifest, rewrite_manifest};
+pub use manifest::{ArtifactSource, ManifestPolicy, RewrittenManifest, rewrite_manifest};
 pub use path::DistPath;
 
 use thiserror::Error;

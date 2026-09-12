@@ -1,4 +1,11 @@
-use std::{net::SocketAddr, path::Path, sync::Arc};
+use std::{
+    net::SocketAddr,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use axum::{
     Router,
@@ -146,6 +153,64 @@ async fn cargo_group_uses_first_proxy_config_and_dl_template() {
         &b"serde crate from first proxy"[..]
     );
     assert_eq!(second_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn cargo_artifact_cache_is_shared_by_group_and_its_proxy() {
+    let crate_body = b"shared crate".to_vec();
+    let crate_hash = format!("{:x}", Sha256::digest(&crate_body));
+    let index_body = valid_index_body(std::str::from_utf8(&crate_body).expect("crate UTF-8"));
+    let crate_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (upstream, upstream_address) = start_counted_configured_server(
+        index_body,
+        crate_body,
+        &crate_hash,
+        crate_requests.clone(),
+    )
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let registry = AdapterRegistry::new()
+        .with_adapter(
+            "cargo",
+            Arc::new(
+                SourcePool::new_with_resolver(
+                    "cargo",
+                    SourceGraph::new(vec![
+                        proxy("official", upstream.as_str()),
+                        group("group", &["official"]),
+                    ])
+                    .expect("source graph"),
+                    "download.example",
+                    upstream_address,
+                )
+                .expect("source pool"),
+            ),
+            Arc::new(CargoAdapter::new(
+                Url::parse("http://127.0.0.1:18761").expect("root URL"),
+                data_dir.path(),
+            )),
+        )
+        .expect("registry");
+    let router = router_with_registry(registry);
+
+    for entry_name in ["group", "official"] {
+        let response = router
+            .clone()
+            .oneshot(get_request(&format!(
+                "/mirror/cargo/{entry_name}/crates/serde/1.0.0.crate"
+            )))
+            .await
+            .expect("crate response");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    assert_eq!(crate_requests.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(
+        data_dir
+            .path()
+            .join("cargo/artifacts/official/objects/crates/serde/1.0.0.crate")
+            .exists()
+    );
 }
 
 #[tokio::test]
@@ -317,7 +382,7 @@ async fn cargo_crate_hash_mismatch_does_not_publish_cache() {
     assert!(
         !data_dir
             .path()
-            .join("cargo/artifacts/primary/crates/serde/1.0.0.crate")
+            .join("cargo/artifacts/primary/objects/crates/serde/1.0.0.crate")
             .exists()
     );
 }
@@ -416,7 +481,7 @@ async fn cargo_missing_proxy_config_does_not_publish_cache() {
     assert!(
         !data_dir
             .path()
-            .join("cargo/artifacts/primary/crates/serde/1.0.0.crate")
+            .join("cargo/artifacts/primary/objects/crates/serde/1.0.0.crate")
             .exists()
     );
 }
@@ -456,7 +521,7 @@ async fn cargo_invalid_proxy_dl_does_not_publish_cache() {
     assert!(
         !data_dir
             .path()
-            .join("cargo/artifacts/primary/crates/serde/1.0.0.crate")
+            .join("cargo/artifacts/primary/objects/crates/serde/1.0.0.crate")
             .exists()
     );
 }
@@ -619,7 +684,7 @@ async fn cargo_config_forbidden_is_terminal_and_does_not_publish_cache() {
     assert!(
         !data_dir
             .path()
-            .join("cargo/artifacts/primary/crates/serde/1.0.0.crate")
+            .join("cargo/artifacts/primary/objects/crates/serde/1.0.0.crate")
             .exists()
     );
 }
@@ -783,6 +848,54 @@ async fn start_configured_server(
         "download.example",
     )
     .await
+}
+
+async fn start_counted_configured_server(
+    index_body: String,
+    crate_body: Vec<u8>,
+    download_checksum: &str,
+    crate_requests: Arc<AtomicUsize>,
+) -> (Url, SocketAddr) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let download_path = format!("/download/se/rd/serde/1.0.0/{download_checksum}");
+    let dl = format!(
+        "http://download.example:{}/download/{{lowerprefix}}/{{crate}}/{{version}}/{{sha256-checksum}}",
+        address.port()
+    );
+    let router = Router::new()
+        .route(
+            "/config.json",
+            get(move || {
+                let dl = dl.clone();
+                async move { format!(r#"{{"dl":"{dl}"}}"#) }
+            }),
+        )
+        .route(
+            "/se/rd/serde",
+            get(move || {
+                let index_body = index_body.clone();
+                async move { index_body }
+            }),
+        )
+        .route(
+            &download_path,
+            get(move || {
+                let crate_body = crate_body.clone();
+                let crate_requests = crate_requests.clone();
+                async move {
+                    crate_requests.fetch_add(1, Ordering::SeqCst);
+                    crate_body
+                }
+            }),
+        );
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.expect("server");
+    });
+    (
+        Url::parse(&format!("http://{address}")).expect("server URL"),
+        address,
+    )
 }
 
 async fn start_configured_server_with_host(

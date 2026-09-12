@@ -70,6 +70,12 @@ async fn refresh_publishes_a_rewritten_manifest_snapshot() {
             .expect("source graph"),
         },
         cargo: None,
+        vscode: None,
+        docker: None,
+        npm: None,
+        nuget: None,
+        pypi: None,
+        upm: None,
     })
     .expect("service");
 
@@ -115,6 +121,270 @@ async fn artifact_request_fetches_a_published_artifact_and_reuses_the_verified_c
         std::fs::read_to_string(data_dir.path().join("audit/events.jsonl")).expect("audit log");
     assert!(audit.contains("artifact_cached"));
     assert!(audit.contains("artifact_cache_hit"));
+}
+
+#[tokio::test]
+async fn artifact_cache_is_shared_by_group_and_its_proxy() {
+    let artifact = b"shared verified artifact";
+    let expected_hash = format!("{:x}", Sha256::digest(artifact));
+    let requests = Arc::new(AtomicUsize::new(0));
+    let (upstream, path) =
+        start_artifact_upstream(artifact.to_vec(), expected_hash, requests.clone()).await;
+    let data_dir = tempdir().expect("temporary directory");
+    let service = RustupService::new(Config {
+        listen_address: "127.0.0.1".parse().expect("address"),
+        listen_port: 18761,
+        data_dir: data_dir.path().to_path_buf(),
+        root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
+        rustup: RustupConfig {
+            refresh_interval_secs: 3600,
+            channels: vec!["stable".to_owned()],
+            sources: SourceGraph::new(vec![
+                source("official", upstream.as_str()),
+                group("group", &["official"]),
+            ])
+            .expect("source graph"),
+        },
+        cargo: None,
+        vscode: None,
+        docker: None,
+        npm: None,
+        nuget: None,
+        pypi: None,
+        upm: None,
+    })
+    .expect("service");
+
+    service
+        .refresh("group", "stable")
+        .await
+        .expect("group refresh");
+    service
+        .artifact_for_request("group", "stable", &path)
+        .await
+        .expect("group artifact");
+    service
+        .refresh("official", "stable")
+        .await
+        .expect("proxy refresh");
+    service
+        .artifact_for_request("official", "stable", &path)
+        .await
+        .expect("proxy artifact");
+
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    assert!(
+        data_dir
+            .path()
+            .join("rustup/artifacts/official/objects")
+            .join(path.as_str())
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn proxy_manifest_can_reference_another_configured_proxy() {
+    let artifact = b"artifact from a configured proxy".to_vec();
+    let checksum = format!("{:x}", Sha256::digest(&artifact));
+    let artifact_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("artifact listener");
+    let artifact_address = artifact_listener.local_addr().expect("artifact address");
+    let artifact_router = Router::new().route(
+        "/dist/2026-09-03/rustc.tar.xz",
+        get({
+            let artifact = artifact.clone();
+            move || {
+                let artifact = artifact.clone();
+                async move { artifact }
+            }
+        }),
+    );
+    tokio::spawn(async move {
+        axum::serve(artifact_listener, artifact_router)
+            .await
+            .expect("artifact server");
+    });
+
+    let manifest_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("manifest listener");
+    let manifest_address = manifest_listener.local_addr().expect("manifest address");
+    let manifest = format!(
+        "manifest-version = \"2\"\n[pkg.rust.target.x86_64-pc-windows-msvc]\nurl = \"http://{artifact_address}/dist/2026-09-03/rustc.tar.xz\"\nhash = \"{checksum}\"\n"
+    );
+    let manifest_checksum = format!(
+        "{:x}  channel-rust-stable.toml\n",
+        Sha256::digest(manifest.as_bytes())
+    );
+    let manifest_router = Router::new()
+        .route(
+            "/dist/channel-rust-stable.toml",
+            get({
+                let manifest = manifest.clone();
+                move || {
+                    let manifest = manifest.clone();
+                    async move { manifest }
+                }
+            }),
+        )
+        .route(
+            "/dist/channel-rust-stable.toml.sha256",
+            get(move || {
+                let manifest_checksum = manifest_checksum.clone();
+                async move { manifest_checksum }
+            }),
+        );
+    tokio::spawn(async move {
+        axum::serve(manifest_listener, manifest_router)
+            .await
+            .expect("manifest server");
+    });
+
+    let data_dir = tempdir().expect("temporary directory");
+    let service = RustupService::new(Config {
+        listen_address: "127.0.0.1".parse().expect("address"),
+        listen_port: 18761,
+        data_dir: data_dir.path().to_path_buf(),
+        root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
+        rustup: RustupConfig {
+            refresh_interval_secs: 3600,
+            channels: vec!["stable".to_owned()],
+            sources: SourceGraph::new(vec![
+                source("mirror", format!("http://{manifest_address}")),
+                source("official", format!("http://{artifact_address}")),
+            ])
+            .expect("source graph"),
+        },
+        cargo: None,
+        vscode: None,
+        docker: None,
+        npm: None,
+        nuget: None,
+        pypi: None,
+        upm: None,
+    })
+    .expect("service");
+    let path = DistPath::parse("2026-09-03/rustc.tar.xz").expect("artifact path");
+
+    service
+        .refresh("mirror", "stable")
+        .await
+        .expect("mirror refresh");
+    assert_eq!(
+        service
+            .artifact_for_request("mirror", "stable", &path)
+            .await
+            .expect("artifact"),
+        artifact
+    );
+}
+
+#[tokio::test]
+async fn artifact_request_uses_the_source_matched_by_manifest_url() {
+    let artifact = b"artifact from the matched source".to_vec();
+    let checksum = format!("{:x}", Sha256::digest(&artifact));
+    let artifact_hits = Arc::new(AtomicUsize::new(0));
+    let artifact_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("artifact listener");
+    let artifact_address = artifact_listener.local_addr().expect("artifact address");
+    let artifact_hits_for_route = artifact_hits.clone();
+    let artifact_for_route = artifact.clone();
+    let artifact_router = Router::new().route(
+        "/dist/2026-09-03/rustc.tar.xz",
+        get(move || {
+            let artifact_hits = artifact_hits_for_route.clone();
+            let artifact = artifact_for_route.clone();
+            async move {
+                artifact_hits.fetch_add(1, Ordering::SeqCst);
+                artifact
+            }
+        }),
+    );
+    tokio::spawn(async move {
+        axum::serve(artifact_listener, artifact_router)
+            .await
+            .expect("artifact server");
+    });
+
+    let manifest_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("manifest listener");
+    let manifest_address = manifest_listener.local_addr().expect("manifest address");
+    let manifest = format!(
+        "manifest-version = \"2\"\n[pkg.rust.target.x86_64-pc-windows-msvc]\nurl = \"http://{artifact_address}/dist/2026-09-03/rustc.tar.xz\"\nhash = \"{checksum}\"\n"
+    );
+    let manifest_checksum = format!(
+        "{:x}  channel-rust-stable.toml\n",
+        Sha256::digest(manifest.as_bytes())
+    );
+    let manifest_router = Router::new()
+        .route(
+            "/dist/channel-rust-stable.toml",
+            get({
+                let manifest = manifest.clone();
+                move || {
+                    let manifest = manifest.clone();
+                    async move { manifest }
+                }
+            }),
+        )
+        .route(
+            "/dist/channel-rust-stable.toml.sha256",
+            get(move || {
+                let manifest_checksum = manifest_checksum.clone();
+                async move { manifest_checksum }
+            }),
+        );
+    tokio::spawn(async move {
+        axum::serve(manifest_listener, manifest_router)
+            .await
+            .expect("manifest server");
+    });
+
+    let data_dir = tempdir().expect("temporary directory");
+    let service = RustupService::new(Config {
+        listen_address: "127.0.0.1".parse().expect("address"),
+        listen_port: 18761,
+        data_dir: data_dir.path().to_path_buf(),
+        root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
+        rustup: RustupConfig {
+            refresh_interval_secs: 3600,
+            channels: vec!["stable".to_owned()],
+            sources: SourceGraph::new(vec![
+                source("manifest", format!("http://{manifest_address}")),
+                source("artifact", format!("http://{artifact_address}")),
+                group("group", &["manifest", "artifact"]),
+            ])
+            .expect("source graph"),
+        },
+        cargo: None,
+        vscode: None,
+        docker: None,
+        npm: None,
+        nuget: None,
+        pypi: None,
+        upm: None,
+    })
+    .expect("service");
+    let path = DistPath::parse("2026-09-03/rustc.tar.xz").expect("artifact path");
+
+    service.refresh("group", "stable").await.expect("refresh");
+    assert_eq!(
+        service
+            .artifact_for_request("group", "stable", &path)
+            .await
+            .expect("artifact"),
+        artifact
+    );
+    assert_eq!(artifact_hits.load(Ordering::SeqCst), 1);
+    assert!(
+        data_dir
+            .path()
+            .join("rustup/artifacts/artifact/objects/2026-09-03/rustc.tar.xz")
+            .exists()
+    );
 }
 
 #[tokio::test]
@@ -301,6 +571,12 @@ async fn artifacts_follow_each_channel_snapshot_source_and_keep_separate_caches(
             .expect("source graph"),
         },
         cargo: None,
+        vscode: None,
+        docker: None,
+        npm: None,
+        nuget: None,
+        pypi: None,
+        upm: None,
     })
     .expect("service");
 
@@ -347,13 +623,13 @@ async fn artifacts_follow_each_channel_snapshot_source_and_keep_separate_caches(
     assert!(
         data_dir
             .path()
-            .join("rustup/artifacts/group/stable/first/2026-08-20/rustc.tar.xz")
+            .join("rustup/artifacts/first/objects/2026-08-20/rustc.tar.xz")
             .exists()
     );
     assert!(
         data_dir
             .path()
-            .join("rustup/artifacts/group/beta/second/2026-08-20/rustc.tar.xz")
+            .join("rustup/artifacts/second/objects/2026-08-20/rustc.tar.xz")
             .exists()
     );
 }
@@ -566,6 +842,12 @@ fn service_for(upstream: Url, data_dir: PathBuf) -> RustupService {
             .expect("source graph"),
         },
         cargo: None,
+        vscode: None,
+        docker: None,
+        npm: None,
+        nuget: None,
+        pypi: None,
+        upm: None,
     })
     .expect("service")
 }

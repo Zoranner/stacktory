@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    http::{StatusCode, header::LOCATION},
+    http::{HeaderMap, StatusCode, header::LOCATION},
     routing::get,
 };
 use stacktory::{
@@ -31,6 +31,105 @@ fn group_resolves_members_in_declared_order() {
         .collect::<Vec<_>>();
 
     assert_eq!(members, ["second", "first"]);
+}
+
+#[tokio::test]
+async fn upstream_requests_identify_stacktory() {
+    let upstream = start_server(Router::new().route(
+        "/artifact",
+        get(|headers: HeaderMap| async move {
+            (headers
+                .get("user-agent")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_owned(),)
+        }),
+    ))
+    .await;
+    let pool = SourcePool::new(
+        "rustup",
+        SourceGraph::new(vec![proxy("primary", upstream.as_str())]).expect("source graph"),
+    )
+    .expect("source pool");
+
+    let response = pool
+        .fetch("primary", "artifact", FetchOperation::Metadata)
+        .await
+        .expect("source response");
+
+    assert_eq!(response.body, b"Stacktory/0.1.0");
+}
+
+#[tokio::test]
+async fn marketplace_query_posts_json_with_fixed_gallery_headers() {
+    let upstream = start_server(Router::new().route(
+        "/extensionquery",
+        axum::routing::post(|headers: HeaderMap, body: String| async move {
+            let accept = headers
+                .get("accept")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default();
+            let content_type = headers
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default();
+            let market_client = headers
+                .get("x-market-client-id")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default();
+            format!("{accept}|{content_type}|{market_client}|{body}")
+        }),
+    ))
+    .await;
+    let pool = SourcePool::new(
+        "vscode",
+        SourceGraph::new(vec![proxy("official", upstream.as_str())]).expect("source graph"),
+    )
+    .expect("source pool");
+
+    let response = pool
+        .post_json("official", "extensionquery", br#"{"filters":[]}"#)
+        .await
+        .expect("query response");
+
+    assert_eq!(
+        response.body,
+        b"application/json;api-version=3.0-preview.1|application/json|VSCode|{\"filters\":[]}"
+    );
+}
+
+#[tokio::test]
+async fn fetcher_decodes_gzip_response_before_returning_body() {
+    let upstream = start_server(Router::new().route(
+        "/manifest",
+        get(|| async {
+            (
+                [
+                    ("content-type", "application/json"),
+                    ("content-encoding", "gzip"),
+                ],
+                [
+                    0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0a, 0xab, 0x56, 0xca,
+                    0xcf, 0x56, 0xb2, 0x2a, 0x29, 0x2a, 0x4d, 0xad, 0x05, 0x00, 0x90, 0x5f, 0xd4,
+                    0xa7, 0x0b, 0x00, 0x00, 0x00,
+                ],
+            )
+        }),
+    ))
+    .await;
+    let pool = SourcePool::new(
+        "vscode",
+        SourceGraph::new(vec![proxy("official", upstream.as_str())]).expect("source graph"),
+    )
+    .expect("source pool");
+
+    let response = pool
+        .fetch("official", "manifest", FetchOperation::Artifact)
+        .await
+        .expect("manifest response");
+
+    assert_eq!(response.body, br#"{"ok":true}"#);
+    assert_eq!(response.content_type.as_deref(), Some("application/json"));
 }
 
 #[tokio::test]
@@ -132,7 +231,7 @@ async fn request_key_rejects_absolute_and_abnormal_segments() {
         "artifact\u{0000}part",
     ] {
         let result = pool
-            .fetch("primary", request_key, FetchOperation::Get)
+            .fetch("primary", request_key, FetchOperation::Metadata)
             .await;
         if request_key == "/artifact" {
             assert!(matches!(
@@ -163,7 +262,7 @@ async fn request_key_preserves_configured_base_path() {
     .expect("source pool");
 
     let response = pool
-        .fetch("primary", "artifact", FetchOperation::Get)
+        .fetch("primary", "artifact", FetchOperation::Metadata)
         .await
         .expect("base path response");
 
@@ -207,7 +306,7 @@ async fn redirect_is_not_followed_and_can_fallback() {
     .expect("source pool");
 
     let response = pool
-        .fetch("fallbacks", "artifact", FetchOperation::Get)
+        .fetch("fallbacks", "artifact", FetchOperation::Metadata)
         .await
         .expect("fallback response");
 
@@ -247,7 +346,7 @@ async fn terminal_client_error_does_not_fallback() {
     .expect("source pool");
 
     let result = pool
-        .fetch("fallbacks", "artifact", FetchOperation::Get)
+        .fetch("fallbacks", "artifact", FetchOperation::Metadata)
         .await;
 
     assert!(matches!(
@@ -294,7 +393,7 @@ async fn unauthorized_and_forbidden_do_not_fallback() {
 
     for request_key in ["unauthorized", "forbidden"] {
         let result = pool
-            .fetch("fallbacks", request_key, FetchOperation::Get)
+            .fetch("fallbacks", request_key, FetchOperation::Metadata)
             .await;
         assert!(matches!(
             result,
@@ -391,7 +490,7 @@ async fn request_timeout_and_rate_limit_do_not_fallback() {
 
     for request_key in ["timeout", "rate-limit"] {
         let result = pool
-            .fetch("fallbacks", request_key, FetchOperation::Get)
+            .fetch("fallbacks", request_key, FetchOperation::Metadata)
             .await;
         assert!(matches!(
             result,
@@ -427,7 +526,7 @@ async fn fetch_from_pool(
     entry_name: &str,
     request_key: &str,
 ) -> Result<SourceResponse, SourcePoolError> {
-    pool.fetch(entry_name, request_key, FetchOperation::Get)
+    pool.fetch(entry_name, request_key, FetchOperation::Metadata)
         .await
 }
 

@@ -129,8 +129,8 @@ fn deployment_config_matches_the_runtime_schema() {
             .as_ref()
             .expect("cargo configuration")
             .sources
-            .get("crates-io")
-            .expect("crates.io source")
+            .get("official")
+            .expect("cargo official source")
             .source_type,
         stacktory::SourceType::Proxy
     );
@@ -140,13 +140,78 @@ fn deployment_config_matches_the_runtime_schema() {
             .as_ref()
             .expect("cargo configuration")
             .sources
-            .get("crates-io")
-            .expect("crates.io source")
+            .get("official")
+            .expect("cargo official source")
             .base_url
             .as_ref()
-            .expect("crates.io source URL")
+            .expect("cargo official source URL")
             .as_str(),
         "https://index.crates.io/"
+    );
+    assert_source_names(
+        &config.rustup.sources,
+        &["aliyun", "group", "official", "tsinghua"],
+    );
+    assert_source_names(
+        &config.cargo.as_ref().expect("cargo configuration").sources,
+        &["group", "official", "ustc"],
+    );
+}
+
+#[test]
+fn deployment_config_retains_all_configured_ecosystem_source_graphs() {
+    let config = Config::from_toml(DEPLOYMENT_CONFIG).expect("deployment config");
+
+    assert_source_names(
+        &config.docker.expect("docker configuration").sources,
+        &[
+            "aliyun",
+            "ghcr",
+            "group",
+            "microsoft",
+            "official",
+            "quay",
+            "unstructured",
+            "xuanyuan",
+        ],
+    );
+    assert_source_names(
+        &config.npm.expect("npm configuration").sources,
+        &["binary", "group", "huawei", "npmjs", "npmmirror"],
+    );
+    assert_source_names(
+        &config.nuget.expect("nuget configuration").sources,
+        &["group", "official"],
+    );
+    assert_source_names(
+        &config.pypi.expect("pypi configuration").sources,
+        &["group", "official", "tsinghua", "ustc"],
+    );
+    assert_source_names(
+        &config.upm.expect("upm configuration").sources,
+        &["cesium", "group", "openupm", "unity"],
+    );
+    assert_source_names(
+        &config
+            .vscode
+            .as_ref()
+            .expect("vscode configuration")
+            .sources,
+        &["group", "official"],
+    );
+    assert_eq!(
+        config
+            .vscode
+            .as_ref()
+            .expect("vscode configuration")
+            .sources
+            .get("official")
+            .expect("vscode official source")
+            .base_url
+            .as_ref()
+            .expect("vscode official source URL")
+            .as_str(),
+        "https://marketplace.visualstudio.com/_apis/public/gallery"
     );
 }
 
@@ -193,4 +258,13 @@ base_url = \"https://fallback.example.internal\"\n"
             .collect::<Vec<_>>(),
         ["cargo-primary", "cargo-fallback"]
     );
+}
+
+fn assert_source_names(graph: &stacktory::SourceGraph, expected: &[&str]) {
+    for name in expected {
+        assert!(
+            graph.get(name).is_some(),
+            "source should be configured: {name}"
+        );
+    }
 }
