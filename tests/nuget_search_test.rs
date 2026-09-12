@@ -65,7 +65,13 @@ async fn search_resource_is_exposed_and_query_is_forwarded_safely() {
         search["data"][0]["registration"],
         "http://127.0.0.1:18761/mirror/nuget/official/registration/newtonsoft.json/index.json"
     );
+    assert_eq!(
+        search["@context"]["@base"],
+        "http://127.0.0.1:18761/mirror/nuget/official/registration/"
+    );
+    assert!(search["data"][0]["iconUrl"].is_null());
     assert!(!String::from_utf8_lossy(&body).contains("azuresearch"));
+    assert!(!String::from_utf8_lossy(&body).contains("nuget.example"));
 }
 
 fn get_request(path: &str) -> Request<Body> {
@@ -144,10 +150,21 @@ async fn start_search_server() -> (Url, SocketAddr) {
                     return (StatusCode::BAD_REQUEST, "unexpected query").into_response();
                 }
                 axum::Json(serde_json::json!({
+                    "@context": {
+                        "@base": format!(
+                            "http://nuget.example:{}/v3/registration/",
+                            address.port()
+                        )
+                    },
                     "totalHits": 1,
                     "data": [{
+                        "@id": format!(
+                            "http://nuget.example:{}/v3/registration/newtonsoft.json/index.json",
+                            address.port()
+                        ),
                         "id": "Newtonsoft.Json",
                         "version": "13.0.3",
+                        "iconUrl": "http://nuget.example/icon",
                         "registration": format!(
                             "http://nuget.example:{}/v3/registration/newtonsoft.json/index.json",
                             address.port()

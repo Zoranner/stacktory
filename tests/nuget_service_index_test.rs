@@ -45,7 +45,7 @@ async fn service_index_rewrites_restore_resources_and_omits_unsupported_resource
         .expect("service index body");
     let index: serde_json::Value = serde_json::from_slice(&body).expect("service index JSON");
     let resources = index["resources"].as_array().expect("resources");
-    assert_eq!(resources.len(), 2);
+    assert_eq!(resources.len(), 3);
 
     let registration = resources
         .iter()
@@ -68,7 +68,7 @@ async fn service_index_rewrites_restore_resources_and_omits_unsupported_resource
         package_base,
         "http://127.0.0.1:18761/mirror/nuget/official/package/"
     );
-    assert!(!String::from_utf8_lossy(&body).contains("SearchQueryService"));
+    assert!(String::from_utf8_lossy(&body).contains("SearchQueryService"));
     assert!(!String::from_utf8_lossy(&body).contains("evil.example"));
 
     assert!(

@@ -156,6 +156,20 @@ fn rewrite_registration_links(
         NugetError::InvalidSearch("search response is not a JSON object".to_owned())
     })?;
     for (key, value) in object.iter_mut() {
+        if key == "@base"
+            && let Some(upstream) = value.as_str()
+        {
+            let upstream = Url::parse(upstream).map_err(|_| {
+                NugetError::InvalidSearch("search context base URL is invalid".to_owned())
+            })?;
+            if !same_origin(registration_base, &upstream) {
+                return Err(NugetError::InvalidSearch(
+                    "search context base URL is outside the discovered resource".to_owned(),
+                ));
+            }
+            *value = Value::String(local_registration_base_url(&service.root_url, entry_name));
+            continue;
+        }
         if key == "registration"
             && let Some(upstream) = value.as_str()
         {
@@ -170,11 +184,31 @@ fn rewrite_registration_links(
             ));
             continue;
         }
+        if key == "@id"
+            && let Some(upstream) = value.as_str()
+        {
+            let upstream = Url::parse(upstream).map_err(|_| {
+                NugetError::InvalidSearch("search resource ID is invalid".to_owned())
+            })?;
+            let relative = registration_relative_path(registration_base, &upstream)?;
+            *value = Value::String(local_registration_url(
+                &service.root_url,
+                entry_name,
+                &relative,
+            ));
+            continue;
+        }
+        if key.ends_with("Url") {
+            *value = Value::Null;
+            continue;
+        }
         if value.is_object() {
             rewrite_registration_links(value, Some(registration_base), service, entry_name)?;
         } else if value.is_array() {
             for item in value.as_array_mut().expect("checked array") {
-                rewrite_registration_links(item, Some(registration_base), service, entry_name)?;
+                if item.is_object() || item.is_array() {
+                    rewrite_registration_links(item, Some(registration_base), service, entry_name)?;
+                }
             }
         }
     }
@@ -222,6 +256,16 @@ fn local_registration_url(root_url: &Url, entry_name: &str, relative: &str) -> S
     url.set_query(None);
     url.set_fragment(None);
     url.to_string()
+}
+
+fn local_registration_base_url(root_url: &Url, entry_name: &str) -> String {
+    local_registration_url(root_url, entry_name, "")
+}
+
+fn same_origin(left: &Url, right: &Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
 }
 
 fn is_retryable(error: &NugetError) -> bool {
