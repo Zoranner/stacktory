@@ -107,7 +107,9 @@ fn cache_path_contains_all_npm_identity_dimensions() {
 
 fn cache_key(selected_proxy: &str) -> NpmCacheKey {
     NpmCacheKey {
+        ecosystem: "npm".to_owned(),
         entry: "group".to_owned(),
+        protocol_variant: "npm-compatible-registry".to_owned(),
         package: "left-pad".to_owned(),
         version: "1.0.0".to_owned(),
         representation: "tarball".to_owned(),

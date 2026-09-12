@@ -3,7 +3,7 @@ use std::{fs, sync::Arc};
 use stacktory::{
     Config, SourcePool, cargo::CargoAdapter, docker::register_adapter,
     http::router_with_rustup_and_registry, npm::NpmAdapter, service::RustupService,
-    sources::registry::AdapterRegistry, vscode::VscodeAdapter,
+    sources::registry::AdapterRegistry, upm::UpmAdapter, vscode::VscodeAdapter,
 };
 use tokio::net::TcpListener;
 
@@ -34,6 +34,16 @@ fn configured_registry(config: &mut Config) -> Result<AdapterRegistry, Box<dyn s
             "npm",
             Arc::new(SourcePool::new("npm", npm.sources)?),
             Arc::new(NpmAdapter::new(
+                config.root_url.clone(),
+                config.data_dir.clone(),
+            )),
+        )?;
+    }
+    if let Some(upm) = config.upm.take() {
+        registry.register(
+            "upm",
+            Arc::new(SourcePool::new("upm", upm.sources)?),
+            Arc::new(UpmAdapter::new(
                 config.root_url.clone(),
                 config.data_dir.clone(),
             )),
@@ -73,7 +83,7 @@ mod tests {
     use url::Url;
 
     #[tokio::test]
-    async fn configured_npm_is_registered_without_registering_upm() {
+    async fn configured_npm_and_upm_are_registered_separately() {
         let mut config = Config {
             listen_address: "127.0.0.1".parse::<IpAddr>().expect("address"),
             listen_port: 18761,
@@ -113,7 +123,7 @@ mod tests {
             .expect("npm response");
         let upm_response = router
             .oneshot(
-                Request::get("/mirror/upm/unity/com.example.package")
+                Request::get("/mirror/upm/unity/com.company.package")
                     .body(Body::empty())
                     .expect("upm request"),
             )
@@ -121,7 +131,7 @@ mod tests {
             .expect("upm response");
 
         assert_ne!(npm_response.status(), axum::http::StatusCode::NOT_FOUND);
-        assert_eq!(upm_response.status(), axum::http::StatusCode::NOT_FOUND);
+        assert_ne!(upm_response.status(), axum::http::StatusCode::NOT_FOUND);
     }
 
     fn proxy(name: &str, base_url: &str) -> SourceConfig {

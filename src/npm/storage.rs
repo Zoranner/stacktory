@@ -14,7 +14,9 @@ use super::{metadata::NpmArtifactDescriptor, path::validate_package_name};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NpmCacheKey {
+    pub ecosystem: String,
     pub entry: String,
+    pub protocol_variant: String,
     pub package: String,
     pub version: String,
     pub representation: String,
@@ -43,6 +45,7 @@ pub struct VerifiedArtifact {
 #[derive(Debug)]
 pub struct NpmStorage {
     data_dir: PathBuf,
+    ecosystem: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -71,8 +74,13 @@ pub enum StorageError {
 
 impl NpmStorage {
     pub fn new(data_dir: impl Into<PathBuf>) -> Self {
+        Self::new_for_ecosystem(data_dir, "npm")
+    }
+
+    pub fn new_for_ecosystem(data_dir: impl Into<PathBuf>, ecosystem: &str) -> Self {
         Self {
             data_dir: data_dir.into(),
+            ecosystem: ecosystem.to_owned(),
         }
     }
 
@@ -84,6 +92,9 @@ impl NpmStorage {
         contents: &[u8],
     ) -> Result<VerifiedArtifact, StorageError> {
         validate_key(key)?;
+        if key.ecosystem != self.ecosystem {
+            return Err(StorageError::InvalidIdentity(key.ecosystem.clone()));
+        }
         validate_artifact_key(artifact_key)?;
         let upstream_verified = verify_contents(artifact_key, expectation, contents)?;
         let result = VerifiedArtifact {
@@ -101,6 +112,9 @@ impl NpmStorage {
         expectation: &IntegrityExpectation,
     ) -> Result<Option<Vec<u8>>, StorageError> {
         validate_key(key)?;
+        if key.ecosystem != self.ecosystem {
+            return Err(StorageError::InvalidIdentity(key.ecosystem.clone()));
+        }
         validate_artifact_key(artifact_key)?;
         let path = self.artifact_path(key, artifact_key);
         let contents = match fs::read(&path) {
@@ -125,6 +139,9 @@ impl NpmStorage {
         descriptors: &[NpmArtifactDescriptor],
     ) -> Result<(), StorageError> {
         validate_metadata_key(key)?;
+        if key.ecosystem != self.ecosystem {
+            return Err(StorageError::InvalidIdentity(key.ecosystem.clone()));
+        }
         for descriptor in descriptors {
             validate_artifact_key(&descriptor.artifact_key)?;
             atomic_write(
@@ -163,7 +180,10 @@ impl NpmStorage {
         let pointer: MetadataPointer = toml::from_str(&pointer_contents)
             .map_err(|error| StorageError::Io(io::Error::other(error)))?;
         validate_metadata_key(&pointer.key)?;
-        if pointer.key.entry != entry || pointer.key.package != package {
+        if pointer.key.ecosystem != self.ecosystem
+            || pointer.key.entry != entry
+            || pointer.key.package != package
+        {
             return Err(StorageError::InvalidIdentity(pointer.key.package));
         }
         let body = fs::read(self.metadata_body_path(&pointer.key))?;
@@ -194,7 +214,7 @@ impl NpmStorage {
 
     pub fn artifact_path(&self, key: &NpmCacheKey, artifact_key: &str) -> PathBuf {
         self.data_dir
-            .join("npm")
+            .join(&self.ecosystem)
             .join("artifacts")
             .join(safe_component(&key.selected_proxy))
             .join("objects")
@@ -207,7 +227,7 @@ impl NpmStorage {
 
     fn metadata_body_path(&self, key: &NpmCacheKey) -> PathBuf {
         self.data_dir
-            .join("npm")
+            .join(&self.ecosystem)
             .join("metadata")
             .join(safe_component(&key.entry))
             .join(safe_component(&key.package))
@@ -221,7 +241,7 @@ impl NpmStorage {
 
     fn metadata_pointer_path(&self, entry: &str, package: &str) -> PathBuf {
         self.data_dir
-            .join("npm")
+            .join(&self.ecosystem)
             .join("metadata")
             .join(safe_component(entry))
             .join(safe_component(package))
@@ -230,7 +250,7 @@ impl NpmStorage {
 
     fn descriptor_path(&self, entry: &str, artifact_key: &str) -> PathBuf {
         self.data_dir
-            .join("npm")
+            .join(&self.ecosystem)
             .join("metadata")
             .join(safe_component(entry))
             .join("descriptors")
@@ -242,7 +262,9 @@ fn validate_key(key: &NpmCacheKey) -> Result<(), StorageError> {
     validate_package_name(&key.package)
         .map_err(|error| StorageError::InvalidIdentity(error.to_string()))?;
     for value in [
+        key.ecosystem.as_str(),
         key.entry.as_str(),
+        key.protocol_variant.as_str(),
         key.version.as_str(),
         key.representation.as_str(),
         key.selected_proxy.as_str(),

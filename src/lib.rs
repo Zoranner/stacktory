@@ -11,6 +11,7 @@ pub mod rustup;
 pub mod service;
 pub mod sources;
 pub mod storage;
+pub mod upm;
 pub mod vscode;
 
 pub use config::{

@@ -48,6 +48,8 @@ pub enum NpmMetadataError {
     InvalidTarballUrl(String),
     #[error("npm entry name `{0}` is invalid")]
     InvalidEntryName(String),
+    #[error("package name `{0}` is invalid")]
+    InvalidPackageName(String),
     #[error(transparent)]
     Path(#[from] NpmPathError),
 }
@@ -56,7 +58,19 @@ pub fn parse_metadata(
     source: &[u8],
     requested_package: &str,
 ) -> Result<NpmMetadata, NpmMetadataError> {
-    validate_package_name(requested_package)?;
+    parse_compatible_metadata(source, requested_package, is_npm_package_name)
+}
+
+pub fn parse_compatible_metadata(
+    source: &[u8],
+    requested_package: &str,
+    package_validator: fn(&str) -> bool,
+) -> Result<NpmMetadata, NpmMetadataError> {
+    if !package_validator(requested_package) {
+        return Err(NpmMetadataError::InvalidPackageName(
+            requested_package.to_owned(),
+        ));
+    }
     let requested = requested_package.to_owned();
     let body: Value = serde_json::from_slice(source)?;
     let actual =
@@ -102,6 +116,26 @@ pub fn rewrite_metadata(
     entry_name: &str,
     selected_proxy: &str,
 ) -> Result<RewrittenMetadata, NpmMetadataError> {
+    rewrite_compatible_metadata(
+        metadata,
+        root_url,
+        "npm",
+        "npm",
+        entry_name,
+        selected_proxy,
+        is_npm_package_name,
+    )
+}
+
+pub fn rewrite_compatible_metadata(
+    metadata: &NpmMetadata,
+    root_url: &Url,
+    ecosystem: &str,
+    route_ecosystem: &str,
+    entry_name: &str,
+    selected_proxy: &str,
+    package_validator: fn(&str) -> bool,
+) -> Result<RewrittenMetadata, NpmMetadataError> {
     validate_entry_name(entry_name)?;
     if selected_proxy.is_empty() {
         return Err(NpmMetadataError::InvalidEntryName(
@@ -118,7 +152,9 @@ pub fn rewrite_metadata(
             actual: String::new(),
         })?
         .to_owned();
-    validate_package_name(&package)?;
+    if !package_validator(&package) {
+        return Err(NpmMetadataError::InvalidPackageName(package));
+    }
 
     let mut body = metadata.body.clone();
     let versions = body
@@ -146,6 +182,7 @@ pub fn rewrite_metadata(
         validate_tarball_url(&upstream_tarball)?;
         let descriptor = NpmArtifactDescriptor {
             artifact_key: artifact_key(
+                ecosystem,
                 entry_name,
                 &package,
                 version,
@@ -165,7 +202,12 @@ pub fn rewrite_metadata(
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         };
-        let internal_url = internal_tarball_url(root_url, entry_name, &descriptor.artifact_key);
+        let internal_url = internal_tarball_url(
+            root_url,
+            route_ecosystem,
+            entry_name,
+            &descriptor.artifact_key,
+        );
         dist.insert("tarball".to_owned(), Value::String(internal_url));
         descriptors.push(descriptor);
     }
@@ -174,6 +216,7 @@ pub fn rewrite_metadata(
 }
 
 fn artifact_key(
+    ecosystem: &str,
     entry_name: &str,
     package: &str,
     version: &str,
@@ -181,16 +224,21 @@ fn artifact_key(
     upstream_tarball: &str,
 ) -> String {
     let identity = format!(
-        "npm\0{entry_name}\0{package}\0{version}\0tarball\0{selected_proxy}\0{upstream_tarball}"
+        "{ecosystem}\0{entry_name}\0registry\0{package}\0{version}\0tarball\0{selected_proxy}\0{upstream_tarball}"
     );
     format!("{:x}", Sha256::digest(identity.as_bytes()))
 }
 
-fn internal_tarball_url(root_url: &Url, entry_name: &str, artifact_key: &str) -> String {
+fn internal_tarball_url(
+    root_url: &Url,
+    route_ecosystem: &str,
+    entry_name: &str,
+    artifact_key: &str,
+) -> String {
     let mut url = root_url.clone();
     let base_path = root_url.path().trim_end_matches('/');
     url.set_path(&format!(
-        "{base_path}/mirror/npm/{entry_name}/tarballs/{artifact_key}"
+        "{base_path}/mirror/{route_ecosystem}/{entry_name}/tarballs/{artifact_key}"
     ));
     url.set_query(None);
     url.set_fragment(None);
@@ -228,4 +276,8 @@ fn validate_tarball_url(value: &str) -> Result<(), NpmMetadataError> {
         return Err(NpmMetadataError::InvalidTarballUrl(value.to_owned()));
     }
     Ok(())
+}
+
+fn is_npm_package_name(value: &str) -> bool {
+    validate_package_name(value).is_ok()
 }

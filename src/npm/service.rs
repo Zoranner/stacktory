@@ -19,10 +19,49 @@ use crate::{
 };
 
 use super::{
-    metadata::{NpmArtifactDescriptor, NpmMetadataError, parse_metadata, rewrite_metadata},
+    metadata::{NpmArtifactDescriptor, NpmMetadataError},
     path::{parse_artifact_path, parse_metadata_path},
     storage::{IntegrityExpectation, NpmCacheKey, NpmStorage, StorageError},
 };
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RegistryFlavor {
+    pub(crate) ecosystem: &'static str,
+    pub(crate) route: &'static str,
+    pub(crate) parse_package_path: fn(&str) -> Result<String, String>,
+    pub(crate) is_valid_package: fn(&str) -> bool,
+    pub(crate) upstream_package_path: fn(&str) -> String,
+}
+
+impl RegistryFlavor {
+    pub(crate) const fn npm() -> Self {
+        Self {
+            ecosystem: "npm",
+            route: "npm",
+            parse_package_path: |path| {
+                parse_metadata_path(path)
+                    .map(|parsed| parsed.package)
+                    .map_err(|error| error.to_string())
+            },
+            is_valid_package: |package| super::path::validate_package_name(package).is_ok(),
+            upstream_package_path: |package| package.replacen('/', "%2F", 1),
+        }
+    }
+
+    pub(crate) const fn upm() -> Self {
+        Self {
+            ecosystem: "upm",
+            route: "upm",
+            parse_package_path: |path| {
+                crate::upm::path::parse_metadata_path(path)
+                    .map(|parsed| parsed.package)
+                    .map_err(|error| error.to_string())
+            },
+            is_valid_package: |package| crate::upm::path::validate_package_name(package).is_ok(),
+            upstream_package_path: |package| package.to_owned(),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct NpmAdapter {
@@ -31,6 +70,7 @@ pub struct NpmAdapter {
 
 #[derive(Debug)]
 pub struct NpmService {
+    flavor: RegistryFlavor,
     root_url: Url,
     storage: NpmStorage,
     audit: AuditSink,
@@ -52,8 +92,16 @@ pub enum NpmError {
 
 impl NpmAdapter {
     pub fn new(root_url: Url, data_dir: impl Into<PathBuf>) -> Self {
+        Self::new_with_flavor(root_url, data_dir, RegistryFlavor::npm())
+    }
+
+    pub(crate) fn new_with_flavor(
+        root_url: Url,
+        data_dir: impl Into<PathBuf>,
+        flavor: RegistryFlavor,
+    ) -> Self {
         Self {
-            service: Arc::new(NpmService::new(root_url, data_dir)),
+            service: Arc::new(NpmService::new_with_flavor(root_url, data_dir, flavor)),
         }
     }
 
@@ -64,15 +112,24 @@ impl NpmAdapter {
 
 impl NpmService {
     pub fn new(root_url: Url, data_dir: impl Into<PathBuf>) -> Self {
+        Self::new_with_flavor(root_url, data_dir, RegistryFlavor::npm())
+    }
+
+    pub(crate) fn new_with_flavor(
+        root_url: Url,
+        data_dir: impl Into<PathBuf>,
+        flavor: RegistryFlavor,
+    ) -> Self {
         let data_dir = data_dir.into();
         Self {
+            flavor,
             root_url,
-            storage: NpmStorage::new(data_dir.clone()),
+            storage: NpmStorage::new_for_ecosystem(data_dir.clone(), flavor.ecosystem),
             audit: AuditSink::new(data_dir),
         }
     }
 
-    async fn handle_request(
+    pub(crate) async fn handle_request(
         &self,
         entry_name: &str,
         request: AdapterRequest,
@@ -92,8 +149,8 @@ impl NpmService {
                 Err(error) => npm_error_response(&error),
             };
         }
-        let package = match parse_metadata_path(path) {
-            Ok(path) => path.package,
+        let package = match (self.flavor.parse_package_path)(path) {
+            Ok(package) => package,
             Err(_) => return StatusCode::NOT_FOUND.into_response(),
         };
         match self.metadata(entry_name, &package, pool).await {
@@ -112,7 +169,7 @@ impl NpmService {
             && is_allowed_source(pool, entry_name, &snapshot.key.selected_proxy)
         {
             self.record(
-                "npm_metadata_read",
+                &self.event("metadata_read"),
                 entry_name,
                 package,
                 Some(&snapshot.key.selected_proxy),
@@ -122,7 +179,7 @@ impl NpmService {
             return Ok(snapshot.body);
         }
 
-        let request_key = upstream_package_path(package);
+        let request_key = (self.flavor.upstream_package_path)(package);
         let members = pool
             .proxy_members(entry_name)
             .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
@@ -145,7 +202,11 @@ impl NpmService {
                 }
                 Err(error) => return Err(error.into()),
             };
-            let metadata = match parse_metadata(&response.body, package) {
+            let metadata = match crate::npm::metadata::parse_compatible_metadata(
+                &response.body,
+                package,
+                self.flavor.is_valid_package,
+            ) {
                 Ok(metadata) => metadata,
                 Err(error) => {
                     all_not_found = false;
@@ -153,11 +214,14 @@ impl NpmService {
                     continue;
                 }
             };
-            let rewritten = match rewrite_metadata(
+            let rewritten = match crate::npm::metadata::rewrite_compatible_metadata(
                 &metadata,
                 &self.root_url,
+                self.flavor.ecosystem,
+                self.flavor.route,
                 entry_name,
                 &response.source_name,
+                self.flavor.is_valid_package,
             ) {
                 Ok(rewritten) => rewritten,
                 Err(error) => {
@@ -177,7 +241,9 @@ impl NpmService {
             let body = serde_json::to_vec(&rewritten.body)
                 .map_err(|error| StorageError::Io(io::Error::other(error)))?;
             let key = NpmCacheKey {
+                ecosystem: self.flavor.ecosystem.to_owned(),
                 entry: entry_name.to_owned(),
+                protocol_variant: "npm-compatible-registry".to_owned(),
                 package: package.to_owned(),
                 version: "catalog".to_owned(),
                 representation: "metadata".to_owned(),
@@ -186,7 +252,7 @@ impl NpmService {
             self.storage
                 .publish_metadata(&key, &body, &rewritten.descriptors)?;
             self.record(
-                "npm_metadata_published",
+                &self.event("metadata_published"),
                 entry_name,
                 package,
                 Some(&response.source_name),
@@ -197,7 +263,7 @@ impl NpmService {
         }
 
         self.record(
-            "npm_metadata_fetch_failed",
+            &self.event("metadata_fetch_failed"),
             entry_name,
             package,
             None,
@@ -270,7 +336,9 @@ impl NpmService {
                 }
             };
             let key = NpmCacheKey {
+                ecosystem: self.flavor.ecosystem.to_owned(),
                 entry: entry_name.to_owned(),
+                protocol_variant: "npm-compatible-registry".to_owned(),
                 package: candidate.package.clone(),
                 version: candidate.version.clone(),
                 representation: "tarball".to_owned(),
@@ -282,7 +350,7 @@ impl NpmService {
                     .read_verified_artifact(&key, artifact_key, &expectation)?
             {
                 self.record(
-                    "npm_artifact_read",
+                    &self.event("artifact_read"),
                     entry_name,
                     artifact_key,
                     Some(&member.name),
@@ -319,7 +387,7 @@ impl NpmService {
             ) {
                 Ok(_) => {
                     self.record(
-                        "npm_artifact_published",
+                        &self.event("artifact_published"),
                         entry_name,
                         artifact_key,
                         Some(&member.name),
@@ -337,7 +405,7 @@ impl NpmService {
         }
 
         self.record(
-            "npm_artifact_fetch_failed",
+            &self.event("artifact_fetch_failed"),
             entry_name,
             artifact_key,
             None,
@@ -361,12 +429,24 @@ impl NpmService {
         let response = pool
             .fetch_proxy_path(
                 &member.name,
-                &upstream_package_path(package),
+                &(self.flavor.upstream_package_path)(package),
                 FetchOperation::Metadata,
             )
             .await?;
-        let metadata = parse_metadata(&response.body, package)?;
-        let rewritten = rewrite_metadata(&metadata, &self.root_url, entry_name, &member.name)?;
+        let metadata = crate::npm::metadata::parse_compatible_metadata(
+            &response.body,
+            package,
+            self.flavor.is_valid_package,
+        )?;
+        let rewritten = crate::npm::metadata::rewrite_compatible_metadata(
+            &metadata,
+            &self.root_url,
+            self.flavor.ecosystem,
+            self.flavor.route,
+            entry_name,
+            &member.name,
+            self.flavor.is_valid_package,
+        )?;
         if !descriptors_match_source(&rewritten.descriptors, member) {
             return Err(NpmError::Metadata(NpmMetadataError::InvalidTarballUrl(
                 package.to_owned(),
@@ -377,6 +457,10 @@ impl NpmService {
             .into_iter()
             .find(|descriptor| descriptor.version == version)
             .ok_or_else(|| NpmError::MissingArtifact(version.to_owned()))
+    }
+
+    fn event(&self, suffix: &str) -> String {
+        format!("{}_{}", self.flavor.ecosystem, suffix)
     }
 
     fn record(
@@ -397,7 +481,7 @@ impl NpmService {
                 "success"
             },
             AuditDetails {
-                ecosystem: Some("npm"),
+                ecosystem: Some(self.flavor.ecosystem),
                 entry_name: Some(entry_name),
                 object_key: Some(object_key),
                 selected_proxy,
@@ -440,10 +524,6 @@ fn expectation(descriptor: &NpmArtifactDescriptor) -> IntegrityExpectation {
         integrity: descriptor.integrity.clone(),
         shasum: descriptor.shasum.clone(),
     }
-}
-
-fn upstream_package_path(package: &str) -> String {
-    package.replacen('/', "%2F", 1)
 }
 
 fn descriptors_match_source(
