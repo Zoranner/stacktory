@@ -13,7 +13,7 @@ Stacktory 为公司内网开发机提供统一的工具链和软件包下载入�
 | npm 包 | 可用 | 配置 npm registry 后使用 `npm install` 或 `npm ci` |
 | Unity UPM 包 | 可用 | 在 Unity 项目中配置 Stacktory scoped registry |
 | PyPI 包 | 暂不可用 | 请勿配置 pip |
-| NuGet 包 | 暂不可用 | 请勿配置 NuGet |
+| NuGet 包 | 只读 restore 适配器已实现，真实客户端待联调 | 配置 NuGet source 指向 `/mirror/nuget/{name}/v3/index.json` |
 
 ## 开始使用
 
@@ -26,4 +26,4 @@ Stacktory 为公司内网开发机提供统一的工具链和软件包下载入�
 - 是否允许使用某个直接来源入口，例如 `official`。
 - 公司提供的专用 VS Code 产品版本。
 
-用户不要自行猜测入口名称、修改上游地址或把暂不可用的客户端配置到 Stacktory。
+用户不要自行猜测入口名称或修改上游地址；NuGet 仅支持 restore 所需的只读接口。

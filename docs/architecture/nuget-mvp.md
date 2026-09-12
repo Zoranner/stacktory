@@ -2,9 +2,9 @@
 
 ## 状态与目标
 
-本文档定义 NuGet V3 restore 所需的只读适配边界。当前已完成 service index 资源发现的
-部分实现，但 registration、package content 和运行时注册尚未完成；本文档中的其他
-路径仍是目标契约。本 MVP 不引入数据库。
+本文档定义并记录已实现的 NuGet V3 restore 只读适配边界。当前已完成 service index、
+registration、package content、来源绑定、缓存、审计和运行时注册；真实外部 NuGet
+服务与 `dotnet restore` 仍需单独联调。本 MVP 不引入数据库。
 
 首期只服务 restore 所需的 V3 service index、registration 和 package content。
 搜索、push、delete、API key、账号、符号服务器和写入型 NuGet API 保持后续
@@ -141,8 +141,8 @@ service index、registration 和 package content 分别缓存。相同 package I
 - 未知 service resource、外部重定向、路径穿越和写入型请求被拒绝。
 - 未注册 `/mirror/nuget/{name}/...` 之外的假路由不暴露。
 
-真实 `dotnet restore`、外部 NuGet V3 服务和生产部署行为必须在适配器实现后
-单独联调。本文档不表示当前仓库已经支持 NuGet restore。
+真实 `dotnet restore`、外部 NuGet V3 服务和生产部署行为仍需在适配器实现后
+单独联调；本地协议测试通过不替代真实客户端验证。
 
 ## 官方协议依据
 

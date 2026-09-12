@@ -15,4 +15,4 @@ Stacktory 的用户文档按制品库分别维护。请选择正在使用的制�
 | npm | 可用 | [npm](npm.md) |
 | Unity UPM | 可用 | [Unity UPM](upm.md) |
 | PyPI | 暂不可用 | [PyPI](pypi.md) |
-| NuGet | 暂不可用 | [NuGet](nuget.md) |
+| NuGet | 只读 restore 适配器已实现，真实客户端待联调 | [NuGet](nuget.md) |

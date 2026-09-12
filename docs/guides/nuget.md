@@ -2,12 +2,42 @@
 
 ## 状态
 
-NuGet 适配器当前尚未向用户开放。NuGet service index 的部分实现不代表 `dotnet restore` 已经可以使用 Stacktory。
+Stacktory 已实现 NuGet V3 restore 所需的只读 service index、registration
+和 `.nupkg` 下载路由。真实外部 NuGet 服务和 `dotnet restore` 仍需按部署环境
+单独联调确认。
 
-请不要把 Stacktory 添加为 NuGet source：
+## 配置 NuGet source
+
+将管理员提供的 Stacktory 地址和入口名称替换到下面命令中。入口通常是
+`group`：
 
 ```text
 dotnet nuget add source https://stacktory.example.internal/mirror/nuget/group/v3/index.json --name stacktory
+dotnet restore --source stacktory
 ```
 
-适配器开放后，管理员会提供正式的 NuGet source 地址和 restore 配置。
+也可以在项目或解决方案目录的 `NuGet.Config` 中配置：
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources>
+    <clear />
+    <add key="stacktory" value="https://stacktory.example.internal/mirror/nuget/group/v3/index.json" />
+  </packageSources>
+</configuration>
+```
+
+## 支持范围
+
+适配器只支持 restore 所需的以下入口：
+
+```text
+GET /mirror/nuget/{name}/v3/index.json
+GET /mirror/nuget/{name}/registration/{*path}
+GET /mirror/nuget/{name}/package/{id}/{version}/{id}.{version}.nupkg
+```
+
+不支持搜索、push、delete、unlist、API key、登录、权限、账号、symbol
+server 或其他写入型 NuGet API。用户不需要也不应配置上游 NuGet 地址；
+上游 service index 由 Stacktory 管理员在服务端配置。
