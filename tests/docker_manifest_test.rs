@@ -4,7 +4,7 @@ use axum::{
     Router,
     body::Body,
     extract::OriginalUri,
-    http::{HeaderMap, Request, StatusCode, header},
+    http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header},
     response::IntoResponse,
     routing::get,
 };
@@ -156,6 +156,141 @@ async fn manifest_with_wrong_digest_is_not_returned_successfully() {
     );
 }
 
+#[tokio::test]
+async fn head_manifest_returns_registry_headers_without_a_body() {
+    let manifest =
+        br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#.to_vec();
+    let digest = sha256_digest(&manifest);
+    let upstream = start_manifest_server(
+        manifest,
+        digest.clone(),
+        Arc::new(Mutex::new(None)),
+        Arc::new(Mutex::new(None)),
+    )
+    .await;
+    let data_dir = tempdir().expect("data directory");
+
+    let response = docker_router(upstream, data_dir.path())
+        .oneshot(
+            Request::builder()
+                .method(Method::HEAD)
+                .uri("/mirror/docker/official/v2/library/alpine/manifests/latest")
+                .body(Body::empty())
+                .expect("HEAD manifest request"),
+        )
+        .await
+        .expect("HEAD manifest response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("docker-content-digest")
+            .and_then(|value| value.to_str().ok()),
+        Some(digest.as_str())
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok()),
+        Some("76")
+    );
+    assert_eq!(
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("HEAD body")
+            .len(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn tag_manifest_cache_isolated_by_accept_representation() {
+    let index =
+        br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json"}"#.to_vec();
+    let manifest =
+        br#"{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json"}"#.to_vec();
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let upstream = start_accept_server(AcceptServerData {
+        index: index.clone(),
+        index_digest: sha256_digest(&index),
+        manifest: manifest.clone(),
+        manifest_digest: sha256_digest(&manifest),
+        hits: hits.clone(),
+    })
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = docker_router(upstream, data_dir.path());
+
+    let index_response = router
+        .clone()
+        .oneshot(
+            Request::get("/mirror/docker/official/v2/library/alpine/manifests/latest")
+                .header(header::ACCEPT, "application/vnd.oci.image.index.v1+json")
+                .body(Body::empty())
+                .expect("index request"),
+        )
+        .await
+        .expect("index response");
+    assert_eq!(
+        axum::body::to_bytes(index_response.into_body(), usize::MAX)
+            .await
+            .expect("index body"),
+        index
+    );
+
+    let manifest_response = router
+        .oneshot(
+            Request::get("/mirror/docker/official/v2/library/alpine/manifests/latest")
+                .header(
+                    header::ACCEPT,
+                    "application/vnd.docker.distribution.manifest.v2+json",
+                )
+                .body(Body::empty())
+                .expect("manifest request"),
+        )
+        .await
+        .expect("manifest response");
+    assert_eq!(
+        axum::body::to_bytes(manifest_response.into_body(), usize::MAX)
+            .await
+            .expect("manifest body"),
+        manifest
+    );
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn invalid_manifest_is_not_written_to_cache() {
+    let body = b"not valid json".to_vec();
+    let digest = sha256_digest(&body);
+    let observed_path = Arc::new(Mutex::new(None));
+    let upstream =
+        start_manifest_server(body, digest, observed_path, Arc::new(Mutex::new(None))).await;
+    let data_dir = tempdir().expect("data directory");
+    let router = docker_router(upstream, data_dir.path());
+    let request = || {
+        Request::get("/mirror/docker/official/v2/library/alpine/manifests/latest")
+            .body(Body::empty())
+            .expect("manifest request")
+    };
+
+    let first = router
+        .clone()
+        .oneshot(request())
+        .await
+        .expect("first invalid response");
+    let second = router
+        .oneshot(request())
+        .await
+        .expect("second invalid response");
+
+    assert_eq!(first.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(second.status(), StatusCode::BAD_GATEWAY);
+    assert!(!data_dir.path().join("docker").join("artifacts").exists());
+}
+
 fn docker_router(upstream: Url, data_dir: &std::path::Path) -> axum::Router {
     let registry = AdapterRegistry::new()
         .with_adapter(
@@ -212,6 +347,66 @@ async fn start_manifest_server(
                 response.headers_mut().insert(
                     header::HeaderName::from_static("docker-content-digest"),
                     header::HeaderValue::from_str(&digest).expect("digest header"),
+                );
+                response
+            }
+        }),
+    );
+    tokio::spawn(async move {
+        axum::serve(listener, router)
+            .await
+            .expect("upstream server");
+    });
+    Url::parse(&format!("http://{address}")).expect("upstream URL")
+}
+
+struct AcceptServerData {
+    index: Vec<u8>,
+    index_digest: String,
+    manifest: Vec<u8>,
+    manifest_digest: String,
+    hits: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+async fn start_accept_server(data: AcceptServerData) -> Url {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let router = Router::new().route(
+        "/{*path}",
+        get(move |headers: HeaderMap| {
+            let data = AcceptServerData {
+                index: data.index.clone(),
+                index_digest: data.index_digest.clone(),
+                manifest: data.manifest.clone(),
+                manifest_digest: data.manifest_digest.clone(),
+                hits: data.hits.clone(),
+            };
+            async move {
+                data.hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let accepts_index = headers
+                    .get(header::ACCEPT)
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|value| value.contains("image.index"));
+                let (body, digest, content_type) = if accepts_index {
+                    (
+                        data.index,
+                        data.index_digest,
+                        "application/vnd.oci.image.index.v1+json",
+                    )
+                } else {
+                    (
+                        data.manifest,
+                        data.manifest_digest,
+                        "application/vnd.docker.distribution.manifest.v2+json",
+                    )
+                };
+                let mut response = (StatusCode::OK, body).into_response();
+                response
+                    .headers_mut()
+                    .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+                response.headers_mut().insert(
+                    header::HeaderName::from_static("docker-content-digest"),
+                    HeaderValue::from_str(&digest).expect("digest header"),
                 );
                 response
             }

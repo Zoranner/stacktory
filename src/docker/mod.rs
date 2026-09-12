@@ -59,6 +59,8 @@ pub enum DockerError {
     DigestMismatch { expected: String, actual: String },
     #[error("Docker blob `{0}` has no descriptor metadata")]
     UnknownBlob(String),
+    #[error("Docker manifest is invalid: {0}")]
+    InvalidManifest(String),
     #[error("Docker Range header is invalid for an object of {0} bytes")]
     InvalidRange(usize),
     #[error("Docker metadata storage failed: {0}")]
@@ -74,6 +76,8 @@ struct ManifestMetadata {
     digest: String,
     selected_proxy: String,
     content_type: Option<String>,
+    #[serde(default)]
+    accept: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -141,9 +145,10 @@ impl DockerService {
         request: AdapterRequest,
         pool: &SourcePool,
     ) -> Response {
-        if request.method != Method::GET {
+        if !matches!(request.method, Method::GET | Method::HEAD) {
             return StatusCode::METHOD_NOT_ALLOWED.into_response();
         }
+        let head = request.method == Method::HEAD;
         match parse_request(&request.raw_path) {
             Ok(DockerRequest::Probe) => (
                 StatusCode::OK,
@@ -158,14 +163,28 @@ impl DockerService {
                 repository,
                 reference,
             }) => match self
-                .manifest(entry_name, &repository, &reference, &request.headers, pool)
+                .manifest(
+                    entry_name,
+                    &repository,
+                    &reference,
+                    &request.headers,
+                    pool,
+                    head,
+                )
                 .await
             {
                 Ok(response) => response,
                 Err(error) => docker_error_response(&error),
             },
             Ok(DockerRequest::Blob { repository, digest }) => match self
-                .blob(entry_name, &repository, &digest, &request.headers, pool)
+                .blob(
+                    entry_name,
+                    &repository,
+                    &digest,
+                    &request.headers,
+                    pool,
+                    head,
+                )
                 .await
             {
                 Ok(response) => response,
@@ -182,14 +201,24 @@ impl DockerService {
         reference: &ManifestReference,
         request_headers: &HeaderMap,
         pool: &SourcePool,
+        head: bool,
     ) -> Result<Response, DockerError> {
         let mut headers = HeaderMap::new();
         if let Some(accept) = request_headers.get(header::ACCEPT) {
             headers.insert(header::ACCEPT, accept.clone());
         }
-        let bound =
-            read_manifest_metadata(&self.data_dir, entry_name, repository, reference.as_str())?
-                .filter(|metadata| source_is_member(pool, entry_name, &metadata.selected_proxy));
+        let accept = request_headers
+            .get(header::ACCEPT)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let bound = read_manifest_metadata(
+            &self.data_dir,
+            entry_name,
+            repository,
+            reference.as_str(),
+            accept.as_deref(),
+        )?
+        .filter(|metadata| source_is_member(pool, entry_name, &metadata.selected_proxy));
         if let Some(metadata) = &bound
             && let Some(body) = read_verified_artifact(
                 &self.data_dir,
@@ -205,7 +234,7 @@ impl DockerService {
                     entry_name,
                     object_key: &manifest_object_key(repository, reference),
                     selected_proxy: &metadata.selected_proxy,
-                    object_type: "manifest",
+                    object_type: manifest_object_type(metadata.content_type.as_deref()),
                     cache_status: "hit",
                     failure_category: None,
                 },
@@ -214,6 +243,7 @@ impl DockerService {
                 body,
                 metadata.content_type.as_deref(),
                 &metadata.digest,
+                head,
             ));
         }
 
@@ -228,6 +258,7 @@ impl DockerService {
                         digest: digest.clone(),
                         selected_proxy: source_name,
                         content_type: cached.content_type,
+                        accept: accept.clone(),
                     };
                     self.write_manifest_metadata(entry_name, &metadata, &cached.body)?;
                     self.record(
@@ -245,6 +276,7 @@ impl DockerService {
                         cached.body,
                         metadata.content_type.as_deref(),
                         digest,
+                        head,
                     ));
                 }
             }
@@ -275,6 +307,7 @@ impl DockerService {
                     upstream.content_type.as_deref(),
                     &upstream.headers,
                     &upstream.body,
+                    accept.as_deref(),
                 ) {
                     Ok(metadata) => {
                         let object_type = manifest_object_type(metadata.content_type.as_deref());
@@ -302,6 +335,7 @@ impl DockerService {
                             upstream.body,
                             metadata.content_type.as_deref(),
                             &metadata.digest,
+                            head,
                         ));
                     }
                     Err(error)
@@ -322,7 +356,20 @@ impl DockerService {
                         );
                         failures.push(format!("{source_name}: {error}"));
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => {
+                        self.record(
+                            "docker_manifest_fetch_failed",
+                            DockerAuditDetails {
+                                entry_name,
+                                object_key: &manifest_object_key(repository, reference),
+                                selected_proxy: &source_name,
+                                object_type: "manifest",
+                                cache_status: "miss",
+                                failure_category: Some(failure_category(&error)),
+                            },
+                        );
+                        return Err(error);
+                    }
                 },
                 Err(error) if pool.is_group(entry_name) && is_fallback_source_error(&error) => {
                     if !is_not_found_source_error(&error) {
@@ -345,7 +392,24 @@ impl DockerService {
                     );
                     failures.push(format!("{source_name}: {error}"));
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    self.record(
+                        "docker_manifest_fetch_failed",
+                        DockerAuditDetails {
+                            entry_name,
+                            object_key: &manifest_object_key(repository, reference),
+                            selected_proxy: &source_name,
+                            object_type: "manifest",
+                            cache_status: "miss",
+                            failure_category: Some(if is_not_found_source_error(&error) {
+                                "not_found"
+                            } else {
+                                "source_failed"
+                            }),
+                        },
+                    );
+                    return Err(error.into());
+                }
             }
         }
         Err(DockerError::Source(SourcePoolError::AllSourcesFailed {
@@ -369,7 +433,11 @@ impl DockerService {
             .join(entry_name)
             .join(&metadata.repository)
             .join("manifests")
-            .join(format!("{}.json", metadata_file_key(&metadata.reference)));
+            .join(format!(
+                "{}-{}.json",
+                metadata_file_key(&metadata.reference),
+                representation_file_key(metadata.accept.as_deref())
+            ));
         atomic_write(&path, &serde_json::to_vec(&metadata)?).map_err(DockerError::Storage)?;
         write_blob_descriptors(
             &self.data_dir,
@@ -411,6 +479,7 @@ impl DockerService {
         digest: &str,
         request_headers: &HeaderMap,
         pool: &SourcePool,
+        head: bool,
     ) -> Result<Response, DockerError> {
         let entry_metadata = read_blob_metadata(&self.data_dir, entry_name, repository, digest)?;
         let candidates = candidate_sources(
@@ -420,9 +489,10 @@ impl DockerService {
                 .as_ref()
                 .map(|metadata| metadata.selected_proxy.as_str()),
         )?;
-        let metadata = match entry_metadata {
-            Some(metadata) => metadata,
-            None => candidates
+        let metadata = if let Some(metadata) = entry_metadata {
+            metadata
+        } else {
+            let metadata = candidates
                 .iter()
                 .find_map(|source_name| {
                     match read_shared_blob_metadata(&self.data_dir, source_name, repository, digest)
@@ -433,7 +503,9 @@ impl DockerService {
                     }
                 })
                 .transpose()?
-                .ok_or_else(|| DockerError::UnknownBlob(digest.to_owned()))?,
+                .ok_or_else(|| DockerError::UnknownBlob(digest.to_owned()))?;
+            write_blob_metadata(&self.data_dir, entry_name, repository, &metadata)?;
+            metadata
         };
         if source_is_member(pool, entry_name, &metadata.selected_proxy)
             && let Some(body) = read_verified_artifact(
@@ -462,6 +534,7 @@ impl DockerService {
                 request_headers
                     .get(header::RANGE)
                     .and_then(|value| value.to_str().ok()),
+                head,
             );
         }
         let headers = HeaderMap::new();
@@ -504,6 +577,17 @@ impl DockerService {
                             all_not_found = false;
                             continue;
                         }
+                        self.record(
+                            "docker_blob_fetch_failed",
+                            DockerAuditDetails {
+                                entry_name,
+                                object_key: &format!("{repository}/blobs/{digest}"),
+                                selected_proxy: &source_name,
+                                object_type: &metadata.object_type,
+                                cache_status: "miss",
+                                failure_category: Some("digest_mismatch"),
+                            },
+                        );
                         return Err(error);
                     }
                     let mut selected_metadata = metadata.clone();
@@ -538,6 +622,7 @@ impl DockerService {
                         &metadata.content_type,
                         digest,
                         requested_range,
+                        head,
                     );
                 }
                 Err(error) if pool.is_group(entry_name) && is_fallback_source_error(&error) => {
@@ -561,7 +646,24 @@ impl DockerService {
                     );
                     failures.push(format!("{source_name}: {error}"));
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    self.record(
+                        "docker_blob_fetch_failed",
+                        DockerAuditDetails {
+                            entry_name,
+                            object_key: &format!("{repository}/blobs/{digest}"),
+                            selected_proxy: &source_name,
+                            object_type: &metadata.object_type,
+                            cache_status: "miss",
+                            failure_category: Some(if is_not_found_source_error(&error) {
+                                "not_found"
+                            } else {
+                                "source_failed"
+                            }),
+                        },
+                    );
+                    return Err(error.into());
+                }
             }
         }
         Err(DockerError::Source(SourcePoolError::AllSourcesFailed {
@@ -610,7 +712,8 @@ fn docker_error_response(error: &DockerError) -> Response {
         }) => StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
         DockerError::Source(_)
         | DockerError::MissingDigest
-        | DockerError::DigestMismatch { .. } => StatusCode::BAD_GATEWAY,
+        | DockerError::DigestMismatch { .. }
+        | DockerError::InvalidManifest(_) => StatusCode::BAD_GATEWAY,
         DockerError::UnknownBlob(_) => StatusCode::NOT_FOUND,
         DockerError::InvalidRange(_) => StatusCode::RANGE_NOT_SATISFIABLE,
         DockerError::Storage(_) | DockerError::Serialization(_) => {
@@ -639,7 +742,26 @@ fn validate_manifest(
     content_type: Option<&str>,
     headers: &HeaderMap,
     body: &[u8],
+    accept: Option<&str>,
 ) -> Result<ManifestMetadata, DockerError> {
+    let manifest: Value = serde_json::from_slice(body)
+        .map_err(|_| DockerError::InvalidManifest("body is not valid JSON".to_owned()))?;
+    if !manifest.is_object() {
+        return Err(DockerError::InvalidManifest(
+            "body is not a JSON object".to_owned(),
+        ));
+    }
+    if let Some(config) = manifest.get("config") {
+        validate_blob_descriptor(config, "config")?;
+    }
+    if let Some(layers) = manifest.get("layers") {
+        let layers = layers
+            .as_array()
+            .ok_or_else(|| DockerError::InvalidManifest("layers is not an array".to_owned()))?;
+        for layer in layers {
+            validate_blob_descriptor(layer, "layer")?;
+        }
+    }
     let actual_digest = sha256_digest(body);
     let expected_digest = match reference {
         ManifestReference::Tag(_) => headers
@@ -667,12 +789,16 @@ fn validate_manifest(
             actual: actual_digest,
         });
     }
+    let content_type = content_type
+        .map(str::to_owned)
+        .or_else(|| manifest_media_type(&manifest));
     Ok(ManifestMetadata {
         repository: repository.to_owned(),
         reference: reference.as_str().to_owned(),
         digest: actual_digest,
         selected_proxy: selected_proxy.to_owned(),
-        content_type: content_type.map(str::to_owned),
+        content_type,
+        accept: accept.map(str::to_owned),
     })
 }
 
@@ -682,8 +808,39 @@ fn is_sha256_digest(value: &str) -> bool {
         && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+fn validate_blob_descriptor(value: &Value, object_type: &str) -> Result<(), DockerError> {
+    let digest = value
+        .get("digest")
+        .and_then(Value::as_str)
+        .filter(|digest| is_sha256_digest(digest))
+        .ok_or_else(|| DockerError::InvalidManifest(format!("{object_type} digest is invalid")))?;
+    let has_media_type = value
+        .get("mediaType")
+        .and_then(Value::as_str)
+        .is_some_and(|media_type| !media_type.is_empty());
+    if !has_media_type {
+        return Err(DockerError::InvalidManifest(format!(
+            "{object_type} mediaType is missing for {digest}"
+        )));
+    }
+    Ok(())
+}
+
+fn manifest_media_type(value: &Value) -> Option<String> {
+    value
+        .get("mediaType")
+        .and_then(Value::as_str)
+        .filter(|media_type| !media_type.is_empty())
+        .map(str::to_owned)
+}
+
 fn metadata_file_key(reference: &str) -> String {
     reference.replace(':', "-")
+}
+
+fn representation_file_key(accept: Option<&str>) -> String {
+    let value = accept.unwrap_or("default");
+    format!("{:x}", Sha256::digest(value.as_bytes()))
 }
 
 fn write_blob_descriptors(
@@ -803,6 +960,7 @@ fn read_manifest_metadata(
     entry_name: &str,
     repository: &str,
     reference: &str,
+    accept: Option<&str>,
 ) -> Result<Option<ManifestMetadata>, DockerError> {
     let path = data_dir
         .join("docker")
@@ -810,7 +968,11 @@ fn read_manifest_metadata(
         .join(entry_name)
         .join(repository)
         .join("manifests")
-        .join(format!("{}.json", metadata_file_key(reference)));
+        .join(format!(
+            "{}-{}.json",
+            metadata_file_key(reference),
+            representation_file_key(accept)
+        ));
     let Some(contents) = read_if_present(&path)? else {
         return Ok(None);
     };
@@ -972,7 +1134,9 @@ fn is_not_found_source_error(error: &SourcePoolError) -> bool {
 fn is_fallback_validation_error(error: &DockerError) -> bool {
     matches!(
         error,
-        DockerError::MissingDigest | DockerError::DigestMismatch { .. }
+        DockerError::MissingDigest
+            | DockerError::DigestMismatch { .. }
+            | DockerError::InvalidManifest(_)
     )
 }
 
@@ -1000,13 +1164,24 @@ fn manifest_object_type(content_type: Option<&str>) -> &'static str {
     }
 }
 
-fn manifest_response(body: Vec<u8>, content_type: Option<&str>, digest: &str) -> Response {
-    let mut response = (StatusCode::OK, Body::from(body)).into_response();
+fn manifest_response(
+    body: Vec<u8>,
+    content_type: Option<&str>,
+    digest: &str,
+    head: bool,
+) -> Response {
+    let length = body.len();
+    let response_body = if head { Vec::new() } else { body };
+    let mut response = (StatusCode::OK, Body::from(response_body)).into_response();
     if let Some(content_type) = content_type
         && let Ok(value) = header::HeaderValue::from_str(content_type)
     {
         response.headers_mut().insert(header::CONTENT_TYPE, value);
     }
+    response.headers_mut().insert(
+        header::CONTENT_LENGTH,
+        header::HeaderValue::from_str(&length.to_string()).expect("content length is valid"),
+    );
     response.headers_mut().insert(
         header::HeaderName::from_static("docker-content-digest"),
         header::HeaderValue::from_str(digest).expect("SHA-256 digest is valid"),
@@ -1019,6 +1194,7 @@ fn blob_response(
     content_type: &str,
     digest: &str,
     requested_range: Option<&str>,
+    head: bool,
 ) -> Result<Response, DockerError> {
     let full_length = body.len();
     let (status, response_body, content_range) = if let Some(range) = requested_range {
@@ -1033,6 +1209,7 @@ fn blob_response(
         (StatusCode::OK, body, None)
     };
     let response_length = response_body.len();
+    let response_body = if head { Vec::new() } else { response_body };
     let mut response = (status, Body::from(response_body)).into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
