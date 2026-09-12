@@ -55,6 +55,22 @@ pub fn parse_metadata_path(path: &str) -> Result<NpmPackagePath, NpmPathError> {
     Ok(NpmPackagePath { package })
 }
 
+pub(crate) fn validate_package_name(value: &str) -> Result<(), NpmPathError> {
+    if let Some((scope, package)) = value
+        .strip_prefix('@')
+        .and_then(|value| value.split_once('/'))
+    {
+        if value.matches('/').count() != 1 {
+            return Err(NpmPathError::InvalidPackageName(value.to_owned()));
+        }
+        validate_name_part(scope)?;
+        validate_name_part(package)?;
+    } else {
+        validate_name_part(value)?;
+    }
+    Ok(())
+}
+
 pub fn parse_artifact_path(path: &str) -> Result<NpmArtifactPath, NpmPathError> {
     if path.len() != 64
         || !path.bytes().all(|byte| byte.is_ascii_hexdigit())
