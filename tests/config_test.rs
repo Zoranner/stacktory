@@ -223,6 +223,75 @@ fn accepts_public_production_configuration() {
 }
 
 #[test]
+fn docker_sources_accept_optional_cli_listen_ports() {
+    let configuration = format!(
+        "{LOCAL_DEVELOPMENT}\n\
+\n\
+[docker]\n\
+\n\
+[[docker.sources]]\n\
+name = \"official\"\n\
+type = \"proxy\"\n\
+base_url = \"https://registry.example\"\n\
+listen_port = 19001\n\
+\n\
+[[docker.sources]]\n\
+name = \"group\"\n\
+type = \"group\"\n\
+members = [\"official\"]\n\
+listen_port = 19000\n"
+    );
+
+    let config = Config::from_toml(&configuration).expect("Docker CLI port configuration");
+    let docker = config.docker.expect("Docker configuration");
+
+    assert_eq!(docker.listen_ports["official"], 19001);
+    assert_eq!(docker.listen_ports["group"], 19000);
+}
+
+#[test]
+fn docker_cli_listen_ports_must_be_unique() {
+    let configuration = format!(
+        "{LOCAL_DEVELOPMENT}\n\
+\n\
+[docker]\n\
+\n\
+[[docker.sources]]\n\
+name = \"first\"\n\
+type = \"proxy\"\n\
+base_url = \"https://first.example\"\n\
+listen_port = 19000\n\
+\n\
+[[docker.sources]]\n\
+name = \"second\"\n\
+type = \"proxy\"\n\
+base_url = \"https://second.example\"\n\
+listen_port = 19000\n"
+    );
+
+    let error = Config::from_toml(&configuration).expect_err("duplicate Docker port");
+    assert!(error.to_string().contains("19000"));
+}
+
+#[test]
+fn docker_cli_listen_port_cannot_use_the_main_port() {
+    let configuration = format!(
+        "{LOCAL_DEVELOPMENT}\n\
+\n\
+[docker]\n\
+\n\
+[[docker.sources]]\n\
+name = \"official\"\n\
+type = \"proxy\"\n\
+base_url = \"https://official.example\"\n\
+listen_port = 18761\n"
+    );
+
+    let error = Config::from_toml(&configuration).expect_err("main port conflict");
+    assert!(error.to_string().contains("conflicts"));
+}
+
+#[test]
 fn accepts_cargo_source_graph() {
     let configuration = format!(
         "{LOCAL_DEVELOPMENT}\n\

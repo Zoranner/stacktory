@@ -34,7 +34,11 @@ pub struct EcosystemConfig {
 
 pub type CargoConfig = EcosystemConfig;
 pub type VscodeConfig = EcosystemConfig;
-pub type DockerConfig = EcosystemConfig;
+#[derive(Debug)]
+pub struct DockerConfig {
+    pub sources: SourceGraph,
+    pub listen_ports: BTreeMap<String, u16>,
+}
 pub type NpmConfig = EcosystemConfig;
 pub type NugetConfig = EcosystemConfig;
 pub type PypiConfig = EcosystemConfig;
@@ -68,6 +72,21 @@ impl SourceGraph {
             .map(RawSourceConfig::into_source_config)
             .collect::<Result<Vec<_>, _>>()
             .and_then(Self::new)
+    }
+
+    fn from_raw_docker(
+        sources: Vec<RawDockerSourceConfig>,
+    ) -> Result<(Self, BTreeMap<String, u16>), ConfigError> {
+        let listen_ports = sources
+            .iter()
+            .filter_map(|source| {
+                source
+                    .listen_port
+                    .map(|port| (source.source.name.clone(), port))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let graph = Self::from_raw(sources.into_iter().map(|source| source.source).collect())?;
+        Ok((graph, listen_ports))
     }
 
     pub fn new(sources: Vec<SourceConfig>) -> Result<Self, ConfigError> {
@@ -203,6 +222,12 @@ pub enum ConfigError {
     InsecureHttpSource(String),
     #[error("NuGet source `{0}` base_url must be an actual `/v3/index.json` service index")]
     InvalidNugetServiceIndexUrl(String),
+    #[error("Docker source `{0}` has an invalid listen_port")]
+    InvalidDockerListenPort(String),
+    #[error("Docker source `{source_name}` uses duplicate listen_port {port}")]
+    DuplicateDockerListenPort { source_name: String, port: u16 },
+    #[error("Docker source `{source_name}` listen_port {port} conflicts with the main listen_port")]
+    DockerListenPortConflictsWithMain { source_name: String, port: u16 },
     #[error("rustup.channels must contain at least one channel")]
     MissingRustupChannel,
     #[error("rustup channel `{0}` is invalid")]
@@ -220,7 +245,7 @@ struct RawConfig {
     rustup: RawRustupConfig,
     cargo: Option<RawEcosystemConfig>,
     vscode: Option<RawEcosystemConfig>,
-    docker: Option<RawEcosystemConfig>,
+    docker: Option<RawDockerConfig>,
     npm: Option<RawEcosystemConfig>,
     nuget: Option<RawEcosystemConfig>,
     pypi: Option<RawEcosystemConfig>,
@@ -237,6 +262,19 @@ struct RawRustupConfig {
 #[derive(Deserialize)]
 struct RawEcosystemConfig {
     sources: Vec<RawSourceConfig>,
+}
+
+#[derive(Deserialize)]
+struct RawDockerConfig {
+    sources: Vec<RawDockerSourceConfig>,
+}
+
+#[derive(Deserialize)]
+struct RawDockerSourceConfig {
+    #[serde(flatten)]
+    source: RawSourceConfig,
+    #[serde(default)]
+    listen_port: Option<u16>,
 }
 
 #[derive(Deserialize)]
@@ -293,7 +331,7 @@ impl Config {
         let rustup_sources = SourceGraph::from_raw(raw.rustup.sources)?;
         let cargo = ecosystem_config(raw.cargo)?;
         let vscode = ecosystem_config(raw.vscode)?;
-        let docker = ecosystem_config(raw.docker)?;
+        let docker = docker_config(raw.docker, raw.listen_port)?;
         let npm = ecosystem_config(raw.npm)?;
         let nuget = nuget_config(raw.nuget)?;
         let pypi = ecosystem_config(raw.pypi)?;
@@ -326,6 +364,41 @@ fn ecosystem_config(
     raw.map(|ecosystem| SourceGraph::from_raw(ecosystem.sources))
         .transpose()
         .map(|sources| sources.map(|sources| EcosystemConfig { sources }))
+}
+
+fn docker_config(
+    raw: Option<RawDockerConfig>,
+    main_listen_port: u16,
+) -> Result<Option<DockerConfig>, ConfigError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let (sources, listen_ports) = SourceGraph::from_raw_docker(raw.sources)?;
+    let mut used_ports = BTreeMap::new();
+    for source in sources.entries.values() {
+        let Some(port) = listen_ports.get(&source.name).copied() else {
+            continue;
+        };
+        if port == 0 {
+            return Err(ConfigError::InvalidDockerListenPort(source.name.clone()));
+        }
+        if port == main_listen_port {
+            return Err(ConfigError::DockerListenPortConflictsWithMain {
+                source_name: source.name.clone(),
+                port,
+            });
+        }
+        if used_ports.insert(port, source.name.clone()).is_some() {
+            return Err(ConfigError::DuplicateDockerListenPort {
+                source_name: source.name.clone(),
+                port,
+            });
+        }
+    }
+    Ok(Some(DockerConfig {
+        sources,
+        listen_ports,
+    }))
 }
 
 fn nuget_config(raw: Option<RawEcosystemConfig>) -> Result<Option<EcosystemConfig>, ConfigError> {
