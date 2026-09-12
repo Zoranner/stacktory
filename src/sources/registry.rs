@@ -15,6 +15,7 @@ pub struct AdapterRequest {
     pub method: Method,
     pub path: String,
     pub raw_path: String,
+    pub query: Option<String>,
     pub headers: HeaderMap,
     pub body: Vec<u8>,
 }

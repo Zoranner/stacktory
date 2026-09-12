@@ -55,6 +55,30 @@ fn parses_blob_digest_requests() {
 }
 
 #[test]
+fn parses_catalog_and_tag_list_requests() {
+    assert_eq!(
+        parse_request("v2/_catalog").expect("catalog"),
+        DockerRequest::Catalog
+    );
+    assert_eq!(
+        parse_request("v2/library/alpine/tags/list").expect("tag list"),
+        DockerRequest::Tags {
+            repository: "library/alpine".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn parses_stacktory_search_request_without_treating_it_as_registry_v1() {
+    assert_eq!(
+        parse_request("search").expect("Stacktory search"),
+        DockerRequest::Search
+    );
+    assert!(parse_request("v1/search").is_err());
+    assert!(parse_request("v2/search").is_err());
+}
+
+#[test]
 fn validates_repository_segments_without_decoding_external_paths() {
     assert_eq!(
         parse_repository("team/service"),

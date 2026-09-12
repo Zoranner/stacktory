@@ -3,6 +3,11 @@ use thiserror::Error;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DockerRequest {
     Probe,
+    Catalog,
+    Tags {
+        repository: String,
+    },
+    Search,
     Manifest {
         repository: String,
         reference: ManifestReference,
@@ -32,12 +37,24 @@ pub enum DockerPathError {
 }
 
 pub fn parse_request(path: &str) -> Result<DockerRequest, DockerPathError> {
+    if path == "search" {
+        return Ok(DockerRequest::Search);
+    }
     if path == "v2/" {
         return Ok(DockerRequest::Probe);
     }
     let rest = path
         .strip_prefix("v2/")
         .ok_or_else(|| DockerPathError::InvalidPath(path.to_owned()))?;
+
+    if rest == "_catalog" {
+        return Ok(DockerRequest::Catalog);
+    }
+    if let Some(repository) = rest.strip_suffix("/tags/list") {
+        return Ok(DockerRequest::Tags {
+            repository: parse_repository(repository)?,
+        });
+    }
 
     if let Some((repository, reference)) = rest.split_once("/manifests/") {
         let repository = parse_repository(repository)?;

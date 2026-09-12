@@ -200,6 +200,26 @@ impl SourcePool {
         headers: HeaderMap,
         operation: FetchOperation,
     ) -> Result<SourceResponse, SourcePoolError> {
+        self.fetch_proxy_registry_path_with_query(
+            source_name,
+            request_key,
+            None,
+            method,
+            headers,
+            operation,
+        )
+        .await
+    }
+
+    pub async fn fetch_proxy_registry_path_with_query(
+        &self,
+        source_name: &str,
+        request_key: &str,
+        query: Option<&str>,
+        method: Method,
+        headers: HeaderMap,
+        operation: FetchOperation,
+    ) -> Result<SourceResponse, SourcePoolError> {
         let source = self
             .graph
             .get(source_name)
@@ -208,7 +228,13 @@ impl SourcePool {
             return Err(SourcePoolError::UnknownEntry(source_name.to_owned()));
         }
         let request_key = normalize_proxy_path(request_key)?;
-        let url = source_url_raw(source, &request_key)?;
+        let mut url = source_url_raw(source, &request_key)?;
+        if let Some(query) = query {
+            if query.contains('#') || query.chars().any(char::is_control) {
+                return Err(SourcePoolError::InvalidRequestKey(query.to_owned()));
+            }
+            url.set_query(Some(query));
+        }
         match self
             .fetcher
             .fetch_registry(method, url, headers, operation.timeout())

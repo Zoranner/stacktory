@@ -13,7 +13,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use url::Url;
@@ -61,6 +61,12 @@ pub enum DockerError {
     UnknownBlob(String),
     #[error("Docker manifest is invalid: {0}")]
     InvalidManifest(String),
+    #[error("Docker catalog response is invalid")]
+    InvalidCatalog,
+    #[error("Docker tag list response is invalid")]
+    InvalidTags,
+    #[error("Docker search query is invalid")]
+    InvalidSearchQuery,
     #[error("Docker Range header is invalid for an object of {0} bytes")]
     InvalidRange(usize),
     #[error("Docker metadata storage failed: {0}")]
@@ -159,6 +165,31 @@ impl DockerService {
                 Body::empty(),
             )
                 .into_response(),
+            Ok(DockerRequest::Catalog) => match self
+                .catalog(entry_name, request.query.as_deref(), pool)
+                .await
+            {
+                Ok(response) => response,
+                Err(error) => docker_error_response(&error),
+            },
+            Ok(DockerRequest::Tags { repository }) => {
+                match self
+                    .tags(entry_name, &repository, request.query.as_deref(), pool)
+                    .await
+                {
+                    Ok(response) => response,
+                    Err(error) => docker_error_response(&error),
+                }
+            }
+            Ok(DockerRequest::Search) => {
+                match self
+                    .search(entry_name, request.query.as_deref(), pool)
+                    .await
+                {
+                    Ok(response) => response,
+                    Err(error) => docker_error_response(&error),
+                }
+            }
             Ok(DockerRequest::Manifest {
                 repository,
                 reference,
@@ -192,6 +223,146 @@ impl DockerService {
             },
             Err(_) => StatusCode::NOT_FOUND.into_response(),
         }
+    }
+
+    async fn catalog(
+        &self,
+        entry_name: &str,
+        query: Option<&str>,
+        pool: &SourcePool,
+    ) -> Result<Response, DockerError> {
+        let query = validate_list_query(query)?;
+        self.list_endpoint(entry_name, "v2/_catalog", query.as_deref(), "catalog", pool)
+            .await
+    }
+
+    async fn tags(
+        &self,
+        entry_name: &str,
+        repository: &str,
+        query: Option<&str>,
+        pool: &SourcePool,
+    ) -> Result<Response, DockerError> {
+        let query = validate_list_query(query)?;
+        self.list_endpoint(
+            entry_name,
+            &format!("v2/{repository}/tags/list"),
+            query.as_deref(),
+            "tags",
+            pool,
+        )
+        .await
+    }
+
+    async fn list_endpoint(
+        &self,
+        entry_name: &str,
+        request_key: &str,
+        query: Option<&str>,
+        object_type: &str,
+        pool: &SourcePool,
+    ) -> Result<Response, DockerError> {
+        let candidates = candidate_sources(pool, entry_name, None)?;
+        let mut failures = Vec::new();
+        let mut all_not_found = true;
+        for source_name in candidates {
+            match pool
+                .fetch_proxy_registry_path_with_query(
+                    &source_name,
+                    request_key,
+                    query,
+                    Method::GET,
+                    HeaderMap::new(),
+                    FetchOperation::Metadata,
+                )
+                .await
+            {
+                Ok(upstream) => {
+                    let value: Value = serde_json::from_slice(&upstream.body).map_err(|_| {
+                        DockerError::InvalidManifest(format!("{object_type} is not valid JSON"))
+                    })?;
+                    validate_list_response(&value, object_type)?;
+                    return Ok(json_response(
+                        upstream.body,
+                        upstream.content_type.as_deref(),
+                    ));
+                }
+                Err(error) if pool.is_group(entry_name) && is_fallback_source_error(&error) => {
+                    if !is_not_found_source_error(&error) {
+                        all_not_found = false;
+                    }
+                    failures.push(format!("{source_name}: {error}"));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(DockerError::Source(SourcePoolError::AllSourcesFailed {
+            entry_name: entry_name.to_owned(),
+            request_key: request_key.to_owned(),
+            failures: failures.join("; "),
+            status: (all_not_found && !failures.is_empty()).then_some(404),
+        }))
+    }
+
+    async fn search(
+        &self,
+        entry_name: &str,
+        query: Option<&str>,
+        pool: &SourcePool,
+    ) -> Result<Response, DockerError> {
+        let query = parse_search_query(query)?;
+        let candidates = candidate_sources(pool, entry_name, None)?;
+        let mut failures = Vec::new();
+        for source_name in candidates {
+            match pool
+                .fetch_proxy_registry_path_with_query(
+                    &source_name,
+                    "v2/_catalog",
+                    None,
+                    Method::GET,
+                    HeaderMap::new(),
+                    FetchOperation::Metadata,
+                )
+                .await
+            {
+                Ok(upstream) => {
+                    let value: Value = serde_json::from_slice(&upstream.body)
+                        .map_err(|_| DockerError::InvalidCatalog)?;
+                    let repositories = value
+                        .get("repositories")
+                        .and_then(Value::as_array)
+                        .ok_or(DockerError::InvalidCatalog)?;
+                    let needle = query.term.to_ascii_lowercase();
+                    let mut results = Vec::new();
+                    for repository in repositories {
+                        let Some(repository) = repository.as_str() else {
+                            return Err(DockerError::InvalidCatalog);
+                        };
+                        if repository.to_ascii_lowercase().contains(&needle) {
+                            results.push(json!({ "name": repository }));
+                            if results.len() >= query.limit {
+                                break;
+                            }
+                        }
+                    }
+                    let body = serde_json::to_vec(&json!({
+                        "query": query.term,
+                        "results": results,
+                    }))?;
+                    return Ok(json_response(body, Some("application/json")));
+                }
+                Err(error) if pool.is_group(entry_name) && is_fallback_source_error(&error) => {
+                    failures.push(format!("{source_name}: {error}"));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(DockerError::Source(SourcePoolError::AllSourcesFailed {
+            entry_name: entry_name.to_owned(),
+            request_key: "v2/_catalog".to_owned(),
+            failures: failures.join("; "),
+            status: None,
+        }))
     }
 
     async fn manifest(
@@ -716,6 +887,8 @@ fn docker_error_response(error: &DockerError) -> Response {
         | DockerError::MissingDigest
         | DockerError::DigestMismatch { .. }
         | DockerError::InvalidManifest(_) => StatusCode::BAD_GATEWAY,
+        DockerError::InvalidCatalog | DockerError::InvalidTags => StatusCode::BAD_GATEWAY,
+        DockerError::InvalidSearchQuery => StatusCode::BAD_REQUEST,
         DockerError::UnknownBlob(_) => StatusCode::NOT_FOUND,
         DockerError::InvalidRange(_) => StatusCode::RANGE_NOT_SATISFIABLE,
         DockerError::Storage(_) | DockerError::Serialization(_) => {
@@ -735,6 +908,102 @@ fn docker_error_response(error: &DockerError) -> Response {
 
 fn sha256_digest(contents: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(contents))
+}
+
+#[derive(Debug)]
+struct SearchQuery {
+    term: String,
+    limit: usize,
+}
+
+fn validate_list_query(query: Option<&str>) -> Result<Option<String>, DockerError> {
+    let Some(query) = query else {
+        return Ok(None);
+    };
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        match key.as_ref() {
+            "n" => {
+                let limit = value
+                    .parse::<usize>()
+                    .map_err(|_| DockerError::InvalidSearchQuery)?;
+                if !(1..=1000).contains(&limit) {
+                    return Err(DockerError::InvalidSearchQuery);
+                }
+            }
+            "last" if !value.is_empty() => {}
+            _ => return Err(DockerError::InvalidSearchQuery),
+        }
+    }
+    Ok(Some(query.to_owned()))
+}
+
+fn parse_search_query(query: Option<&str>) -> Result<SearchQuery, DockerError> {
+    let query = query.ok_or(DockerError::InvalidSearchQuery)?;
+    let mut term = None;
+    let mut limit = 25;
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        match key.as_ref() {
+            "q" if term.is_none() && !value.is_empty() => {
+                if value.chars().any(char::is_control) {
+                    return Err(DockerError::InvalidSearchQuery);
+                }
+                term = Some(value.into_owned());
+            }
+            "n" if limit == 25 => {
+                limit = value
+                    .parse::<usize>()
+                    .map_err(|_| DockerError::InvalidSearchQuery)?;
+                if !(1..=100).contains(&limit) {
+                    return Err(DockerError::InvalidSearchQuery);
+                }
+            }
+            _ => return Err(DockerError::InvalidSearchQuery),
+        }
+    }
+    Ok(SearchQuery {
+        term: term.ok_or(DockerError::InvalidSearchQuery)?,
+        limit,
+    })
+}
+
+fn validate_list_response(value: &Value, object_type: &str) -> Result<(), DockerError> {
+    match object_type {
+        "catalog" => {
+            let repositories = value
+                .get("repositories")
+                .and_then(Value::as_array)
+                .ok_or(DockerError::InvalidCatalog)?;
+            if repositories.iter().all(|value| value.as_str().is_some()) {
+                Ok(())
+            } else {
+                Err(DockerError::InvalidCatalog)
+            }
+        }
+        "tags" => {
+            let name = value.get("name").and_then(Value::as_str);
+            let tags = value.get("tags").and_then(Value::as_array);
+            if name.is_some()
+                && tags.is_some_and(|tags| tags.iter().all(|value| value.as_str().is_some()))
+            {
+                Ok(())
+            } else {
+                Err(DockerError::InvalidTags)
+            }
+        }
+        _ => Err(DockerError::InvalidManifest(
+            "unknown Docker query response type".to_owned(),
+        )),
+    }
+}
+
+fn json_response(body: Vec<u8>, content_type: Option<&str>) -> Response {
+    let mut response = (StatusCode::OK, Body::from(body)).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_str(content_type.unwrap_or("application/json"))
+            .unwrap_or_else(|_| header::HeaderValue::from_static("application/json")),
+    );
+    response
 }
 
 fn validate_manifest(

@@ -138,6 +138,7 @@ async fn named_source(
                 method,
                 path,
                 raw_path,
+                query: uri.query().map(str::to_owned),
                 headers,
                 body,
             },
