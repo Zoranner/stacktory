@@ -36,9 +36,9 @@ pub struct NugetAdapter {
 
 #[derive(Debug)]
 pub struct NugetService {
-    root_url: Url,
-    data_dir: PathBuf,
-    audit: AuditSink,
+    pub(crate) root_url: Url,
+    pub(crate) data_dir: PathBuf,
+    pub(crate) audit: AuditSink,
 }
 
 #[derive(Debug, Error)]
@@ -47,6 +47,8 @@ pub enum NugetError {
     Source(#[from] SourcePoolError),
     #[error("NuGet service index is invalid: {0}")]
     InvalidServiceIndex(String),
+    #[error("NuGet registration is invalid: {0}")]
+    InvalidRegistration(String),
     #[error("NuGet storage I/O failed: {0}")]
     Storage(#[from] io::Error),
     #[error("NuGet JSON serialization failed: {0}")]
@@ -54,15 +56,18 @@ pub enum NugetError {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-struct ServiceIndexDescriptor {
-    selected_proxy: String,
-    registration_url: Option<String>,
-    package_base_url: Option<String>,
+pub(crate) struct ServiceIndexDescriptor {
+    pub(crate) selected_proxy: String,
+    pub(crate) registration_url: Option<String>,
+    pub(crate) package_base_url: Option<String>,
 }
 
 #[derive(Clone, Debug)]
-struct ServiceIndexSnapshot {
-    body: Vec<u8>,
+pub(crate) struct ServiceIndexSnapshot {
+    pub(crate) body: Vec<u8>,
+    pub(crate) selected_proxy: String,
+    pub(crate) registration_url: Option<Url>,
+    pub(crate) package_base_url: Option<Url>,
 }
 
 struct RewrittenServiceIndex {
@@ -102,7 +107,11 @@ impl NugetService {
         if request.method != Method::GET {
             return StatusCode::METHOD_NOT_ALLOWED.into_response();
         }
-        if request.path.trim_start_matches('/') != "v3/index.json" {
+        let path = request.path.trim_start_matches('/');
+        if path.starts_with("registration/") {
+            return super::registration::serve(self, entry_name, path, pool).await;
+        }
+        if path != "v3/index.json" {
             return StatusCode::NOT_FOUND.into_response();
         }
         match self.service_index(entry_name, pool).await {
@@ -111,7 +120,7 @@ impl NugetService {
         }
     }
 
-    async fn service_index(
+    pub(crate) async fn service_index(
         &self,
         entry_name: &str,
         pool: &SourcePool,
@@ -136,7 +145,12 @@ impl NugetService {
                 "hit",
                 None,
             );
-            return Ok(ServiceIndexSnapshot { body });
+            return Ok(ServiceIndexSnapshot {
+                body,
+                selected_proxy: descriptor.selected_proxy,
+                registration_url: parse_optional_url(descriptor.registration_url)?,
+                package_base_url: parse_optional_url(descriptor.package_base_url)?,
+            });
         }
 
         let mut failures = Vec::new();
@@ -191,6 +205,9 @@ impl NugetService {
                     );
                     return Ok(ServiceIndexSnapshot {
                         body: rewritten.body,
+                        selected_proxy: upstream.source_name,
+                        registration_url: rewritten.registration_url,
+                        package_base_url: rewritten.package_base_url,
                     });
                 }
                 Err(error) => {
@@ -220,7 +237,7 @@ impl NugetService {
         .into())
     }
 
-    fn service_index_path(&self, entry_name: &str) -> PathBuf {
+    pub(crate) fn service_index_path(&self, entry_name: &str) -> PathBuf {
         self.data_dir
             .join("nuget")
             .join("metadata")
@@ -228,7 +245,7 @@ impl NugetService {
             .join("service-index.json")
     }
 
-    fn service_index_descriptor_path(&self, entry_name: &str) -> PathBuf {
+    pub(crate) fn service_index_descriptor_path(&self, entry_name: &str) -> PathBuf {
         self.data_dir
             .join("nuget")
             .join("metadata")
@@ -385,6 +402,15 @@ fn read_descriptor(path: &Path) -> Result<Option<ServiceIndexDescriptor>, NugetE
         .map_err(NugetError::Serialization)
 }
 
+fn parse_optional_url(value: Option<String>) -> Result<Option<Url>, NugetError> {
+    value
+        .map(|value| {
+            Url::parse(&value)
+                .map_err(|_| NugetError::InvalidServiceIndex("stored URL is invalid".to_owned()))
+        })
+        .transpose()
+}
+
 fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>, io::Error> {
     match fs::read(path) {
         Ok(contents) => Ok(Some(contents)),
@@ -443,7 +469,9 @@ fn nuget_error_response(error: &NugetError) -> Response {
             status: Some(status),
             ..
         }) => StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
-        NugetError::Source(_) | NugetError::InvalidServiceIndex(_) => StatusCode::BAD_GATEWAY,
+        NugetError::Source(_)
+        | NugetError::InvalidServiceIndex(_)
+        | NugetError::InvalidRegistration(_) => StatusCode::BAD_GATEWAY,
         NugetError::Storage(_) | NugetError::Serialization(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (status, [(CONTENT_TYPE, "application/json")], Body::empty()).into_response()

@@ -37,3 +37,10 @@ pub(crate) fn safe_resource_url(base_url: &Url, require_https: bool, candidate: 
     }
     true
 }
+
+pub(crate) fn is_safe_segment(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+'))
+}
