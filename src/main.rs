@@ -2,8 +2,9 @@ use std::{fs, sync::Arc};
 
 use stacktory::{
     Config, SourcePool, cargo::CargoAdapter, docker::register_adapter,
-    http::router_with_rustup_and_registry, npm::NpmAdapter, service::RustupService,
-    sources::registry::AdapterRegistry, upm::UpmAdapter, vscode::VscodeAdapter,
+    http::router_with_rustup_and_registry, npm::NpmAdapter, nuget::NugetAdapter,
+    service::RustupService, sources::registry::AdapterRegistry, upm::UpmAdapter,
+    vscode::VscodeAdapter,
 };
 use tokio::net::TcpListener;
 
@@ -34,6 +35,16 @@ fn configured_registry(config: &mut Config) -> Result<AdapterRegistry, Box<dyn s
             "npm",
             Arc::new(SourcePool::new("npm", npm.sources)?),
             Arc::new(NpmAdapter::new(
+                config.root_url.clone(),
+                config.data_dir.clone(),
+            )),
+        )?;
+    }
+    if let Some(nuget) = config.nuget.take() {
+        registry.register(
+            "nuget",
+            Arc::new(SourcePool::new("nuget", nuget.sources)?),
+            Arc::new(NugetAdapter::new(
                 config.root_url.clone(),
                 config.data_dir.clone(),
             )),
@@ -76,8 +87,8 @@ mod tests {
 
     use axum::{body::Body, http::Request};
     use stacktory::{
-        Config, EcosystemConfig, RustupConfig, SourceConfig, SourceGraph, SourceType, UpmConfig,
-        http::router_with_registry,
+        Config, EcosystemConfig, NugetConfig, RustupConfig, SourceConfig, SourceGraph, SourceType,
+        UpmConfig, http::router_with_registry,
     };
     use tower::ServiceExt;
     use url::Url;
@@ -102,7 +113,13 @@ mod tests {
                 sources: SourceGraph::new(vec![proxy("official", "http://127.0.0.1:9")])
                     .expect("npm sources"),
             }),
-            nuget: None,
+            nuget: Some(NugetConfig {
+                sources: SourceGraph::new(vec![proxy(
+                    "official",
+                    "http://127.0.0.1:9/v3/index.json",
+                )])
+                .expect("NuGet sources"),
+            }),
             pypi: None,
             upm: Some(UpmConfig {
                 sources: SourceGraph::new(vec![proxy("unity", "http://127.0.0.1:9")])
@@ -122,6 +139,7 @@ mod tests {
             .await
             .expect("npm response");
         let upm_response = router
+            .clone()
             .oneshot(
                 Request::get("/mirror/upm/unity/com.company.package")
                     .body(Body::empty())
@@ -129,9 +147,18 @@ mod tests {
             )
             .await
             .expect("upm response");
+        let nuget_response = router
+            .oneshot(
+                Request::get("/mirror/nuget/official/v3/index.json")
+                    .body(Body::empty())
+                    .expect("NuGet request"),
+            )
+            .await
+            .expect("NuGet response");
 
         assert_ne!(npm_response.status(), axum::http::StatusCode::NOT_FOUND);
         assert_ne!(upm_response.status(), axum::http::StatusCode::NOT_FOUND);
+        assert_ne!(nuget_response.status(), axum::http::StatusCode::NOT_FOUND);
     }
 
     fn proxy(name: &str, base_url: &str) -> SourceConfig {
