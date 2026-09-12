@@ -445,7 +445,7 @@ fn rewrite_service_index(
     let mut rewritten = Vec::with_capacity(resources.len());
     let mut registration_url = None;
     let mut package_base_url = None;
-    let mut search_url = None;
+    let mut search_resource: Option<(u8, Url)> = None;
 
     for resource in resources.drain(..) {
         let Some(object) = resource.as_object() else {
@@ -501,15 +501,19 @@ fn rewrite_service_index(
                 local_resource_url(root_url, entry_name, "package/"),
             ));
         } else if resource_type.starts_with(SEARCH_QUERY_SERVICE) {
-            if search_url.is_some() {
-                continue;
-            }
             if !safe_resource_url(base_url, require_https, &upstream_url) {
                 return Err(NugetError::InvalidServiceIndex(
                     "search resource URL is unsafe".to_owned(),
                 ));
             }
-            search_url = Some(upstream_url);
+            let rank = search_resource_rank(resource_type);
+            if rank.is_some_and(|rank| {
+                search_resource
+                    .as_ref()
+                    .is_none_or(|(current_rank, _)| rank > *current_rank)
+            }) {
+                search_resource = Some((rank.expect("checked search resource"), upstream_url));
+            }
             rewritten.push(rewrite_resource(
                 object,
                 local_resource_url(root_url, entry_name, "search/query"),
@@ -521,6 +525,7 @@ fn rewrite_service_index(
             "service index lacks a restore resource".to_owned(),
         ));
     }
+    let search_url = search_resource.map(|(_, url)| url);
     *resources = rewritten;
     Ok(RewrittenServiceIndex {
         body: serde_json::to_vec(&index)?,
@@ -528,6 +533,17 @@ fn rewrite_service_index(
         package_base_url,
         search_url,
     })
+}
+
+fn search_resource_rank(resource_type: &str) -> Option<u8> {
+    match resource_type {
+        "SearchQueryService/3.5.0" => Some(3),
+        "SearchQueryService/3.0.0-rc" => Some(2),
+        "SearchQueryService/3.0.0-beta" => Some(1),
+        "SearchQueryService" => Some(0),
+        _ if resource_type.starts_with("SearchQueryService/") => Some(1),
+        _ => None,
+    }
 }
 
 fn is_supported_resource(resource_type: &str) -> bool {

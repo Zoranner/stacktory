@@ -119,9 +119,11 @@ async fn start_search_server() -> (Url, SocketAddr) {
             "resources":[
                 {{"@id":"http://nuget.example:{}/v3/registration/","@type":"RegistrationsBaseUrl/3.6.0"}},
                 {{"@id":"http://nuget.example:{}/v3-flatcontainer/","@type":"PackageBaseAddress/3.0.0"}},
+                {{"@id":"http://azuresearch.example:{}/legacy-query","@type":"SearchQueryService"}},
                 {{"@id":"http://azuresearch.example:{}/query","@type":"SearchQueryService/3.5.0"}}
             ]
         }}"#,
+        address.port(),
         address.port(),
         address.port(),
         address.port()
