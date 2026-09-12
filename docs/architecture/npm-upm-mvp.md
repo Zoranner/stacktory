@@ -2,9 +2,9 @@
 
 ## 状态与目标
 
-本文档定义 npm 和 Unity Package Manager（UPM）的后续只读适配边界。当前
-Stacktory 尚未实现或注册这两个生态的路由；本文档中的路径是目标契约，不是
-现有服务能力。
+本文档定义 npm 和 Unity Package Manager（UPM）的只读适配边界。当前 npm 已有路径、
+metadata 和 tarball 缓存的部分实现，但尚未注册运行时路由；UPM 尚未实现或注册。
+本文档中的路径是目标契约，未注册的部分不是现有服务能力。
 
 npm 与 UPM 都使用 npm-compatible registry 的 metadata、版本对象和 tarball
 文件模型。两者共享协议解析、来源访问、缓存、完整性和 URL 重写的核心实现，

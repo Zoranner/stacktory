@@ -2,8 +2,9 @@
 
 ## 状态与目标
 
-本文档定义 NuGet V3 restore 所需的后续只读适配边界。当前 Stacktory 尚未
-实现或注册 NuGet 路由；本文档中的路径是目标契约。本 MVP 不引入数据库。
+本文档定义 NuGet V3 restore 所需的只读适配边界。当前已完成 service index 资源发现的
+部分实现，但 registration、package content 和运行时注册尚未完成；本文档中的其他
+路径仍是目标契约。本 MVP 不引入数据库。
 
 首期只服务 restore 所需的 V3 service index、registration 和 package content。
 搜索、push、delete、API key、账号、符号服务器和写入型 NuGet API 保持后续

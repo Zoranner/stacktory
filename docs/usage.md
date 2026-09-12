@@ -11,10 +11,10 @@
 | Cargo | 已实现 | Cargo Sparse Registry、依赖下载和 `cargo install` |
 | VS Code | 已实现 | 受控 VS Code 产品副本的扩展侧栏 |
 | Docker | 未实现 | 暂不可用 |
-| npm | 未实现 | 暂不可用 |
+| npm | 部分实现，未注册 | 暂不可用 |
 | Unity UPM | 未实现 | 暂不可用 |
 | PyPI | 未实现 | 暂不可用 |
-| NuGet | 未实现 | 暂不可用 |
+| NuGet | 部分实现，未注册 | 暂不可用 |
 
 当前服务只在启动时读取当前工作目录的 `config.toml`。Docker Compose 将
 `deploy/app/config.toml` 挂载为 `/app/config.toml`，运行数据写入
@@ -281,7 +281,8 @@ data/vscode/artifacts/{proxy}/objects/marketplace/
 
 ## npm
 
-当前 npm adapter 尚未实现，也没有注册 `/mirror/npm` 路由。暂时不要执行：
+当前 npm 已完成路径解析、metadata 重写和 tarball 缓存的部分实现，但 adapter 尚未接入
+主程序，也没有注册 `/mirror/npm` 路由，因此暂时不可用。暂时不要执行：
 
 ```text
 npm config set registry https://stacktory.example.internal/mirror/npm/group
@@ -338,8 +339,9 @@ sdist hash 校验、group 回退以及真实 pip 安装。未实现前，上述�
 
 ## NuGet
 
-当前 NuGet adapter 尚未实现，也没有注册 `/mirror/nuget` 路由。暂时不要把
-Stacktory 添加为 NuGet source。
+当前 NuGet 已完成 service index 资源发现的部分实现，但 registration、package content
+和主程序注册尚未完成，也没有注册可用的 `/mirror/nuget` 路由。暂时不要把 Stacktory
+添加为 NuGet source。
 
 完成后目标使用方式为：
 

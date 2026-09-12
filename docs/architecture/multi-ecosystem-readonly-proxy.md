@@ -3,9 +3,10 @@
 ## 目标
 
 Stacktory 为内网开发机提供统一的研发制品访问入口。当前实现包含 Rustup
-动态镜像和 Cargo Sparse Index/crate 只读代理；npm、UPM、PyPI、NuGet、Docker、
-VS Code 扩展和 Winget
-只在本文件及各自 MVP 文档中定义后续适配边界，未实现的生态不注册路由。
+动态镜像、Cargo Sparse Index/crate 和 VS Code Marketplace 扩展只读代理；npm 已有
+路径、metadata 和 tarball 缓存的部分实现，NuGet 已有 service index 资源发现的
+部分实现，但二者尚未完成运行时注册。UPM、PyPI、Docker 和 Winget
+只在本文件及各自 MVP 文档中定义适配边界，未注册的生态不暴露路由。
 
 本设计约束公共来源访问、显式组合、缓存、完整性和审计职责，使新增生态只
 实现协议适配器，不复制公共行为。本设计不引入数据库，不提供写入型包管理
@@ -295,9 +296,8 @@ manifest 写入、账号和签名管理不在范围内。
 metadata 解析、URL 重写、来源回退、缓存隔离和完整性失败。公共层测试覆盖
 source graph、单一 `base_url`、禁止任意 URL、重定向、原子写入和审计字段。
 
-本 Task 只形成后续适配器文档，不声称 npm、UPM、PyPI 或 NuGet 已实现，也不为
-未注册生态提供假路由。真实客户端联调、外部 registry 行为和生产部署验证必须
-在对应适配器实现后单独执行。
+本 Task 不把部分实现声称为可用适配器，也不为未注册生态提供假路由。真实客户端
+联调、外部 registry 行为和生产部署验证必须在对应适配器完成运行时注册后单独执行。
 
 当前 Cargo 的 affinity 缺口不影响已经完成的 Rustup 绑定语义，但意味着 Cargo、
 npm、UPM、PyPI 和 NuGet 的后续适配交付都必须分别证明两级文件系统绑定、来源
