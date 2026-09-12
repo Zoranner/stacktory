@@ -292,9 +292,10 @@ impl DockerService {
         let mut all_not_found = true;
         for source_name in candidates {
             match pool
-                .fetch_proxy_path_with_headers(
+                .fetch_proxy_registry_path(
                     &source_name,
                     &request_key,
+                    Method::GET,
                     headers.clone(),
                     FetchOperation::Metadata,
                 )
@@ -546,9 +547,10 @@ impl DockerService {
         let mut all_not_found = true;
         for source_name in candidates {
             match pool
-                .fetch_proxy_path_with_headers(
+                .fetch_proxy_registry_path(
                     &source_name,
                     &request_key,
+                    Method::GET,
                     headers.clone(),
                     FetchOperation::Artifact,
                 )

@@ -284,9 +284,10 @@ manifest、image config 和 layer blob 分别记录 object type。group 只按�
 实际 `selected_proxy`、repository、object type 和 digest 复用，因此 group
 入口与其实际选中的 direct proxy 可以复用同一内容对象。
 
-Docker 适配器首期不实现 push、delete、catalog、账号、token、签名管理或构建
-服务。真实 Docker/OCI 客户端联调必须在客户端支持当前 Stacktory 路径入口后
-单独验收。
+Docker 适配器首期不实现 push、delete、catalog、账号管理、私有凭据、签名管理或
+构建服务；对公开 Registry 返回的匿名 Bearer challenge，Stacktory 在服务端获取
+短期 pull token，不向客户端暴露上游认证信息。真实 Docker/OCI 客户端联调必须在
+客户端支持当前 Stacktory 路径入口后单独验收。
 
 ### VS Code 扩展
 

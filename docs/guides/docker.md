@@ -9,9 +9,9 @@ Stacktory 已提供 Docker Registry HTTP API V2 的公开只读适配器，入�
 ```
 
 首期支持 manifest、tag、digest、manifest list、OCI image index、image config
-和 layer blob。只支持不需要认证的公开 Registry；当前没有实现 token 获取、账号
-管理或认证转发。需要 Bearer challenge、私有仓库或对象存储重定向的来源，必须等
-管理员单独确认配置边界后再开放。
+和 layer blob。Stacktory 会在服务端处理公开 Registry 的匿名 Bearer challenge、
+安全的 blob 重定向和内容缓存，不要求用户提供账号、密码或 token。账号管理、私有
+仓库凭据和写入型认证不在范围内。
 
 Stacktory 不向 Docker 客户端返回上游 Registry host。上游协议请求由服务端生成：
 
