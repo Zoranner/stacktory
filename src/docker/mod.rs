@@ -59,6 +59,8 @@ pub enum DockerError {
     DigestMismatch { expected: String, actual: String },
     #[error("Docker blob `{0}` has no descriptor metadata")]
     UnknownBlob(String),
+    #[error("Docker Range header is invalid for an object of {0} bytes")]
+    InvalidRange(usize),
     #[error("Docker metadata storage failed: {0}")]
     Storage(#[from] io::Error),
     #[error("Docker metadata serialization failed: {0}")]
@@ -90,6 +92,11 @@ struct DockerAuditDetails<'a> {
     object_type: &'a str,
     cache_status: &'a str,
     failure_category: Option<&'a str>,
+}
+
+struct CachedManifest {
+    body: Vec<u8>,
+    content_type: Option<String>,
 }
 
 impl DockerAdapter {
@@ -208,6 +215,39 @@ impl DockerService {
                 metadata.content_type.as_deref(),
                 &metadata.digest,
             ));
+        }
+
+        if let ManifestReference::Digest(digest) = reference {
+            for source_name in candidate_sources(pool, entry_name, None)? {
+                if let Some(cached) =
+                    read_cached_manifest(&self.data_dir, &source_name, repository, digest)?
+                {
+                    let metadata = ManifestMetadata {
+                        repository: repository.to_owned(),
+                        reference: digest.clone(),
+                        digest: digest.clone(),
+                        selected_proxy: source_name,
+                        content_type: cached.content_type,
+                    };
+                    self.write_manifest_metadata(entry_name, &metadata, &cached.body)?;
+                    self.record(
+                        "docker_manifest_read",
+                        DockerAuditDetails {
+                            entry_name,
+                            object_key: &manifest_object_key(repository, reference),
+                            selected_proxy: &metadata.selected_proxy,
+                            object_type: manifest_object_type(metadata.content_type.as_deref()),
+                            cache_status: "hit",
+                            failure_category: None,
+                        },
+                    );
+                    return Ok(manifest_response(
+                        cached.body,
+                        metadata.content_type.as_deref(),
+                        digest,
+                    ));
+                }
+            }
         }
 
         let candidates = candidate_sources(
@@ -372,8 +412,29 @@ impl DockerService {
         request_headers: &HeaderMap,
         pool: &SourcePool,
     ) -> Result<Response, DockerError> {
-        let metadata = read_blob_metadata(&self.data_dir, entry_name, repository, digest)?
-            .ok_or_else(|| DockerError::UnknownBlob(digest.to_owned()))?;
+        let entry_metadata = read_blob_metadata(&self.data_dir, entry_name, repository, digest)?;
+        let candidates = candidate_sources(
+            pool,
+            entry_name,
+            entry_metadata
+                .as_ref()
+                .map(|metadata| metadata.selected_proxy.as_str()),
+        )?;
+        let metadata = match entry_metadata {
+            Some(metadata) => metadata,
+            None => candidates
+                .iter()
+                .find_map(|source_name| {
+                    match read_shared_blob_metadata(&self.data_dir, source_name, repository, digest)
+                    {
+                        Ok(Some(metadata)) => Some(Ok(metadata)),
+                        Ok(None) => None,
+                        Err(error) => Some(Err(error)),
+                    }
+                })
+                .transpose()?
+                .ok_or_else(|| DockerError::UnknownBlob(digest.to_owned()))?,
+        };
         if source_is_member(pool, entry_name, &metadata.selected_proxy)
             && let Some(body) = read_verified_artifact(
                 &self.data_dir,
@@ -394,14 +455,19 @@ impl DockerService {
                     failure_category: None,
                 },
             );
-            return Ok(blob_response(body, &metadata.content_type, digest));
+            return blob_response(
+                body,
+                &metadata.content_type,
+                digest,
+                request_headers
+                    .get(header::RANGE)
+                    .and_then(|value| value.to_str().ok()),
+            );
         }
-        let mut headers = HeaderMap::new();
-        if let Some(range) = request_headers.get(header::RANGE) {
-            headers.insert(header::RANGE, range.clone());
-        }
-        let candidates =
-            candidate_sources(pool, entry_name, Some(metadata.selected_proxy.as_str()))?;
+        let headers = HeaderMap::new();
+        let requested_range = request_headers
+            .get(header::RANGE)
+            .and_then(|value| value.to_str().ok());
         let request_key = format!("v2/{repository}/blobs/{digest}");
         let mut failures = Vec::new();
         let mut all_not_found = true;
@@ -467,7 +533,12 @@ impl DockerService {
                             failure_category: None,
                         },
                     );
-                    return Ok(blob_response(upstream.body, &metadata.content_type, digest));
+                    return blob_response(
+                        upstream.body,
+                        &metadata.content_type,
+                        digest,
+                        requested_range,
+                    );
                 }
                 Err(error) if pool.is_group(entry_name) && is_fallback_source_error(&error) => {
                     if !is_not_found_source_error(&error) {
@@ -541,11 +612,20 @@ fn docker_error_response(error: &DockerError) -> Response {
         | DockerError::MissingDigest
         | DockerError::DigestMismatch { .. } => StatusCode::BAD_GATEWAY,
         DockerError::UnknownBlob(_) => StatusCode::NOT_FOUND,
+        DockerError::InvalidRange(_) => StatusCode::RANGE_NOT_SATISFIABLE,
         DockerError::Storage(_) | DockerError::Serialization(_) => {
             StatusCode::INTERNAL_SERVER_ERROR
         }
     };
-    status.into_response()
+    let mut response = status.into_response();
+    if let DockerError::InvalidRange(length) = error {
+        response.headers_mut().insert(
+            header::CONTENT_RANGE,
+            header::HeaderValue::from_str(&format!("bytes */{length}"))
+                .expect("content range is valid"),
+        );
+    }
+    response
 }
 
 fn sha256_digest(contents: &[u8]) -> String {
@@ -692,6 +772,32 @@ fn read_blob_metadata(
         .map_err(DockerError::Serialization)
 }
 
+fn read_shared_blob_metadata(
+    data_dir: &Path,
+    selected_proxy: &str,
+    repository: &str,
+    digest: &str,
+) -> Result<Option<BlobMetadata>, DockerError> {
+    let root = data_dir.join("docker").join("metadata");
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(DockerError::Storage(error)),
+    };
+    for entry in entries {
+        let entry = entry.map_err(DockerError::Storage)?;
+        let Some(entry_name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if let Some(metadata) = read_blob_metadata(data_dir, &entry_name, repository, digest)?
+            && metadata.selected_proxy == selected_proxy
+        {
+            return Ok(Some(metadata));
+        }
+    }
+    Ok(None)
+}
+
 fn read_manifest_metadata(
     data_dir: &Path,
     entry_name: &str,
@@ -711,6 +817,30 @@ fn read_manifest_metadata(
     serde_json::from_slice(&contents)
         .map(Some)
         .map_err(DockerError::Serialization)
+}
+
+fn read_cached_manifest(
+    data_dir: &Path,
+    selected_proxy: &str,
+    repository: &str,
+    digest: &str,
+) -> Result<Option<CachedManifest>, DockerError> {
+    for object_type in ["manifest", "image-index"] {
+        if let Some(body) =
+            read_verified_artifact(data_dir, selected_proxy, repository, object_type, digest)?
+        {
+            let content_type = serde_json::from_slice::<Value>(&body)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("mediaType")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                });
+            return Ok(Some(CachedManifest { body, content_type }));
+        }
+    }
+    Ok(None)
 }
 
 fn blob_metadata_path(
@@ -884,18 +1014,75 @@ fn manifest_response(body: Vec<u8>, content_type: Option<&str>, digest: &str) ->
     response
 }
 
-fn blob_response(body: Vec<u8>, content_type: &str, digest: &str) -> Response {
-    let mut response = (StatusCode::OK, Body::from(body)).into_response();
+fn blob_response(
+    body: Vec<u8>,
+    content_type: &str,
+    digest: &str,
+    requested_range: Option<&str>,
+) -> Result<Response, DockerError> {
+    let full_length = body.len();
+    let (status, response_body, content_range) = if let Some(range) = requested_range {
+        let (start, end) =
+            parse_range(range, full_length).ok_or(DockerError::InvalidRange(full_length))?;
+        (
+            StatusCode::PARTIAL_CONTENT,
+            body[start..=end].to_vec(),
+            Some(format!("bytes {start}-{end}/{full_length}")),
+        )
+    } else {
+        (StatusCode::OK, body, None)
+    };
+    let response_length = response_body.len();
+    let mut response = (status, Body::from(response_body)).into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         header::HeaderValue::from_str(content_type)
             .unwrap_or_else(|_| header::HeaderValue::from_static("application/octet-stream")),
     );
     response.headers_mut().insert(
+        header::HeaderName::from_static("accept-ranges"),
+        header::HeaderValue::from_static("bytes"),
+    );
+    response.headers_mut().insert(
+        header::CONTENT_LENGTH,
+        header::HeaderValue::from_str(&response_length.to_string())
+            .expect("content length is valid"),
+    );
+    if let Some(content_range) = content_range {
+        response.headers_mut().insert(
+            header::CONTENT_RANGE,
+            header::HeaderValue::from_str(&content_range).expect("content range is valid"),
+        );
+    }
+    response.headers_mut().insert(
         header::HeaderName::from_static("docker-content-digest"),
         header::HeaderValue::from_str(digest).expect("SHA-256 digest is valid"),
     );
-    response
+    Ok(response)
+}
+
+fn parse_range(value: &str, length: usize) -> Option<(usize, usize)> {
+    if length == 0 || !value.starts_with("bytes=") || value[6..].contains(',') {
+        return None;
+    }
+    let (start, end) = value[6..].split_once('-')?;
+    if start.is_empty() {
+        let suffix = end.parse::<usize>().ok()?;
+        if suffix == 0 {
+            return None;
+        }
+        return Some((length.saturating_sub(suffix), length - 1));
+    }
+    let start = start.parse::<usize>().ok()?;
+    if start >= length {
+        return None;
+    }
+    let end = if end.is_empty() {
+        length - 1
+    } else {
+        end.parse::<usize>().ok()?.min(length - 1)
+    };
+    (start <= end).then_some((start, end))
 }
 
 fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), io::Error> {

@@ -32,19 +32,19 @@
 - Produces `DockerAdapter`, `DockerService`, `DockerRequest`, `DockerPathError`, and parsers for `v2/`, manifest, and blob paths.
 - Consumes `SourcePool`, `Adapter`, and `AdapterRequest`.
 
-- [ ] **Step 1: Write failing path tests**
+- [x] **Step 1: Write failing path tests**
 
 Test that `v2/` is a probe, `v2/library/alpine/manifests/latest` parses as a manifest request, `v2/library/alpine/manifests/sha256:<64-hex>` parses as a digest reference, and `v2/.../blobs/sha256:<64-hex>` parses as a blob request. Reject `/mirror/docker/v2/...` as an adapter path, V1 paths, unsafe repository segments, empty references, and non-SHA256 digests.
 
-- [ ] **Step 2: Run `cargo test --test docker_path_test` and verify the missing-module failure**
+- [x] **Step 2: Run `cargo test --test docker_path_test` and verify the missing-module failure**
 
-- [ ] **Step 3: Implement only the path/request model and GET-only adapter shell**
+- [x] **Step 3: Implement only the path/request model and GET-only adapter shell**
 
 The adapter must accept only `v2/`, `v2/{repository}/manifests/{reference}`, and `v2/{repository}/blobs/{digest}`. It must not construct or return any upstream URL in the client response.
 
-- [ ] **Step 4: Run the focused path tests and route tests**
+- [x] **Step 4: Run the focused path tests and route tests**
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```text
 git add src/docker tests/docker_path_test.rs

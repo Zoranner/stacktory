@@ -5,7 +5,8 @@
 Stacktory 为内网开发机提供统一的研发制品访问入口。当前实现包含 Rustup
 动态镜像、Cargo Sparse Index/crate 和 VS Code Marketplace 扩展只读代理；npm 已有
 路径、metadata 和 tarball 缓存的部分实现，NuGet 已有 service index 资源发现的
-部分实现，但二者尚未完成运行时注册。UPM、PyPI、Docker 和 Winget
+部分实现，但二者尚未完成运行时注册。Docker 已完成 Registry V2 只读适配器；
+UPM、PyPI 和 Winget
 只在本文件及各自 MVP 文档中定义适配边界，未注册的生态不暴露路由。
 
 本设计约束公共来源访问、显式组合、缓存、完整性和审计职责，使新增生态只
@@ -267,14 +268,27 @@ NuGet 使用 `/mirror/nuget/{name}/v3/...`，适配器负责 service index、reg
 
 ### Docker
 
-Docker 使用 `/mirror/docker/{name}/...`。适配器首期处理 Registry V2 的 manifest、
-image config 和 layer blob，支持 tag、digest 和多架构 manifest。Docker 的内容
-寻址模型要求按 digest 校验并缓存 blob；tag 到 manifest 的解析结果作为 metadata
-处理。推送、删除、账号和签名管理不在只读代理范围内。
+Docker 使用 `/mirror/docker/{name}/v2/...`。适配器处理 Registry V2 的 `/v2/`
+探测、manifest、manifest list、OCI image index、image config 和 layer blob，
+支持 tag、digest、`Accept`、`Content-Type`、`Docker-Content-Digest` 和 blob
+`Range` 语义。Docker 的内容寻址模型要求按 digest 校验并缓存对象；tag 到
+manifest 的解析结果作为 entry-scoped metadata 处理。
 
-Docker source 的 `base_url` 是一个 Registry V2 根地址。具体的
-`/v2/{repository}/manifests/{reference}`、`blobs/{digest}` 等协议路径由适配器
-生成，不向公共 source 配置增加多个地址字段。
+Docker source 的 `base_url` 是一个 Registry V2 根地址。Stacktory 对外的
+`/mirror/docker/{name}/v2/...` 与上游的 `/v2/...` 是两层不同路径；具体的
+`/v2/{repository}/manifests/{reference}`、`/v2/{repository}/blobs/{digest}`
+等协议路径由适配器生成，不增加 `/mirror/docker/v2/...` 内部命名空间，也不向
+Docker 客户端返回上游 Registry host。
+
+manifest、image config 和 layer blob 分别记录 object type。group 只按声明顺序
+选择一个通过协议和完整性校验的 proxy，成功后记录 `selected_proxy`，不合并
+不同来源的 manifest 或 tag 集合。entry metadata 保持入口隔离；已校验内容按
+实际 `selected_proxy`、repository、object type 和 digest 复用，因此 group
+入口与其实际选中的 direct proxy 可以复用同一内容对象。
+
+Docker 适配器首期不实现 push、delete、catalog、账号、token、签名管理或构建
+服务。真实 Docker/OCI 客户端联调必须在客户端支持当前 Stacktory 路径入口后
+单独验收。
 
 ### VS Code 扩展
 

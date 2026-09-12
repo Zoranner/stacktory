@@ -100,6 +100,65 @@ async fn verified_manifest_and_blob_content_are_reused_from_cache() {
 }
 
 #[tokio::test]
+async fn invalid_blob_range_returns_registry_range_metadata() {
+    let config = br#"{"architecture":"amd64","os":"linux"}"#.to_vec();
+    let config_digest = digest(&config);
+    let manifest = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{config_digest}","size":{size}}},"layers":[]}}"#,
+        size = config.len(),
+    )
+    .into_bytes();
+    let upstream = start_blob_server(BlobServerData {
+        manifest_digest: digest(&manifest),
+        manifest,
+        config,
+        config_digest: config_digest.clone(),
+        layer: Vec::new(),
+        layer_digest: digest(&[]),
+        manifest_hits: Arc::new(AtomicUsize::new(0)),
+        blob_hits: Arc::new(AtomicUsize::new(0)),
+    })
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = docker_router(upstream, data_dir.path());
+    let manifest_response = router
+        .clone()
+        .oneshot(get_request(
+            "/mirror/docker/official/v2/library/demo/manifests/latest",
+        ))
+        .await
+        .expect("manifest response");
+    assert_eq!(manifest_response.status(), StatusCode::OK);
+
+    let response = router
+        .oneshot(
+            Request::get(format!(
+                "/mirror/docker/official/v2/library/demo/blobs/{config_digest}"
+            ))
+            .header(header::RANGE, "bytes=999-")
+            .body(Body::empty())
+            .expect("range request"),
+        )
+        .await
+        .expect("range response");
+
+    assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CONTENT_RANGE)
+            .and_then(|value| value.to_str().ok()),
+        Some(
+            format!(
+                "bytes */{}",
+                br#"{"architecture":"amd64","os":"linux"}"#.len()
+            )
+            .as_str()
+        )
+    );
+}
+
+#[tokio::test]
 async fn wrong_blob_digest_is_not_returned_or_cached() {
     let expected_blob = b"expected config".to_vec();
     let wrong_blob = b"wrong config".to_vec();
