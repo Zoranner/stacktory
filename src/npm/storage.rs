@@ -5,17 +5,27 @@ use std::{
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
+use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+use super::{metadata::NpmArtifactDescriptor, path::validate_package_name};
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NpmCacheKey {
     pub entry: String,
     pub package: String,
     pub version: String,
     pub representation: String,
     pub selected_proxy: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct StoredMetadata {
+    pub key: NpmCacheKey,
+    pub body: Vec<u8>,
+    pub descriptors: Vec<NpmArtifactDescriptor>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -33,6 +43,16 @@ pub struct VerifiedArtifact {
 #[derive(Debug)]
 pub struct NpmStorage {
     data_dir: PathBuf,
+}
+
+#[derive(Deserialize, Serialize)]
+struct MetadataPointer {
+    key: NpmCacheKey,
+}
+
+#[derive(Deserialize, Serialize)]
+struct MetadataEnvelope {
+    descriptors: Vec<NpmArtifactDescriptor>,
 }
 
 #[derive(Debug, Error)]
@@ -98,6 +118,80 @@ impl NpmStorage {
         }
     }
 
+    pub fn publish_metadata(
+        &self,
+        key: &NpmCacheKey,
+        body: &[u8],
+        descriptors: &[NpmArtifactDescriptor],
+    ) -> Result<(), StorageError> {
+        validate_metadata_key(key)?;
+        for descriptor in descriptors {
+            validate_artifact_key(&descriptor.artifact_key)?;
+            atomic_write(
+                &self.descriptor_path(&key.entry, &descriptor.artifact_key),
+                &serde_json::to_vec(descriptor)
+                    .map_err(|error| StorageError::Io(io::Error::other(error)))?,
+            )?;
+        }
+        atomic_write(&self.metadata_body_path(key), body)?;
+        atomic_write(
+            &self.metadata_envelope_path(key),
+            &serde_json::to_vec(&MetadataEnvelope {
+                descriptors: descriptors.to_vec(),
+            })
+            .map_err(|error| StorageError::Io(io::Error::other(error)))?,
+        )?;
+        atomic_write(
+            &self.metadata_pointer_path(&key.entry, &key.package),
+            &toml::to_string(&MetadataPointer { key: key.clone() })
+                .map_err(|error| StorageError::Io(io::Error::other(error)))?
+                .into_bytes(),
+        )
+    }
+
+    pub fn read_metadata(
+        &self,
+        entry: &str,
+        package: &str,
+    ) -> Result<Option<StoredMetadata>, StorageError> {
+        let pointer_path = self.metadata_pointer_path(entry, package);
+        let pointer_contents = match fs::read_to_string(&pointer_path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(StorageError::Io(error)),
+        };
+        let pointer: MetadataPointer = toml::from_str(&pointer_contents)
+            .map_err(|error| StorageError::Io(io::Error::other(error)))?;
+        validate_metadata_key(&pointer.key)?;
+        if pointer.key.entry != entry || pointer.key.package != package {
+            return Err(StorageError::InvalidIdentity(pointer.key.package));
+        }
+        let body = fs::read(self.metadata_body_path(&pointer.key))?;
+        let envelope: MetadataEnvelope =
+            serde_json::from_slice(&fs::read(self.metadata_envelope_path(&pointer.key))?)
+                .map_err(|error| StorageError::Io(io::Error::other(error)))?;
+        Ok(Some(StoredMetadata {
+            key: pointer.key,
+            body,
+            descriptors: envelope.descriptors,
+        }))
+    }
+
+    pub fn read_descriptor(
+        &self,
+        entry: &str,
+        artifact_key: &str,
+    ) -> Result<Option<NpmArtifactDescriptor>, StorageError> {
+        validate_artifact_key(artifact_key)?;
+        match fs::read(self.descriptor_path(entry, artifact_key)) {
+            Ok(contents) => serde_json::from_slice(&contents)
+                .map(Some)
+                .map_err(|error| StorageError::Io(io::Error::other(error))),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(StorageError::Io(error)),
+        }
+    }
+
     pub fn artifact_path(&self, key: &NpmCacheKey, artifact_key: &str) -> PathBuf {
         self.data_dir
             .join("npm")
@@ -110,12 +204,45 @@ impl NpmStorage {
             .join(safe_component(&key.representation))
             .join(artifact_key)
     }
+
+    fn metadata_body_path(&self, key: &NpmCacheKey) -> PathBuf {
+        self.data_dir
+            .join("npm")
+            .join("metadata")
+            .join(safe_component(&key.entry))
+            .join(safe_component(&key.package))
+            .join(safe_component(&key.selected_proxy))
+            .join(format!("{}-{}.json", key.version, key.representation))
+    }
+
+    fn metadata_envelope_path(&self, key: &NpmCacheKey) -> PathBuf {
+        self.metadata_body_path(key).with_extension("envelope.json")
+    }
+
+    fn metadata_pointer_path(&self, entry: &str, package: &str) -> PathBuf {
+        self.data_dir
+            .join("npm")
+            .join("metadata")
+            .join(safe_component(entry))
+            .join(safe_component(package))
+            .join("current.toml")
+    }
+
+    fn descriptor_path(&self, entry: &str, artifact_key: &str) -> PathBuf {
+        self.data_dir
+            .join("npm")
+            .join("metadata")
+            .join(safe_component(entry))
+            .join("descriptors")
+            .join(format!("{artifact_key}.json"))
+    }
 }
 
 fn validate_key(key: &NpmCacheKey) -> Result<(), StorageError> {
+    validate_package_name(&key.package)
+        .map_err(|error| StorageError::InvalidIdentity(error.to_string()))?;
     for value in [
         key.entry.as_str(),
-        key.package.as_str(),
         key.version.as_str(),
         key.representation.as_str(),
         key.selected_proxy.as_str(),
@@ -132,6 +259,14 @@ fn validate_key(key: &NpmCacheKey) -> Result<(), StorageError> {
         {
             return Err(StorageError::InvalidIdentity(value.to_owned()));
         }
+    }
+    Ok(())
+}
+
+fn validate_metadata_key(key: &NpmCacheKey) -> Result<(), StorageError> {
+    validate_key(key)?;
+    if key.version != "catalog" || key.representation != "metadata" {
+        return Err(StorageError::InvalidIdentity(key.version.clone()));
     }
     Ok(())
 }

@@ -139,6 +139,41 @@ impl SourcePool {
             .await
     }
 
+    pub async fn fetch_proxy_path(
+        &self,
+        source_name: &str,
+        request_key: &str,
+        operation: FetchOperation,
+    ) -> Result<SourceResponse, SourcePoolError> {
+        let source = self
+            .graph
+            .get(source_name)
+            .ok_or_else(|| SourcePoolError::UnknownEntry(source_name.to_owned()))?;
+        if source.source_type != crate::SourceType::Proxy {
+            return Err(SourcePoolError::UnknownEntry(source_name.to_owned()));
+        }
+        let request_key = normalize_proxy_path(request_key)?;
+        let url = source_url_raw(source, &request_key)?;
+        match self.fetcher.fetch(url, operation.timeout()).await {
+            Ok(response) => Ok(SourceResponse {
+                source_name: source_name.to_owned(),
+                body: response.body,
+                content_type: response.content_type,
+            }),
+            Err(error) if error.is_retryable() => Err(SourcePoolError::AllSourcesFailed {
+                entry_name: source_name.to_owned(),
+                request_key,
+                failures: error.to_string(),
+                status: None,
+            }),
+            Err(error) => Err(SourcePoolError::TerminalSourceError {
+                source_name: source_name.to_owned(),
+                status: error.status_code().unwrap_or_default(),
+                error: error.to_string(),
+            }),
+        }
+    }
+
     pub async fn post_json(
         &self,
         entry_name: &str,
@@ -283,6 +318,50 @@ fn source_url(source: &SourceConfig, request_key: &str) -> Result<Url, SourcePoo
     url.set_query(None);
     url.set_fragment(None);
     Ok(url)
+}
+
+fn source_url_raw(source: &SourceConfig, request_key: &str) -> Result<Url, SourcePoolError> {
+    let base_url = source
+        .base_url
+        .as_ref()
+        .expect("validated proxy source must have a base URL");
+    let base_path = base_url.path().trim_end_matches('/');
+    let mut url = base_url.clone();
+    url.set_raw_path(&format!("{base_path}/{request_key}"));
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url)
+}
+
+fn normalize_proxy_path(request_key: &str) -> Result<String, SourcePoolError> {
+    if request_key.is_empty()
+        || request_key.starts_with('/')
+        || request_key.contains('\\')
+        || request_key.contains('?')
+        || request_key.contains('#')
+        || request_key.chars().any(char::is_control)
+        || request_key
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
+        return Err(SourcePoolError::InvalidRequestKey(request_key.to_owned()));
+    }
+    let bytes = request_key.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len()
+                || !bytes[index + 1].is_ascii_hexdigit()
+                || !bytes[index + 2].is_ascii_hexdigit()
+            {
+                return Err(SourcePoolError::InvalidRequestKey(request_key.to_owned()));
+            }
+            index += 3;
+        } else {
+            index += 1;
+        }
+    }
+    Ok(request_key.to_owned())
 }
 
 fn valid_configured_url(source: &SourceConfig, url: &Url) -> bool {
