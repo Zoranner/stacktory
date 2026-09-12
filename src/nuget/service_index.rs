@@ -74,6 +74,15 @@ pub(crate) struct ServiceIndexSnapshot {
     pub(crate) package_base_url: Option<Url>,
 }
 
+pub(crate) struct NugetAuditDetails<'a> {
+    pub(crate) object_key: &'a str,
+    pub(crate) entry_name: &'a str,
+    pub(crate) selected_proxy: &'a str,
+    pub(crate) object_type: &'a str,
+    pub(crate) cache_status: &'a str,
+    pub(crate) failure_category: Option<&'a str>,
+}
+
 struct RewrittenServiceIndex {
     body: Vec<u8>,
     registration_url: Option<Url>,
@@ -244,6 +253,65 @@ impl NugetService {
         .into())
     }
 
+    pub(crate) async fn service_index_from_source(
+        &self,
+        entry_name: &str,
+        source_name: &str,
+        pool: &SourcePool,
+    ) -> Result<ServiceIndexSnapshot, NugetError> {
+        let source = pool
+            .proxy_members(entry_name)
+            .and_then(|members| {
+                members
+                    .into_iter()
+                    .find(|member| member.name == source_name)
+            })
+            .ok_or_else(|| SourcePoolError::UnknownEntry(source_name.to_owned()))?;
+        let base_url = source
+            .base_url
+            .as_ref()
+            .expect("validated NuGet proxy must have a base URL");
+        if !validate_service_index_url(base_url, source.require_https) {
+            return Err(NugetError::InvalidServiceIndex(
+                "configured service index URL is invalid".to_owned(),
+            ));
+        }
+        let upstream = pool
+            .fetch_configured_url(source_name, base_url.clone(), FetchOperation::Metadata)
+            .await?;
+        let rewritten = rewrite_service_index(
+            &upstream.body,
+            &self.root_url,
+            entry_name,
+            base_url,
+            source.require_https,
+        )?;
+        Ok(ServiceIndexSnapshot {
+            body: rewritten.body,
+            selected_proxy: source_name.to_owned(),
+            registration_url: rewritten.registration_url,
+            package_base_url: rewritten.package_base_url,
+        })
+    }
+
+    pub(crate) fn publish_service_index(
+        &self,
+        entry_name: &str,
+        snapshot: &ServiceIndexSnapshot,
+    ) -> Result<(), NugetError> {
+        let descriptor = ServiceIndexDescriptor {
+            selected_proxy: snapshot.selected_proxy.clone(),
+            registration_url: snapshot.registration_url.as_ref().map(Url::to_string),
+            package_base_url: snapshot.package_base_url.as_ref().map(Url::to_string),
+        };
+        atomic_write(&self.service_index_path(entry_name), &snapshot.body)?;
+        atomic_write(
+            &self.service_index_descriptor_path(entry_name),
+            &serde_json::to_vec(&descriptor)?,
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn service_index_path(&self, entry_name: &str) -> PathBuf {
         self.data_dir
             .join("nuget")
@@ -268,22 +336,37 @@ impl NugetService {
         cache_status: &str,
         failure_category: Option<&str>,
     ) {
+        self.record_object(
+            event,
+            NugetAuditDetails {
+                object_key: "v3/index.json",
+                entry_name,
+                selected_proxy,
+                object_type: "service-index",
+                cache_status,
+                failure_category,
+            },
+        );
+    }
+
+    pub(crate) fn record_object(&self, event: &str, details: NugetAuditDetails<'_>) {
         if let Err(error) = self.audit.record_detailed(
             event,
-            "v3/index.json",
-            if failure_category.is_some() {
+            details.object_key,
+            if details.failure_category.is_some() {
                 "failure"
             } else {
                 "success"
             },
             AuditDetails {
                 ecosystem: Some("nuget"),
-                entry_name: Some(entry_name),
-                object_key: Some("v3/index.json"),
-                selected_proxy: (!selected_proxy.is_empty()).then_some(selected_proxy),
-                object_type: Some("service-index"),
-                cache_status: Some(cache_status),
-                failure_category,
+                entry_name: Some(details.entry_name),
+                object_key: Some(details.object_key),
+                selected_proxy: (!details.selected_proxy.is_empty())
+                    .then_some(details.selected_proxy),
+                object_type: Some(details.object_type),
+                cache_status: Some(details.cache_status),
+                failure_category: details.failure_category,
             },
         ) {
             eprintln!("Stacktory audit write failed: {error}");

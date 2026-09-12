@@ -16,8 +16,8 @@ use url::Url;
 
 use crate::{
     nuget::{
-        registration::{PackageBinding, binding_path},
-        service_index::{NugetError, NugetService},
+        registration::{PackageBinding, binding_for_source, binding_path, persist_binding},
+        service_index::{NugetAuditDetails, NugetError, NugetService},
     },
     sources::{FetchOperation, SourcePool, SourcePoolError},
 };
@@ -48,68 +48,176 @@ async fn serve_package(
 ) -> Result<Vec<u8>, NugetError> {
     let (package_id, version) = parse_package_path(path)?;
     let binding_path = binding_path(&service.data_dir, entry_name, &package_id, &version);
-    let binding: PackageBinding = read_json(&binding_path)?.ok_or_else(|| {
+    let stored_binding: PackageBinding = read_json(&binding_path)?.ok_or_else(|| {
         NugetError::InvalidPackage("package is not referenced by registration".to_owned())
     })?;
-    if !binding.package_id.eq_ignore_ascii_case(&package_id)
-        || !binding.version.eq_ignore_ascii_case(&version)
+    if !stored_binding.package_id.eq_ignore_ascii_case(&package_id)
+        || !stored_binding.version.eq_ignore_ascii_case(&version)
     {
         return Err(NugetError::InvalidPackage(
             "stored package binding does not match the request".to_owned(),
         ));
     }
-    if !pool.proxy_members(entry_name).is_some_and(|members| {
-        members
-            .iter()
-            .any(|member| member.name == binding.selected_proxy)
-    }) {
-        return Err(NugetError::InvalidPackage(
-            "stored package binding uses an unavailable source".to_owned(),
-        ));
+    let mut members = pool
+        .proxy_members(entry_name)
+        .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
+    let preferred = stored_binding.selected_proxy.clone();
+    if let Some(position) = members.iter().position(|member| member.name == preferred) {
+        let selected = members.remove(position);
+        members.insert(0, selected);
     }
 
-    let cache_path = package_cache_path(
-        &service.data_dir,
-        &binding.selected_proxy,
-        &binding.package_id,
-        &binding.version,
-    );
-    if let Some(bytes) = read_if_present(&cache_path)? {
-        if cache_is_valid(&bytes, &binding, &cache_path)? {
-            service.record_package(
+    let is_group = pool.is_group(entry_name);
+    let mut failures = Vec::new();
+    let mut all_not_found = true;
+    for member in members {
+        let (binding, fallback_snapshot) = if member.name == preferred {
+            (stored_binding.clone(), None)
+        } else {
+            let snapshot = match service
+                .service_index_from_source(entry_name, &member.name, pool)
+                .await
+            {
+                Ok(snapshot) => snapshot,
+                Err(error) if is_group && is_retryable(&error) => {
+                    all_not_found = false;
+                    failures.push(format!("{}: {error}", member.name));
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let binding = match binding_for_source(
+                service,
                 entry_name,
                 &package_id,
                 &version,
-                &binding.selected_proxy,
-                "hit",
-                None,
-            );
-            return Ok(bytes);
+                &snapshot,
+                pool,
+            )
+            .await
+            {
+                Ok(binding) => binding,
+                Err(error) if is_group && is_retryable(&error) => {
+                    all_not_found = false;
+                    failures.push(format!("{}: {error}", member.name));
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            (binding, Some(snapshot))
+        };
+
+        let cache_path = package_cache_path(
+            &service.data_dir,
+            &binding.selected_proxy,
+            &binding.package_id,
+            &binding.version,
+        );
+        if let Some(bytes) = read_if_present(&cache_path)? {
+            if cache_is_valid(&bytes, &binding, &cache_path)? {
+                service.record_package(
+                    entry_name,
+                    &package_id,
+                    &version,
+                    &binding.selected_proxy,
+                    "hit",
+                    None,
+                );
+                return Ok(bytes);
+            }
+            let _ = fs::remove_file(&cache_path);
+            let _ = fs::remove_file(package_cache_metadata_path(&cache_path));
         }
-        let _ = fs::remove_file(&cache_path);
-        let _ = fs::remove_file(package_cache_metadata_path(&cache_path));
+
+        let upstream_url = Url::parse(&binding.upstream_url)
+            .map_err(|_| NugetError::InvalidPackage("stored package URL is invalid".to_owned()))?;
+        let upstream = match pool
+            .fetch_discovered_url(
+                &binding.selected_proxy,
+                upstream_url,
+                FetchOperation::Artifact,
+            )
+            .await
+        {
+            Ok(response) => response,
+            Err(error) if is_group && is_source_retryable(&error) => {
+                all_not_found = false;
+                failures.push(format!("{}: {error}", member.name));
+                service.record_object(
+                    "nuget_package_fallback",
+                    NugetAuditDetails {
+                        object_key: &format!("package/{package_id}/{version}"),
+                        entry_name,
+                        selected_proxy: &member.name,
+                        object_type: "package-content",
+                        cache_status: "fallback",
+                        failure_category: Some("source_unavailable"),
+                    },
+                );
+                continue;
+            }
+            Err(error) if is_group && is_source_not_found(&error) => {
+                failures.push(format!("{}: {error}", member.name));
+                service.record_object(
+                    "nuget_package_fallback",
+                    NugetAuditDetails {
+                        object_key: &format!("package/{package_id}/{version}"),
+                        entry_name,
+                        selected_proxy: &member.name,
+                        object_type: "package-content",
+                        cache_status: "fallback",
+                        failure_category: Some("not_found"),
+                    },
+                );
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let upstream_verified = match verify_package(&upstream.body, &binding) {
+            Ok(verified) => verified,
+            Err(error @ NugetError::PackageIntegrityFailure(_)) if is_group => {
+                all_not_found = false;
+                failures.push(format!("{}: {error}", member.name));
+                service.record_object(
+                    "nuget_package_fallback",
+                    NugetAuditDetails {
+                        object_key: &format!("package/{package_id}/{version}"),
+                        entry_name,
+                        selected_proxy: &member.name,
+                        object_type: "package-content",
+                        cache_status: "fallback",
+                        failure_category: Some("integrity_mismatch"),
+                    },
+                );
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        publish_verified(&cache_path, &upstream.body, &binding, upstream_verified)?;
+        if binding.selected_proxy != preferred {
+            persist_binding(&service.data_dir, entry_name, &binding)?;
+            if let Some(snapshot) = fallback_snapshot {
+                service.publish_service_index(entry_name, &snapshot)?;
+            }
+        }
+        service.record_package(
+            entry_name,
+            &package_id,
+            &version,
+            &binding.selected_proxy,
+            "published",
+            None,
+        );
+        return Ok(upstream.body);
     }
 
-    let upstream_url = Url::parse(&binding.upstream_url)
-        .map_err(|_| NugetError::InvalidPackage("stored package URL is invalid".to_owned()))?;
-    let upstream = pool
-        .fetch_discovered_url(
-            &binding.selected_proxy,
-            upstream_url,
-            FetchOperation::Artifact,
-        )
-        .await?;
-    let upstream_verified = verify_package(&upstream.body, &binding)?;
-    publish_verified(&cache_path, &upstream.body, &binding, upstream_verified)?;
-    service.record_package(
-        entry_name,
-        &package_id,
-        &version,
-        &binding.selected_proxy,
-        "published",
-        None,
-    );
-    Ok(upstream.body)
+    Err(SourcePoolError::AllSourcesFailed {
+        entry_name: entry_name.to_owned(),
+        request_key: format!("package/{package_id}/{version}"),
+        failures: failures.join("; "),
+        status: (is_group && all_not_found).then_some(404),
+    }
+    .into())
 }
 
 fn parse_package_path(path: &str) -> Result<(String, String), NugetError> {
@@ -332,6 +440,32 @@ fn package_error_response(error: &NugetError) -> Response {
     status.into_response()
 }
 
+fn is_retryable(error: &NugetError) -> bool {
+    matches!(
+        error,
+        NugetError::Source(SourcePoolError::AllSourcesFailed { .. })
+            | NugetError::InvalidRegistration(_)
+            | NugetError::InvalidServiceIndex(_)
+            | NugetError::InvalidPackage(_)
+            | NugetError::PackageIntegrityFailure(_)
+    )
+}
+
+fn is_source_retryable(error: &SourcePoolError) -> bool {
+    matches!(error, SourcePoolError::AllSourcesFailed { .. })
+}
+
+fn is_source_not_found(error: &SourcePoolError) -> bool {
+    matches!(
+        error,
+        SourcePoolError::TerminalSourceError { status: 404, .. }
+            | SourcePoolError::AllSourcesFailed {
+                status: Some(404),
+                ..
+            }
+    )
+}
+
 impl NugetService {
     pub(crate) fn record_package(
         &self,
@@ -342,25 +476,17 @@ impl NugetService {
         cache_status: &str,
         failure_category: Option<&str>,
     ) {
-        if let Err(error) = self.audit.record_detailed(
+        let object_key = format!("package/{package_id}/{version}");
+        self.record_object(
             "nuget_package_content",
-            &format!("package/{package_id}/{version}"),
-            if failure_category.is_some() {
-                "failure"
-            } else {
-                "success"
-            },
-            crate::audit::AuditDetails {
-                ecosystem: Some("nuget"),
-                entry_name: Some(entry_name),
-                object_key: Some(&format!("package/{package_id}/{version}")),
-                selected_proxy: Some(selected_proxy),
-                object_type: Some("package-content"),
-                cache_status: Some(cache_status),
+            NugetAuditDetails {
+                object_key: &object_key,
+                entry_name,
+                selected_proxy,
+                object_type: "package-content",
+                cache_status,
                 failure_category,
             },
-        ) {
-            eprintln!("Stacktory audit write failed: {error}");
-        }
+        );
     }
 }

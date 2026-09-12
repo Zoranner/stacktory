@@ -14,6 +14,7 @@ use serde_json::Value;
 use url::Url;
 
 use crate::{
+    nuget::service_index::NugetAuditDetails,
     nuget::service_index::{NugetError, NugetService},
     sources::{FetchOperation, SourcePool, SourcePoolError},
 };
@@ -66,10 +67,6 @@ async fn serve_registration(
 ) -> Result<Vec<u8>, NugetError> {
     let request = parse_registration_path(path)?;
     let snapshot = service.service_index(entry_name, pool).await?;
-    let registration_base = snapshot.registration_url.clone().ok_or_else(|| {
-        NugetError::InvalidRegistration("service index has no registration resource".to_owned())
-    })?;
-    let upstream_url = append_relative_path(&registration_base, &request.relative)?;
     let cache_path = registration_path(&service.data_dir, entry_name, &request.relative);
     let descriptor_path =
         registration_descriptor_path(&service.data_dir, entry_name, &request.relative);
@@ -87,46 +84,181 @@ async fn serve_registration(
         return Ok(body);
     }
 
+    let preferred = snapshot.selected_proxy.clone();
+    let mut members = pool
+        .proxy_members(entry_name)
+        .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
+    if let Some(position) = members.iter().position(|member| member.name == preferred) {
+        let selected = members.remove(position);
+        members.insert(0, selected);
+    }
+    let is_group = pool.is_group(entry_name);
+    let mut failures = Vec::new();
+    let mut all_not_found = true;
+
+    for member in members {
+        let source_snapshot = if member.name == preferred {
+            snapshot.clone()
+        } else {
+            match service
+                .service_index_from_source(entry_name, &member.name, pool)
+                .await
+            {
+                Ok(snapshot) => snapshot,
+                Err(error) if is_retryable(&error) => {
+                    all_not_found = false;
+                    failures.push(format!("{}: {error}", member.name));
+                    continue;
+                }
+                Err(error) if is_group && is_not_found(&error) => {
+                    failures.push(format!("{}: {error}", member.name));
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        let Some(registration_base) = source_snapshot.registration_url.clone() else {
+            all_not_found = false;
+            failures.push(format!("{}: no registration resource", member.name));
+            continue;
+        };
+        let upstream_url = append_relative_path(&registration_base, &request.relative)?;
+        let upstream = match pool
+            .fetch_discovered_url(&member.name, upstream_url.clone(), FetchOperation::Metadata)
+            .await
+        {
+            Ok(response) => response,
+            Err(error) if is_source_retryable(&error) => {
+                all_not_found = false;
+                failures.push(format!("{}: {error}", member.name));
+                continue;
+            }
+            Err(error) if is_group && is_source_not_found(&error) => {
+                failures.push(format!("{}: {error}", member.name));
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let mut body: Value = match serde_json::from_slice(&upstream.body) {
+            Ok(body) => body,
+            Err(error) => {
+                all_not_found = false;
+                failures.push(format!("{}: invalid JSON: {error}", member.name));
+                continue;
+            }
+        };
+        let mut bindings = BTreeMap::new();
+        if let Err(error) = rewrite_registration(
+            &mut body,
+            &request,
+            &source_snapshot,
+            service,
+            entry_name,
+            &registration_base,
+            &mut bindings,
+        ) {
+            all_not_found = false;
+            failures.push(format!("{}: {error}", member.name));
+            continue;
+        }
+        let body = serde_json::to_vec(&body)?;
+
+        atomic_write(&cache_path, &body)?;
+        atomic_write(
+            &descriptor_path,
+            &serde_json::to_vec(&RegistrationDescriptor {
+                selected_proxy: source_snapshot.selected_proxy.clone(),
+                upstream_url: upstream_url.to_string(),
+            })?,
+        )?;
+        for binding in bindings.values() {
+            persist_binding(&service.data_dir, entry_name, binding)?;
+        }
+        if source_snapshot.selected_proxy != preferred {
+            service.publish_service_index(entry_name, &source_snapshot)?;
+            service.record_object(
+                "nuget_registration_fallback",
+                NugetAuditDetails {
+                    object_key: &request.relative,
+                    entry_name,
+                    selected_proxy: &source_snapshot.selected_proxy,
+                    object_type: "registration",
+                    cache_status: "fallback",
+                    failure_category: Some("source_unavailable_or_invalid"),
+                },
+            );
+        }
+        service.record_object(
+            "nuget_registration_published",
+            NugetAuditDetails {
+                object_key: &request.relative,
+                entry_name,
+                selected_proxy: &source_snapshot.selected_proxy,
+                object_type: "registration",
+                cache_status: "published",
+                failure_category: None,
+            },
+        );
+        return Ok(body);
+    }
+
+    Err(SourcePoolError::AllSourcesFailed {
+        entry_name: entry_name.to_owned(),
+        request_key: request.relative,
+        failures: failures.join("; "),
+        status: (is_group && all_not_found).then_some(404),
+    }
+    .into())
+}
+
+pub(crate) async fn binding_for_source(
+    service: &NugetService,
+    entry_name: &str,
+    package_id: &str,
+    version: &str,
+    snapshot: &ServiceIndexSnapshot,
+    pool: &SourcePool,
+) -> Result<PackageBinding, NugetError> {
+    let registration_base = snapshot.registration_url.clone().ok_or_else(|| {
+        NugetError::InvalidRegistration("service index has no registration resource".to_owned())
+    })?;
+    let relative = format!(
+        "{}/{}.json",
+        package_id.to_ascii_lowercase(),
+        version.to_ascii_lowercase()
+    );
+    let upstream_url = append_relative_path(&registration_base, &relative)?;
     let upstream = pool
         .fetch_discovered_url(
             &snapshot.selected_proxy,
-            upstream_url.clone(),
+            upstream_url,
             FetchOperation::Metadata,
         )
         .await?;
     let mut body: Value = serde_json::from_slice(&upstream.body)?;
+    let request = RegistrationPath {
+        package_id: package_id.to_owned(),
+        relative,
+        leaf_version: Some(version.to_owned()),
+    };
     let mut bindings = BTreeMap::new();
     rewrite_registration(
         &mut body,
         &request,
-        &snapshot,
+        snapshot,
         service,
         entry_name,
         &registration_base,
         &mut bindings,
     )?;
-    let body = serde_json::to_vec(&body)?;
-
-    atomic_write(&cache_path, &body)?;
-    atomic_write(
-        &descriptor_path,
-        &serde_json::to_vec(&RegistrationDescriptor {
-            selected_proxy: snapshot.selected_proxy.clone(),
-            upstream_url: upstream_url.to_string(),
-        })?,
-    )?;
-    for binding in bindings.values() {
-        atomic_write(
-            &binding_path(
-                &service.data_dir,
-                entry_name,
-                &binding.package_id,
-                &binding.version,
-            ),
-            &serde_json::to_vec(binding)?,
-        )?;
-    }
-    Ok(body)
+    let binding = bindings
+        .remove(&binding_key(package_id, version))
+        .ok_or_else(|| {
+            NugetError::InvalidRegistration(
+                "registration leaf has no matching package content".to_owned(),
+            )
+        })?;
+    Ok(binding)
 }
 
 fn parse_registration_path(path: &str) -> Result<RegistrationPath, NugetError> {
@@ -461,6 +593,18 @@ pub(crate) fn binding_path(
         .join(format!("{}.json", version.to_ascii_lowercase()))
 }
 
+pub(crate) fn persist_binding(
+    data_dir: &Path,
+    entry_name: &str,
+    binding: &PackageBinding,
+) -> Result<(), NugetError> {
+    atomic_write(
+        &binding_path(data_dir, entry_name, &binding.package_id, &binding.version),
+        &serde_json::to_vec(binding)?,
+    )?;
+    Ok(())
+}
+
 fn binding_key(package_id: &str, version: &str) -> String {
     format!(
         "{}\0{}",
@@ -525,6 +669,41 @@ fn response(status: StatusCode, content_type: &str, body: Vec<u8>) -> Response {
         .unwrap_or_else(|_| axum::http::HeaderValue::from_static("application/octet-stream"));
     response.headers_mut().insert(CONTENT_TYPE, content_type);
     response
+}
+
+fn is_retryable(error: &NugetError) -> bool {
+    matches!(
+        error,
+        NugetError::Source(SourcePoolError::AllSourcesFailed { .. })
+            | NugetError::InvalidRegistration(_)
+            | NugetError::InvalidServiceIndex(_)
+    )
+}
+
+fn is_not_found(error: &NugetError) -> bool {
+    matches!(
+        error,
+        NugetError::Source(SourcePoolError::TerminalSourceError { status: 404, .. })
+            | NugetError::Source(SourcePoolError::AllSourcesFailed {
+                status: Some(404),
+                ..
+            })
+    )
+}
+
+fn is_source_retryable(error: &SourcePoolError) -> bool {
+    matches!(error, SourcePoolError::AllSourcesFailed { .. })
+}
+
+fn is_source_not_found(error: &SourcePoolError) -> bool {
+    matches!(
+        error,
+        SourcePoolError::TerminalSourceError { status: 404, .. }
+            | SourcePoolError::AllSourcesFailed {
+                status: Some(404),
+                ..
+            }
+    )
 }
 
 fn registration_error_response(error: &NugetError) -> Response {
