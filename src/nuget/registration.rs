@@ -758,6 +758,7 @@ fn registration_error_response(error: &NugetError) -> Response {
         NugetError::Source(_) | NugetError::InvalidServiceIndex(_) => StatusCode::BAD_GATEWAY,
         NugetError::InvalidPackage(_) => StatusCode::NOT_FOUND,
         NugetError::InvalidPackageIndex(_) => StatusCode::BAD_GATEWAY,
+        NugetError::InvalidSearch(_) => StatusCode::BAD_GATEWAY,
         NugetError::PackageIntegrityFailure(_) => StatusCode::BAD_GATEWAY,
         NugetError::Storage(_) | NugetError::Serialization(_) | NugetError::Audit(_) => {
             StatusCode::INTERNAL_SERVER_ERROR

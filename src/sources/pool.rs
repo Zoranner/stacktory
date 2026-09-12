@@ -446,6 +446,25 @@ impl SourcePool {
             .await
     }
 
+    pub async fn fetch_discovered_url_with_query_following_safe_redirects(
+        &self,
+        source_name: &str,
+        url: Url,
+        operation: FetchOperation,
+    ) -> Result<SourceResponse, SourcePoolError> {
+        let source = self
+            .graph
+            .get(source_name)
+            .ok_or_else(|| SourcePoolError::UnknownEntry(source_name.to_owned()))?;
+        if source.source_type != crate::SourceType::Proxy
+            || !valid_discovered_url_with_query(source, &url)
+        {
+            return Err(SourcePoolError::InvalidConfiguredUrl(url.to_string()));
+        }
+        self.fetch_safe_redirects(source_name, url, source.require_https, operation)
+            .await
+    }
+
     async fn fetch_safe_redirects(
         &self,
         source_name: &str,
@@ -577,8 +596,37 @@ fn valid_discovered_url(source: &SourceConfig, url: &Url) -> bool {
             .path()
             .split('/')
             .any(|segment| matches!(segment, "." | ".."))
-        && (!source.require_https || url.scheme() == "https"))
-        || is_safe_configured_url(url)
+        && (!source.require_https || url.scheme() == "https")
+}
+
+fn valid_discovered_url_with_query(source: &SourceConfig, url: &Url) -> bool {
+    let Some(base_url) = source.base_url.as_ref() else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || (source.require_https && url.scheme() != "https")
+        || url.path().contains('\\')
+        || url.path().contains('%')
+        || url.path().chars().any(char::is_control)
+        || url
+            .path()
+            .split('/')
+            .any(|segment| matches!(segment, "." | ".."))
+    {
+        return false;
+    }
+    (base_url.scheme() == url.scheme()
+        && base_url.host_str() == url.host_str()
+        && base_url.port_or_known_default() == url.port_or_known_default())
+        || {
+            let mut url_without_query = url.clone();
+            url_without_query.set_query(None);
+            is_safe_configured_url(&url_without_query)
+        }
 }
 
 pub(crate) fn is_safe_configured_url(url: &Url) -> bool {

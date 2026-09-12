@@ -109,6 +109,25 @@ struct CachedManifest {
     content_type: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct QueryMetadata {
+    namespace: String,
+    request_key: String,
+    query: Option<String>,
+    object_type: String,
+    selected_proxy: String,
+    digest: String,
+    content_type: Option<String>,
+    link: Option<String>,
+}
+
+#[derive(Debug)]
+struct QueryResult {
+    body: Vec<u8>,
+    content_type: Option<String>,
+    link: Option<String>,
+}
+
 impl DockerAdapter {
     pub fn new(root_url: Url, data_dir: impl Into<PathBuf>) -> Self {
         Self {
@@ -232,8 +251,15 @@ impl DockerService {
         pool: &SourcePool,
     ) -> Result<Response, DockerError> {
         let query = validate_list_query(query)?;
-        self.list_endpoint(entry_name, "v2/_catalog", query.as_deref(), "catalog", pool)
-            .await
+        self.list_endpoint(
+            entry_name,
+            "v2/_catalog",
+            "_catalog",
+            query.as_deref(),
+            "catalog",
+            pool,
+        )
+        .await
     }
 
     async fn tags(
@@ -247,6 +273,7 @@ impl DockerService {
         self.list_endpoint(
             entry_name,
             &format!("v2/{repository}/tags/list"),
+            repository,
             query.as_deref(),
             "tags",
             pool,
@@ -258,11 +285,73 @@ impl DockerService {
         &self,
         entry_name: &str,
         request_key: &str,
+        namespace: &str,
         query: Option<&str>,
         object_type: &str,
         pool: &SourcePool,
     ) -> Result<Response, DockerError> {
-        let candidates = candidate_sources(pool, entry_name, None)?;
+        let result = self
+            .query_result(entry_name, request_key, namespace, query, object_type, pool)
+            .await?;
+        Ok(json_response(
+            result.body,
+            result.content_type.as_deref(),
+            result.link.as_deref(),
+        ))
+    }
+
+    async fn query_result(
+        &self,
+        entry_name: &str,
+        request_key: &str,
+        namespace: &str,
+        query: Option<&str>,
+        object_type: &str,
+        pool: &SourcePool,
+    ) -> Result<QueryResult, DockerError> {
+        let bound = read_query_metadata(
+            &self.data_dir,
+            entry_name,
+            object_type,
+            namespace,
+            request_key,
+            query,
+        )?
+        .filter(|metadata| source_is_member(pool, entry_name, &metadata.selected_proxy));
+        if let Some(metadata) = &bound
+            && let Some(body) = read_verified_artifact(
+                &self.data_dir,
+                &metadata.selected_proxy,
+                namespace,
+                object_type,
+                &metadata.digest,
+            )?
+        {
+            self.record(
+                "docker_query_read",
+                DockerAuditDetails {
+                    entry_name,
+                    object_key: &query_object_key(request_key, query),
+                    selected_proxy: &metadata.selected_proxy,
+                    object_type,
+                    cache_status: "hit",
+                    failure_category: None,
+                },
+            );
+            return Ok(QueryResult {
+                body,
+                content_type: metadata.content_type.clone(),
+                link: metadata.link.clone(),
+            });
+        }
+
+        let candidates = candidate_sources(
+            pool,
+            entry_name,
+            bound
+                .as_ref()
+                .map(|metadata| metadata.selected_proxy.as_str()),
+        )?;
         let mut failures = Vec::new();
         let mut all_not_found = true;
         for source_name in candidates {
@@ -282,10 +371,46 @@ impl DockerService {
                         DockerError::InvalidManifest(format!("{object_type} is not valid JSON"))
                     })?;
                     validate_list_response(&value, object_type)?;
-                    return Ok(json_response(
-                        upstream.body,
-                        upstream.content_type.as_deref(),
-                    ));
+                    let digest = sha256_digest(&upstream.body);
+                    let metadata = QueryMetadata {
+                        namespace: namespace.to_owned(),
+                        request_key: request_key.to_owned(),
+                        query: query.map(str::to_owned),
+                        object_type: object_type.to_owned(),
+                        selected_proxy: source_name.clone(),
+                        digest: digest.clone(),
+                        content_type: upstream.content_type.clone(),
+                        link: upstream
+                            .headers
+                            .get(header::LINK)
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_owned),
+                    };
+                    write_verified_artifact(
+                        &self.data_dir,
+                        &source_name,
+                        namespace,
+                        object_type,
+                        &digest,
+                        &upstream.body,
+                    )?;
+                    write_query_metadata(&self.data_dir, entry_name, &metadata)?;
+                    self.record(
+                        "docker_query_read",
+                        DockerAuditDetails {
+                            entry_name,
+                            object_key: &query_object_key(request_key, query),
+                            selected_proxy: &source_name,
+                            object_type,
+                            cache_status: "miss",
+                            failure_category: None,
+                        },
+                    );
+                    return Ok(QueryResult {
+                        body: upstream.body,
+                        content_type: metadata.content_type,
+                        link: metadata.link,
+                    });
                 }
                 Err(error) if pool.is_group(entry_name) && is_fallback_source_error(&error) => {
                     if !is_not_found_source_error(&error) {
@@ -314,47 +439,18 @@ impl DockerService {
         let candidates = candidate_sources(pool, entry_name, None)?;
         let mut failures = Vec::new();
         for source_name in candidates {
-            match pool
-                .fetch_proxy_registry_path_with_query(
-                    &source_name,
-                    "v2/_catalog",
-                    None,
-                    Method::GET,
-                    HeaderMap::new(),
-                    FetchOperation::Metadata,
-                )
-                .await
-            {
-                Ok(upstream) => {
-                    let value: Value = serde_json::from_slice(&upstream.body)
-                        .map_err(|_| DockerError::InvalidCatalog)?;
-                    let repositories = value
-                        .get("repositories")
-                        .and_then(Value::as_array)
-                        .ok_or(DockerError::InvalidCatalog)?;
-                    let needle = query.term.to_ascii_lowercase();
-                    let mut results = Vec::new();
-                    for repository in repositories {
-                        let Some(repository) = repository.as_str() else {
-                            return Err(DockerError::InvalidCatalog);
-                        };
-                        if repository.to_ascii_lowercase().contains(&needle) {
-                            results.push(json!({ "name": repository }));
-                            if results.len() >= query.limit {
-                                break;
-                            }
-                        }
-                    }
+            match self.search_source(&source_name, &query, pool).await {
+                Ok(results) => {
                     let body = serde_json::to_vec(&json!({
                         "query": query.term,
                         "results": results,
                     }))?;
-                    return Ok(json_response(body, Some("application/json")));
+                    return Ok(json_response(body, Some("application/json"), None));
                 }
-                Err(error) if pool.is_group(entry_name) && is_fallback_source_error(&error) => {
+                Err(error) if pool.is_group(entry_name) && is_fallback_search_error(&error) => {
                     failures.push(format!("{source_name}: {error}"));
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => return Err(error),
             }
         }
         Err(DockerError::Source(SourcePoolError::AllSourcesFailed {
@@ -363,6 +459,53 @@ impl DockerService {
             failures: failures.join("; "),
             status: None,
         }))
+    }
+
+    async fn search_source(
+        &self,
+        source_name: &str,
+        query: &SearchQuery,
+        pool: &SourcePool,
+    ) -> Result<Vec<Value>, DockerError> {
+        let mut last = None;
+        let mut results = Vec::new();
+        let needle = query.term.to_ascii_lowercase();
+        for _ in 0..100 {
+            let page_query = catalog_page_query(last.as_deref());
+            let upstream = pool
+                .fetch_proxy_registry_path_with_query(
+                    source_name,
+                    "v2/_catalog",
+                    Some(&page_query),
+                    Method::GET,
+                    HeaderMap::new(),
+                    FetchOperation::Metadata,
+                )
+                .await?;
+            let value: Value =
+                serde_json::from_slice(&upstream.body).map_err(|_| DockerError::InvalidCatalog)?;
+            validate_list_response(&value, "catalog")?;
+            for repository in value["repositories"]
+                .as_array()
+                .expect("validated catalog repositories")
+            {
+                let repository = repository.as_str().ok_or(DockerError::InvalidCatalog)?;
+                if repository.to_ascii_lowercase().contains(&needle) {
+                    results.push(json!({ "name": repository }));
+                    if results.len() >= query.limit {
+                        return Ok(results);
+                    }
+                }
+            }
+            let Some(next_last) = next_catalog_last(&upstream.headers) else {
+                return Ok(results);
+            };
+            if last.as_deref() == Some(next_last.as_str()) {
+                return Err(DockerError::InvalidCatalog);
+            }
+            last = Some(next_last);
+        }
+        Err(DockerError::InvalidCatalog)
     }
 
     async fn manifest(
@@ -910,6 +1053,17 @@ fn sha256_digest(contents: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(contents))
 }
 
+fn sha256_hex(contents: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(contents))
+}
+
+fn query_object_key(request_key: &str, query: Option<&str>) -> String {
+    match query {
+        Some(query) if !query.is_empty() => format!("{request_key}?{query}"),
+        _ => request_key.to_owned(),
+    }
+}
+
 #[derive(Debug)]
 struct SearchQuery {
     term: String,
@@ -966,6 +1120,26 @@ fn parse_search_query(query: Option<&str>) -> Result<SearchQuery, DockerError> {
     })
 }
 
+fn catalog_page_query(last: Option<&str>) -> String {
+    let mut query = url::form_urlencoded::Serializer::new("n=1000".to_owned());
+    if let Some(last) = last {
+        query.append_pair("last", last);
+    }
+    query.finish()
+}
+
+fn next_catalog_last(headers: &HeaderMap) -> Option<String> {
+    let link = headers.get(header::LINK)?.to_str().ok()?;
+    let target = link
+        .split(',')
+        .find(|value| value.contains("rel=\"next\""))?
+        .trim();
+    let target = target.strip_prefix('<')?.split_once('>')?.0;
+    let query = target.split_once('?')?.1;
+    url::form_urlencoded::parse(query.as_bytes())
+        .find_map(|(key, value)| (key == "last").then(|| value.into_owned()))
+}
+
 fn validate_list_response(value: &Value, object_type: &str) -> Result<(), DockerError> {
     match object_type {
         "catalog" => {
@@ -996,13 +1170,18 @@ fn validate_list_response(value: &Value, object_type: &str) -> Result<(), Docker
     }
 }
 
-fn json_response(body: Vec<u8>, content_type: Option<&str>) -> Response {
+fn json_response(body: Vec<u8>, content_type: Option<&str>, link: Option<&str>) -> Response {
     let mut response = (StatusCode::OK, Body::from(body)).into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         header::HeaderValue::from_str(content_type.unwrap_or("application/json"))
             .unwrap_or_else(|_| header::HeaderValue::from_static("application/json")),
     );
+    if let Some(link) = link
+        && let Ok(value) = header::HeaderValue::from_str(link)
+    {
+        response.headers_mut().insert(header::LINK, value);
+    }
     response
 }
 
@@ -1252,6 +1431,66 @@ fn read_manifest_metadata(
         .map_err(DockerError::Serialization)
 }
 
+fn read_query_metadata(
+    data_dir: &Path,
+    entry_name: &str,
+    object_type: &str,
+    namespace: &str,
+    request_key: &str,
+    query: Option<&str>,
+) -> Result<Option<QueryMetadata>, DockerError> {
+    let path = query_metadata_path(
+        data_dir,
+        entry_name,
+        object_type,
+        namespace,
+        request_key,
+        query,
+    );
+    let Some(contents) = read_if_present(&path)? else {
+        return Ok(None);
+    };
+    serde_json::from_slice(&contents)
+        .map(Some)
+        .map_err(DockerError::Serialization)
+}
+
+fn write_query_metadata(
+    data_dir: &Path,
+    entry_name: &str,
+    metadata: &QueryMetadata,
+) -> Result<(), DockerError> {
+    let path = query_metadata_path(
+        data_dir,
+        entry_name,
+        &metadata.object_type,
+        &metadata.namespace,
+        &metadata.request_key,
+        metadata.query.as_deref(),
+    );
+    atomic_write(&path, &serde_json::to_vec(metadata)?).map_err(DockerError::Storage)
+}
+
+fn query_metadata_path(
+    data_dir: &Path,
+    entry_name: &str,
+    object_type: &str,
+    namespace: &str,
+    request_key: &str,
+    query: Option<&str>,
+) -> PathBuf {
+    let identity = format!(
+        "docker\0{entry_name}\0{object_type}\0{namespace}\0{request_key}\0{}",
+        query.unwrap_or_default()
+    );
+    data_dir
+        .join("docker")
+        .join("metadata")
+        .join(entry_name)
+        .join("queries")
+        .join(format!("{}.json", sha256_hex(identity.as_bytes())))
+}
+
 fn read_cached_manifest(
     data_dir: &Path,
     selected_proxy: &str,
@@ -1389,6 +1628,14 @@ fn is_fallback_source_error(error: &SourcePoolError) -> bool {
         SourcePoolError::AllSourcesFailed { .. }
             | SourcePoolError::TerminalSourceError { status: 404, .. }
     )
+}
+
+fn is_fallback_search_error(error: &DockerError) -> bool {
+    match error {
+        DockerError::InvalidCatalog => true,
+        DockerError::Source(source) => is_fallback_source_error(source),
+        _ => false,
+    }
 }
 
 fn is_not_found_source_error(error: &SourcePoolError) -> bool {

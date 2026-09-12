@@ -260,9 +260,10 @@ PyPI 使用 `/mirror/pypi/{name}/simple/...`，适配器负责项目名规范化
 
 ### NuGet
 
-NuGet 已注册 `/mirror/nuget/{name}/v3/...` 只读入口，适配器负责 service index、
-registration 和 package content 的资源发现、关系校验、来源绑定、摘要校验和
-group 回退；搜索及写入型 API 保持后续独立范围。详细契约见 `nuget-mvp.md`。
+NuGet 已注册 `/mirror/nuget/{name}/v3/...` 及 Search 只读入口，适配器负责
+service index、Search、registration 和 package content 的资源发现、关系校验、
+来源绑定、摘要校验和 group 回退；写入型 API 保持后续独立范围。详细契约见
+`nuget-mvp.md`。
 
 ### Docker
 

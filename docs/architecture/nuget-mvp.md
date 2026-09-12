@@ -2,13 +2,12 @@
 
 ## 状态与目标
 
-本文档定义并记录已实现的 NuGet V3 restore 只读适配边界。当前已完成 service index、
-registration、package content、来源绑定、缓存、审计和运行时注册；真实外部 NuGet
-服务与 `dotnet restore` 仍需单独联调。本 MVP 不引入数据库。
+本文档定义并记录已实现的 NuGet V3 只读适配边界。当前已完成 service index、Search、
+package version index、registration、package content、来源绑定、缓存、审计和运行时
+注册；真实外部 NuGet 服务与 `dotnet restore` 已完成验证。本 MVP 不引入数据库。
 
-首期只服务 restore 所需的 V3 service index、registration 和 package content。
-搜索、push、delete、API key、账号、符号服务器和写入型 NuGet API 保持后续
-独立范围。
+首期服务 V3 service index、Search、registration 和 package content 等只读能力。
+push、delete、API key、账号、符号服务器和写入型 NuGet API 保持后续独立范围。
 
 ## 公共来源契约
 
@@ -47,6 +46,7 @@ group 时多个 proxy 不自动组合。
 
 ```text
 GET /mirror/nuget/{name}/v3/index.json
+GET /mirror/nuget/{name}/search/query?{query}
 GET /mirror/nuget/{name}/package/{id}/index.json
 GET /mirror/nuget/{name}/registration/{*path}
 GET /mirror/nuget/{name}/package/{id}/{version}/{id}.{version}.nupkg
@@ -61,8 +61,8 @@ GET /mirror/nuget/{name}/package/{id}/{version}/{id}.{version}.nupkg
 适配器读取 `base_url` 指向的 service index JSON，解析资源的 `@type`、`@id`
 和可选版本信息，发现 registration、package content 和 search resource。返回
 客户端的支持资源 `@id` 必须重写到当前 `/mirror/nuget/{name}/...` 入口，
-不能暴露上游 host；search resource 因不在本 MVP 内，可以从客户端 service
-index 中省略或明确标记为不支持，不能伪装成可用搜索服务。
+不能暴露上游 host；SearchQueryService 只允许发现和安全转发查询参数，不接受
+客户端提供的外部 URL。
 
 Service index 是 metadata。它选中的 selected proxy 必须绑定到后续 registration
 和 package content 请求。group 不把两个 service index 的资源列表合并；来源
@@ -127,7 +127,7 @@ restore 资源 sidecar 和 selected proxy 仍有效时命中；package content �
 
 首期不注册或不实现：
 
-- `Search`、`RegistrationsBaseUrl` 之外的动态搜索服务。
+- `RegistrationsBaseUrl` 之外的其他动态注册服务。
 - `PackagePublish/2.0.0`、push、delete、unlist 和版本写入。
 - API key、登录、权限、租户和账号管理。
 - symbol package、符号服务器和 NuGet.org 特有的其他服务。
@@ -147,8 +147,8 @@ restore 资源 sidecar 和 selected proxy 仍有效时命中；package content �
 - 未知 service resource、外部重定向、路径穿越和写入型请求被拒绝。
 - 未注册 `/mirror/nuget/{name}/...` 之外的假路由不暴露。
 
-真实 `dotnet restore`、外部 NuGet V3 服务和生产部署行为仍需在适配器实现后
-单独联调；本地协议测试通过不替代真实客户端验证。
+真实 `dotnet restore` 已使用官方 NuGet 源和本地 HTTP 上游分别验证；生产部署
+行为仍需按部署环境单独联调。
 
 ## 官方协议依据
 

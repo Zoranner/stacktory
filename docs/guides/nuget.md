@@ -2,9 +2,9 @@
 
 ## 状态
 
-Stacktory 已实现 NuGet V3 restore 所需的只读 service index、package version
-index、registration 和 `.nupkg` 下载路由。真实 .NET 客户端已通过本地 HTTP
-上游验证；外部 NuGet 服务仍需按部署环境单独联调确认。
+Stacktory 已实现 NuGet V3 所需的只读 service index、Search、package version
+index、registration 和 `.nupkg` 下载路由。真实 .NET 客户端已通过官方源
+和本地 HTTP 上游验证。
 
 ## 配置 NuGet source
 
@@ -34,11 +34,12 @@ dotnet restore --source stacktory
 
 ```text
 GET /mirror/nuget/{name}/v3/index.json
+GET /mirror/nuget/{name}/search/query?{query}
 GET /mirror/nuget/{name}/package/{id}/index.json
 GET /mirror/nuget/{name}/registration/{*path}
 GET /mirror/nuget/{name}/package/{id}/{version}/{id}.{version}.nupkg
 ```
 
-不支持搜索、push、delete、unlist、API key、登录、权限、账号、symbol
-server 或其他写入型 NuGet API。用户不需要也不应配置上游 NuGet 地址；
+不支持 push、delete、unlist、API key、登录、权限、账号、symbol server
+或其他写入型 NuGet API。用户不需要也不应配置上游 NuGet 地址；
 上游 service index 由 Stacktory 管理员在服务端配置。

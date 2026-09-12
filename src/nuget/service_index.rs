@@ -28,6 +28,7 @@ use super::path::{safe_resource_url, validate_service_index_url};
 
 const REGISTRATIONS_BASE_URL: &str = "RegistrationsBaseUrl";
 const PACKAGE_BASE_ADDRESS: &str = "PackageBaseAddress";
+const SEARCH_QUERY_SERVICE: &str = "SearchQueryService";
 
 #[derive(Debug)]
 pub struct NugetAdapter {
@@ -55,6 +56,8 @@ pub enum NugetError {
     InvalidPackage(String),
     #[error("NuGet package version index is invalid: {0}")]
     InvalidPackageIndex(String),
+    #[error("NuGet search response is invalid: {0}")]
+    InvalidSearch(String),
     #[error("NuGet package content integrity check failed: {0}")]
     PackageIntegrityFailure(String),
     #[error("NuGet storage I/O failed: {0}")]
@@ -70,6 +73,8 @@ pub(crate) struct ServiceIndexDescriptor {
     pub(crate) selected_proxy: String,
     pub(crate) registration_url: Option<String>,
     pub(crate) package_base_url: Option<String>,
+    #[serde(default)]
+    pub(crate) search_url: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -78,6 +83,7 @@ pub(crate) struct ServiceIndexSnapshot {
     pub(crate) selected_proxy: String,
     pub(crate) registration_url: Option<Url>,
     pub(crate) package_base_url: Option<Url>,
+    pub(crate) search_url: Option<Url>,
 }
 
 pub(crate) struct NugetAuditDetails<'a> {
@@ -93,6 +99,7 @@ struct RewrittenServiceIndex {
     body: Vec<u8>,
     registration_url: Option<Url>,
     package_base_url: Option<Url>,
+    search_url: Option<Url>,
 }
 
 impl NugetAdapter {
@@ -132,6 +139,15 @@ impl NugetService {
         }
         if path.starts_with("package/") {
             return super::package::serve(self, entry_name, path, pool).await;
+        }
+        if path == "search/query" {
+            return super::search::serve(
+                self,
+                entry_name,
+                request.query.as_deref().unwrap_or_default(),
+                pool,
+            )
+            .await;
         }
         if path != "v3/index.json" {
             return StatusCode::NOT_FOUND.into_response();
@@ -174,6 +190,7 @@ impl NugetService {
                 selected_proxy: descriptor.selected_proxy,
                 registration_url: parse_optional_url(descriptor.registration_url)?,
                 package_base_url: parse_optional_url(descriptor.package_base_url)?,
+                search_url: parse_optional_url(descriptor.search_url)?,
             });
         }
 
@@ -199,10 +216,6 @@ impl NugetService {
             {
                 Ok(response) => response,
                 Err(error) if is_retryable(&error) => {
-                    eprintln!(
-                        "NuGet service index source failed: {}: {error}",
-                        member.name
-                    );
                     failures.push(format!("{}: {error}", member.name));
                     all_not_found = false;
                     continue;
@@ -225,6 +238,7 @@ impl NugetService {
                         selected_proxy: upstream.source_name.clone(),
                         registration_url: rewritten.registration_url.as_ref().map(Url::to_string),
                         package_base_url: rewritten.package_base_url.as_ref().map(Url::to_string),
+                        search_url: rewritten.search_url.as_ref().map(Url::to_string),
                     };
                     atomic_write(&cache_path, &rewritten.body)?;
                     atomic_write(&descriptor_path, &serde_json::to_vec(&descriptor)?)?;
@@ -240,6 +254,7 @@ impl NugetService {
                         selected_proxy: upstream.source_name,
                         registration_url: rewritten.registration_url,
                         package_base_url: rewritten.package_base_url,
+                        search_url: rewritten.search_url,
                     });
                 }
                 Err(error) => {
@@ -311,6 +326,7 @@ impl NugetService {
             selected_proxy: source_name.to_owned(),
             registration_url: rewritten.registration_url,
             package_base_url: rewritten.package_base_url,
+            search_url: rewritten.search_url,
         })
     }
 
@@ -323,6 +339,7 @@ impl NugetService {
             selected_proxy: snapshot.selected_proxy.clone(),
             registration_url: snapshot.registration_url.as_ref().map(Url::to_string),
             package_base_url: snapshot.package_base_url.as_ref().map(Url::to_string),
+            search_url: snapshot.search_url.as_ref().map(Url::to_string),
         };
         atomic_write(&self.service_index_path(entry_name), &snapshot.body)?;
         atomic_write(
@@ -428,6 +445,7 @@ fn rewrite_service_index(
     let mut rewritten = Vec::with_capacity(resources.len());
     let mut registration_url = None;
     let mut package_base_url = None;
+    let mut search_url = None;
 
     for resource in resources.drain(..) {
         let Some(object) = resource.as_object() else {
@@ -482,6 +500,20 @@ fn rewrite_service_index(
                 object,
                 local_resource_url(root_url, entry_name, "package/"),
             ));
+        } else if resource_type.starts_with(SEARCH_QUERY_SERVICE) {
+            if search_url.is_some() {
+                continue;
+            }
+            if !safe_resource_url(base_url, require_https, &upstream_url) {
+                return Err(NugetError::InvalidServiceIndex(
+                    "search resource URL is unsafe".to_owned(),
+                ));
+            }
+            search_url = Some(upstream_url);
+            rewritten.push(rewrite_resource(
+                object,
+                local_resource_url(root_url, entry_name, "search/query"),
+            ));
         }
     }
     if registration_url.is_none() || package_base_url.is_none() {
@@ -494,6 +526,7 @@ fn rewrite_service_index(
         body: serde_json::to_vec(&index)?,
         registration_url,
         package_base_url,
+        search_url,
     })
 }
 
@@ -625,6 +658,7 @@ fn nuget_error_response(error: &NugetError) -> Response {
         | NugetError::InvalidRegistrationPath(_)
         | NugetError::InvalidPackage(_)
         | NugetError::InvalidPackageIndex(_)
+        | NugetError::InvalidSearch(_)
         | NugetError::PackageIntegrityFailure(_) => StatusCode::BAD_GATEWAY,
         NugetError::Storage(_) | NugetError::Serialization(_) | NugetError::Audit(_) => {
             StatusCode::INTERNAL_SERVER_ERROR

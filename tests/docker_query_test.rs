@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use axum::{
     Router,
@@ -90,6 +93,38 @@ async fn group_query_returns_one_successful_source_without_merging() {
     );
 }
 
+#[tokio::test]
+async fn catalog_and_tags_queries_use_entry_bound_verified_cache() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let upstream = start_counted_query_server(hits.clone()).await;
+    let data_dir = tempdir().expect("data directory");
+    let router = docker_router(upstream, data_dir.path());
+
+    for path in [
+        "/mirror/docker/official/v2/_catalog?n=2",
+        "/mirror/docker/official/v2/library/alpine/tags/list?n=2",
+    ] {
+        let first = router
+            .clone()
+            .oneshot(Request::get(path).body(Body::empty()).expect("first query"))
+            .await
+            .expect("first response");
+        assert_eq!(first.status(), StatusCode::OK);
+        let second = router
+            .clone()
+            .oneshot(
+                Request::get(path)
+                    .body(Body::empty())
+                    .expect("cached query"),
+            )
+            .await
+            .expect("cached response");
+        assert_eq!(second.status(), StatusCode::OK);
+    }
+
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+}
+
 fn docker_router(upstream: Url, data_dir: &std::path::Path) -> axum::Router {
     docker_router_with_sources(upstream.clone(), upstream, data_dir)
 }
@@ -162,6 +197,35 @@ async fn start_query_server() -> Url {
     );
     tokio::spawn(async move {
         axum::serve(listener, router).await.expect("query server");
+    });
+    Url::parse(&format!("http://{address}")).expect("upstream URL")
+}
+
+async fn start_counted_query_server(hits: Arc<AtomicUsize>) -> Url {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let router = Router::new().route(
+        "/{*path}",
+        get(move |OriginalUri(uri): OriginalUri| {
+            let hits = hits.clone();
+            async move {
+                hits.fetch_add(1, Ordering::SeqCst);
+                match uri.path() {
+                    "/v2/_catalog" => {
+                        (StatusCode::OK, br#"{"repositories":["library/alpine"]}"#).into_response()
+                    }
+                    "/v2/library/alpine/tags/list" => (
+                        StatusCode::OK,
+                        br#"{"name":"library/alpine","tags":["latest"]}"#,
+                    )
+                        .into_response(),
+                    _ => StatusCode::NOT_FOUND.into_response(),
+                }
+            }
+        }),
+    );
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.expect("counted server");
     });
     Url::parse(&format!("http://{address}")).expect("upstream URL")
 }
