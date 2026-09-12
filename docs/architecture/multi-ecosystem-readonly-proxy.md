@@ -284,6 +284,12 @@ Docker source 的 `base_url` 是一个 Registry V2 根地址。Stacktory 对外�
 等协议路径由适配器生成，不增加 `/mirror/docker/v2/...` 内部命名空间，也不向
 Docker 客户端返回上游 Registry host。
 
+为兼容标准 Docker CLI，Docker source 可以配置可选的 `listen_port`。Stacktory
+为每个配置端口启动独立 listener，并将该 listener 的根 `/v2/...` 固定绑定到
+对应 source；未配置端口的 source 不增加根 Registry 入口。多个 source 的端口
+必须唯一且不能占用主服务 `listen_port`。域名绑定由外部 DNS、端口映射或反向
+代理完成。
+
 manifest、image config 和 layer blob 分别记录 object type。group 只按声明顺序
 选择一个通过协议和完整性校验的 proxy，成功后记录 `selected_proxy`，不合并
 不同来源的 manifest 或 tag 集合。entry metadata 保持入口隔离；已校验内容按

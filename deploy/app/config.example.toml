@@ -50,36 +50,44 @@ members = ["official", "ustc"]
 name = "official"
 type = "proxy"
 base_url = "https://registry-1.docker.io"
+# Optional standard Docker CLI listener for this source.
+# listen_port = 19001
 
 [[docker.sources]]
 name = "microsoft"
 type = "proxy"
 base_url = "https://mcr.microsoft.com"
+# listen_port = 19002
 
 [[docker.sources]]
 name = "ghcr"
 type = "proxy"
 base_url = "https://ghcr.io"
+# listen_port = 19003
 
 [[docker.sources]]
 name = "quay"
 type = "proxy"
 base_url = "https://quay.io"
+# listen_port = 19004
 
 [[docker.sources]]
 name = "aliyun"
 type = "proxy"
 base_url = "https://registry.cn-hangzhou.aliyuncs.com"
+# listen_port = 19005
 
 [[docker.sources]]
 name = "xuanyuan"
 type = "proxy"
 base_url = "https://docker.xuanyuan.me"
+# listen_port = 19006
 
 [[docker.sources]]
 name = "unstructured"
 type = "proxy"
 base_url = "https://downloads.unstructured.io"
+# listen_port = 19007
 
 [[docker.sources]]
 name = "group"
@@ -93,6 +101,8 @@ members = [
   "xuanyuan",
   "unstructured",
 ]
+# Optional group listener for standard Docker CLI use.
+# listen_port = 19000
 
 [npm]
 
