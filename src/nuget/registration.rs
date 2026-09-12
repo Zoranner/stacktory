@@ -446,7 +446,12 @@ fn registration_descriptor_path(data_dir: &Path, entry_name: &str, relative: &st
     ))
 }
 
-fn binding_path(data_dir: &Path, entry_name: &str, package_id: &str, version: &str) -> PathBuf {
+pub(crate) fn binding_path(
+    data_dir: &Path,
+    entry_name: &str,
+    package_id: &str,
+    version: &str,
+) -> PathBuf {
     data_dir
         .join("nuget")
         .join("metadata")
@@ -534,6 +539,8 @@ fn registration_error_response(error: &NugetError) -> Response {
         }) => StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
         NugetError::InvalidRegistration(_) => StatusCode::BAD_GATEWAY,
         NugetError::Source(_) | NugetError::InvalidServiceIndex(_) => StatusCode::BAD_GATEWAY,
+        NugetError::InvalidPackage(_) => StatusCode::NOT_FOUND,
+        NugetError::PackageIntegrityFailure(_) => StatusCode::BAD_GATEWAY,
         NugetError::Storage(_) | NugetError::Serialization(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     status.into_response()

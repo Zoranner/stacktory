@@ -1,3 +1,4 @@
+mod package;
 mod path;
 mod registration;
 mod service_index;

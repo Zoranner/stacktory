@@ -49,6 +49,10 @@ pub enum NugetError {
     InvalidServiceIndex(String),
     #[error("NuGet registration is invalid: {0}")]
     InvalidRegistration(String),
+    #[error("NuGet package content is invalid: {0}")]
+    InvalidPackage(String),
+    #[error("NuGet package content integrity check failed: {0}")]
+    PackageIntegrityFailure(String),
     #[error("NuGet storage I/O failed: {0}")]
     Storage(#[from] io::Error),
     #[error("NuGet JSON serialization failed: {0}")]
@@ -110,6 +114,9 @@ impl NugetService {
         let path = request.path.trim_start_matches('/');
         if path.starts_with("registration/") {
             return super::registration::serve(self, entry_name, path, pool).await;
+        }
+        if path.starts_with("package/") {
+            return super::package::serve(self, entry_name, path, pool).await;
         }
         if path != "v3/index.json" {
             return StatusCode::NOT_FOUND.into_response();
@@ -471,7 +478,9 @@ fn nuget_error_response(error: &NugetError) -> Response {
         }) => StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
         NugetError::Source(_)
         | NugetError::InvalidServiceIndex(_)
-        | NugetError::InvalidRegistration(_) => StatusCode::BAD_GATEWAY,
+        | NugetError::InvalidRegistration(_)
+        | NugetError::InvalidPackage(_)
+        | NugetError::PackageIntegrityFailure(_) => StatusCode::BAD_GATEWAY,
         NugetError::Storage(_) | NugetError::Serialization(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (status, [(CONTENT_TYPE, "application/json")], Body::empty()).into_response()
