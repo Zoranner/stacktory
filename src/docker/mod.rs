@@ -19,9 +19,9 @@ use thiserror::Error;
 use url::Url;
 
 use crate::{
-    SourcePool,
+    DockerConfig, SourcePool,
     audit::{AuditDetails, AuditSink},
-    sources::registry::{Adapter, AdapterFuture, AdapterRequest},
+    sources::registry::{Adapter, AdapterFuture, AdapterRegistry, AdapterRequest, RegistryError},
     sources::{FetchOperation, SourcePoolError},
 };
 
@@ -37,6 +37,14 @@ pub struct DockerService {
     _root_url: Url,
     data_dir: PathBuf,
     audit: AuditSink,
+}
+
+#[derive(Debug, Error)]
+pub enum DockerRegistrationError {
+    #[error(transparent)]
+    Source(#[from] SourcePoolError),
+    #[error(transparent)]
+    Registry(#[from] RegistryError),
 }
 
 #[derive(Debug, Error)]
@@ -94,6 +102,20 @@ impl DockerAdapter {
     pub fn service(&self) -> &DockerService {
         &self.service
     }
+}
+
+pub fn register_adapter(
+    registry: &mut AdapterRegistry,
+    config: DockerConfig,
+    root_url: Url,
+    data_dir: impl Into<PathBuf>,
+) -> Result<(), DockerRegistrationError> {
+    registry.register(
+        "docker",
+        Arc::new(SourcePool::new("docker", config.sources)?),
+        Arc::new(DockerAdapter::new(root_url, data_dir)),
+    )?;
+    Ok(())
 }
 
 impl DockerService {

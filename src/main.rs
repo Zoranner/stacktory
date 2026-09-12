@@ -1,9 +1,9 @@
 use std::{fs, sync::Arc};
 
 use stacktory::{
-    Config, SourcePool, cargo::CargoAdapter, http::router_with_rustup_and_registry,
-    npm::NpmAdapter, service::RustupService, sources::registry::AdapterRegistry,
-    vscode::VscodeAdapter,
+    Config, SourcePool, cargo::CargoAdapter, docker::register_adapter,
+    http::router_with_rustup_and_registry, npm::NpmAdapter, service::RustupService,
+    sources::registry::AdapterRegistry, vscode::VscodeAdapter,
 };
 use tokio::net::TcpListener;
 
@@ -47,6 +47,14 @@ fn configured_registry(config: &mut Config) -> Result<AdapterRegistry, Box<dyn s
                 config.root_url.clone(),
                 config.data_dir.clone(),
             )),
+        )?;
+    }
+    if let Some(docker) = config.docker.take() {
+        register_adapter(
+            &mut registry,
+            docker,
+            config.root_url.clone(),
+            config.data_dir.clone(),
         )?;
     }
     Ok(registry)
