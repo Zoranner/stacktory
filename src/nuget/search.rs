@@ -102,12 +102,7 @@ async fn search(
             Err(error) => return Err(error.into()),
         };
         let mut body: Value = serde_json::from_slice(&upstream.body)?;
-        rewrite_registration_links(
-            &mut body,
-            snapshot.registration_url.as_ref(),
-            service,
-            entry_name,
-        )?;
+        rewrite_registration_links(&mut body, &snapshot.registration_urls, service, entry_name)?;
         let body = serde_json::to_vec(&body)?;
         service.record_object(
             "nuget_search_query",
@@ -145,13 +140,13 @@ async fn search(
 
 fn rewrite_registration_links(
     value: &mut Value,
-    registration_base: Option<&Url>,
+    registration_bases: &[Url],
     service: &NugetService,
     entry_name: &str,
 ) -> Result<(), NugetError> {
-    let Some(registration_base) = registration_base else {
+    if registration_bases.is_empty() {
         return Ok(());
-    };
+    }
     let object = value.as_object_mut().ok_or_else(|| {
         NugetError::InvalidSearch("search response is not a JSON object".to_owned())
     })?;
@@ -162,7 +157,10 @@ fn rewrite_registration_links(
             let upstream = Url::parse(upstream).map_err(|_| {
                 NugetError::InvalidSearch("search context base URL is invalid".to_owned())
             })?;
-            if !same_origin(registration_base, &upstream) {
+            if !registration_bases
+                .iter()
+                .any(|base| same_origin(base, &upstream) && upstream.path() == base.path())
+            {
                 return Err(NugetError::InvalidSearch(
                     "search context base URL is outside the discovered resource".to_owned(),
                 ));
@@ -176,6 +174,14 @@ fn rewrite_registration_links(
             let upstream = Url::parse(upstream).map_err(|_| {
                 NugetError::InvalidSearch("search registration URL is invalid".to_owned())
             })?;
+            let registration_base = registration_bases
+                .iter()
+                .find(|base| registration_path_is_within(base, &upstream))
+                .ok_or_else(|| {
+                    NugetError::InvalidSearch(
+                        "search registration URL is outside the discovered resource".to_owned(),
+                    )
+                })?;
             let relative = registration_relative_path(registration_base, &upstream)?;
             *value = Value::String(local_registration_url(
                 &service.root_url,
@@ -190,6 +196,14 @@ fn rewrite_registration_links(
             let upstream = Url::parse(upstream).map_err(|_| {
                 NugetError::InvalidSearch("search resource ID is invalid".to_owned())
             })?;
+            let registration_base = registration_bases
+                .iter()
+                .find(|base| registration_path_is_within(base, &upstream))
+                .ok_or_else(|| {
+                    NugetError::InvalidSearch(
+                        "search registration URL is outside the discovered resource".to_owned(),
+                    )
+                })?;
             let relative = registration_relative_path(registration_base, &upstream)?;
             *value = Value::String(local_registration_url(
                 &service.root_url,
@@ -203,11 +217,11 @@ fn rewrite_registration_links(
             continue;
         }
         if value.is_object() {
-            rewrite_registration_links(value, Some(registration_base), service, entry_name)?;
+            rewrite_registration_links(value, registration_bases, service, entry_name)?;
         } else if value.is_array() {
             for item in value.as_array_mut().expect("checked array") {
                 if item.is_object() || item.is_array() {
-                    rewrite_registration_links(item, Some(registration_base), service, entry_name)?;
+                    rewrite_registration_links(item, registration_bases, service, entry_name)?;
                 }
             }
         }
@@ -245,6 +259,14 @@ fn registration_relative_path(base_url: &Url, candidate: &Url) -> Result<String,
         ));
     }
     Ok(relative.to_owned())
+}
+
+fn registration_path_is_within(base_url: &Url, candidate: &Url) -> bool {
+    same_origin(base_url, candidate)
+        && candidate
+            .path()
+            .strip_prefix(&format!("{}{}", base_url.path().trim_end_matches('/'), "/"))
+            .is_some_and(|relative| !relative.is_empty())
 }
 
 fn local_registration_url(root_url: &Url, entry_name: &str, relative: &str) -> String {

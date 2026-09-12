@@ -48,6 +48,19 @@ async fn search_resource_is_exposed_and_query_is_forwarded_safely() {
             .expect("search resource")["@id"],
         "http://127.0.0.1:18761/mirror/nuget/official/search/query"
     );
+    assert_eq!(
+        index["resources"]
+            .as_array()
+            .expect("resources")
+            .iter()
+            .find(|resource| {
+                resource["@type"]
+                    .as_str()
+                    .is_some_and(|resource_type| resource_type.starts_with("SearchQueryService"))
+            })
+            .expect("search resource")["@type"],
+        "SearchQueryService/Versioned"
+    );
 
     let response = router
         .oneshot(get_request(

@@ -72,6 +72,8 @@ pub enum NugetError {
 pub(crate) struct ServiceIndexDescriptor {
     pub(crate) selected_proxy: String,
     pub(crate) registration_url: Option<String>,
+    #[serde(default)]
+    pub(crate) registration_urls: Vec<String>,
     pub(crate) package_base_url: Option<String>,
     #[serde(default)]
     pub(crate) search_url: Option<String>,
@@ -82,6 +84,7 @@ pub(crate) struct ServiceIndexSnapshot {
     pub(crate) body: Vec<u8>,
     pub(crate) selected_proxy: String,
     pub(crate) registration_url: Option<Url>,
+    pub(crate) registration_urls: Vec<Url>,
     pub(crate) package_base_url: Option<Url>,
     pub(crate) search_url: Option<Url>,
 }
@@ -98,6 +101,7 @@ pub(crate) struct NugetAuditDetails<'a> {
 struct RewrittenServiceIndex {
     body: Vec<u8>,
     registration_url: Option<Url>,
+    registration_urls: Vec<Url>,
     package_base_url: Option<Url>,
     search_url: Option<Url>,
 }
@@ -188,7 +192,11 @@ impl NugetService {
             return Ok(ServiceIndexSnapshot {
                 body,
                 selected_proxy: descriptor.selected_proxy,
-                registration_url: parse_optional_url(descriptor.registration_url)?,
+                registration_url: parse_optional_url(descriptor.registration_url.clone())?,
+                registration_urls: parse_url_list(
+                    descriptor.registration_urls,
+                    descriptor.registration_url.clone(),
+                )?,
                 package_base_url: parse_optional_url(descriptor.package_base_url)?,
                 search_url: parse_optional_url(descriptor.search_url)?,
             });
@@ -237,6 +245,11 @@ impl NugetService {
                     let descriptor = ServiceIndexDescriptor {
                         selected_proxy: upstream.source_name.clone(),
                         registration_url: rewritten.registration_url.as_ref().map(Url::to_string),
+                        registration_urls: rewritten
+                            .registration_urls
+                            .iter()
+                            .map(Url::to_string)
+                            .collect(),
                         package_base_url: rewritten.package_base_url.as_ref().map(Url::to_string),
                         search_url: rewritten.search_url.as_ref().map(Url::to_string),
                     };
@@ -253,6 +266,7 @@ impl NugetService {
                         body: rewritten.body,
                         selected_proxy: upstream.source_name,
                         registration_url: rewritten.registration_url,
+                        registration_urls: rewritten.registration_urls,
                         package_base_url: rewritten.package_base_url,
                         search_url: rewritten.search_url,
                     });
@@ -325,6 +339,7 @@ impl NugetService {
             body: rewritten.body,
             selected_proxy: source_name.to_owned(),
             registration_url: rewritten.registration_url,
+            registration_urls: rewritten.registration_urls,
             package_base_url: rewritten.package_base_url,
             search_url: rewritten.search_url,
         })
@@ -338,6 +353,11 @@ impl NugetService {
         let descriptor = ServiceIndexDescriptor {
             selected_proxy: snapshot.selected_proxy.clone(),
             registration_url: snapshot.registration_url.as_ref().map(Url::to_string),
+            registration_urls: snapshot
+                .registration_urls
+                .iter()
+                .map(Url::to_string)
+                .collect(),
             package_base_url: snapshot.package_base_url.as_ref().map(Url::to_string),
             search_url: snapshot.search_url.as_ref().map(Url::to_string),
         };
@@ -444,6 +464,7 @@ fn rewrite_service_index(
         .ok_or_else(|| NugetError::InvalidServiceIndex("resources is missing".to_owned()))?;
     let mut rewritten = Vec::with_capacity(resources.len());
     let mut registration_url = None;
+    let mut registration_urls = Vec::new();
     let mut package_base_url = None;
     let mut search_resource: Option<(u8, Url)> = None;
 
@@ -473,19 +494,19 @@ fn rewrite_service_index(
             continue;
         };
         if resource_type.starts_with(REGISTRATIONS_BASE_URL) {
-            if registration_url.is_some() {
-                continue;
-            }
             if !safe_resource_url(base_url, require_https, &upstream_url) {
                 return Err(NugetError::InvalidServiceIndex(
                     "registration resource URL is outside the configured source".to_owned(),
                 ));
             }
-            registration_url = Some(upstream_url);
-            rewritten.push(rewrite_resource(
-                object,
-                local_resource_url(root_url, entry_name, "registration/"),
-            ));
+            if registration_url.is_none() {
+                registration_url = Some(upstream_url.clone());
+                rewritten.push(rewrite_resource(
+                    object,
+                    local_resource_url(root_url, entry_name, "registration/"),
+                ));
+            }
+            registration_urls.push(upstream_url);
         } else if resource_type.starts_with(PACKAGE_BASE_ADDRESS) {
             if package_base_url.is_some() {
                 continue;
@@ -514,10 +535,6 @@ fn rewrite_service_index(
             }) {
                 search_resource = Some((rank.expect("checked search resource"), upstream_url));
             }
-            rewritten.push(rewrite_resource(
-                object,
-                local_resource_url(root_url, entry_name, "search/query"),
-            ));
         }
     }
     if registration_url.is_none() || package_base_url.is_none() {
@@ -526,10 +543,18 @@ fn rewrite_service_index(
         ));
     }
     let search_url = search_resource.map(|(_, url)| url);
+    if search_url.is_some() {
+        rewritten.push(rewrite_resource_with_type(
+            &Map::new(),
+            local_resource_url(root_url, entry_name, "search/query"),
+            Some("SearchQueryService/Versioned"),
+        ));
+    }
     *resources = rewritten;
     Ok(RewrittenServiceIndex {
         body: serde_json::to_vec(&index)?,
         registration_url,
+        registration_urls,
         package_base_url,
         search_url,
     })
@@ -552,9 +577,20 @@ fn is_supported_resource(resource_type: &str) -> bool {
 }
 
 fn rewrite_resource(resource: &Map<String, Value>, local_url: Url) -> Value {
+    rewrite_resource_with_type(resource, local_url, None)
+}
+
+fn rewrite_resource_with_type(
+    resource: &Map<String, Value>,
+    local_url: Url,
+    resource_type: Option<&str>,
+) -> Value {
     let mut resource = resource.clone();
     resource.insert("@id".to_owned(), Value::String(local_url.to_string()));
     resource.remove("comment");
+    if let Some(resource_type) = resource_type {
+        resource.insert("@type".to_owned(), Value::String(resource_type.to_owned()));
+    }
     Value::Object(resource)
 }
 
@@ -583,6 +619,21 @@ fn parse_optional_url(value: Option<String>) -> Result<Option<Url>, NugetError> 
                 .map_err(|_| NugetError::InvalidServiceIndex("stored URL is invalid".to_owned()))
         })
         .transpose()
+}
+
+fn parse_url_list(values: Vec<String>, fallback: Option<String>) -> Result<Vec<Url>, NugetError> {
+    let values = if values.is_empty() {
+        fallback.into_iter().collect()
+    } else {
+        values
+    };
+    values
+        .into_iter()
+        .map(|value| {
+            Url::parse(&value)
+                .map_err(|_| NugetError::InvalidServiceIndex("stored URL is invalid".to_owned()))
+        })
+        .collect()
 }
 
 fn is_valid_cached_service_index(body: &[u8], descriptor: &ServiceIndexDescriptor) -> bool {
