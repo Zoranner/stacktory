@@ -218,6 +218,76 @@ async fn service_index_accepts_a_declared_public_cross_origin_package_resource()
     assert!(!String::from_utf8_lossy(&body).contains("api.nuget.org"));
 }
 
+#[tokio::test]
+async fn service_index_follows_a_safe_public_redirect() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let body = format!(
+        r#"{{"version":"3.0.0","resources":[
+            {{"@id":"http://redirect-target.example:{}/v3/registration/","@type":"RegistrationsBaseUrl/3.6.0"}},
+            {{"@id":"http://redirect-target.example:{}/v3-flatcontainer/","@type":"PackageBaseAddress/3.0.0"}}
+        ]}}"#,
+        address.port(),
+        address.port()
+    );
+    let router = Router::new()
+        .route(
+            "/v3/index.json",
+            get({
+                let body = body.clone();
+                move || {
+                    let body = body.clone();
+                    async move { body }
+                }
+            }),
+        )
+        .route(
+            "/redirect/v3/index.json",
+            get(|| async {
+                (
+                    axum::http::StatusCode::FOUND,
+                    [(axum::http::header::LOCATION, "/v3/index.json")],
+                )
+            }),
+        );
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.expect("server");
+    });
+    let base = Url::parse(&format!(
+        "http://redirect-source.example:{}/redirect/v3/index.json",
+        address.port()
+    ))
+    .expect("source URL");
+    let data_dir = tempdir().expect("data directory");
+    let registry = AdapterRegistry::new()
+        .with_adapter(
+            "nuget",
+            Arc::new(
+                SourcePool::new_with_resolvers(
+                    "nuget",
+                    SourceGraph::new(vec![proxy("official", base.as_str())]).expect("source graph"),
+                    &[
+                        ("redirect-source.example", address),
+                        ("redirect-target.example", address),
+                    ],
+                )
+                .expect("source pool"),
+            ),
+            Arc::new(NugetAdapter::new(
+                Url::parse("http://127.0.0.1:18761").expect("root URL"),
+                data_dir.path(),
+            )),
+        )
+        .expect("registry");
+
+    let response = router_with_registry(registry)
+        .oneshot(get_request("/mirror/nuget/official/v3/index.json"))
+        .await
+        .expect("service index response");
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+}
+
 fn get_request(path: &str) -> Request<Body> {
     Request::get(path).body(Body::empty()).expect("request")
 }

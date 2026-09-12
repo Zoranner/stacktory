@@ -351,6 +351,23 @@ impl SourcePool {
         }
     }
 
+    pub async fn fetch_configured_url_following_safe_redirects(
+        &self,
+        source_name: &str,
+        url: Url,
+        operation: FetchOperation,
+    ) -> Result<SourceResponse, SourcePoolError> {
+        let source = self
+            .graph
+            .get(source_name)
+            .ok_or_else(|| SourcePoolError::UnknownEntry(source_name.to_owned()))?;
+        if source.source_type != crate::SourceType::Proxy || !valid_configured_url(source, &url) {
+            return Err(SourcePoolError::InvalidConfiguredUrl(url.to_string()));
+        }
+        self.fetch_safe_redirects(source_name, url, source.require_https, operation)
+            .await
+    }
+
     pub async fn fetch_discovered_url(
         &self,
         source_name: &str,
@@ -366,6 +383,55 @@ impl SourcePool {
         }
 
         match self.fetcher.fetch(url.clone(), operation.timeout()).await {
+            Ok(response) => Ok(SourceResponse {
+                source_name: source_name.to_owned(),
+                body: response.body,
+                content_type: response.content_type,
+                headers: response.headers,
+            }),
+            Err(error) if error.is_retryable() => Err(SourcePoolError::AllSourcesFailed {
+                entry_name: source_name.to_owned(),
+                request_key: url.path().to_owned(),
+                failures: error.to_string(),
+                status: None,
+            }),
+            Err(error) => Err(SourcePoolError::TerminalSourceError {
+                source_name: source_name.to_owned(),
+                status: error.status_code().unwrap_or_default(),
+                error: error.to_string(),
+            }),
+        }
+    }
+
+    pub async fn fetch_discovered_url_following_safe_redirects(
+        &self,
+        source_name: &str,
+        url: Url,
+        operation: FetchOperation,
+    ) -> Result<SourceResponse, SourcePoolError> {
+        let source = self
+            .graph
+            .get(source_name)
+            .ok_or_else(|| SourcePoolError::UnknownEntry(source_name.to_owned()))?;
+        if source.source_type != crate::SourceType::Proxy || !valid_discovered_url(source, &url) {
+            return Err(SourcePoolError::InvalidConfiguredUrl(url.to_string()));
+        }
+        self.fetch_safe_redirects(source_name, url, source.require_https, operation)
+            .await
+    }
+
+    async fn fetch_safe_redirects(
+        &self,
+        source_name: &str,
+        url: Url,
+        require_https: bool,
+        operation: FetchOperation,
+    ) -> Result<SourceResponse, SourcePoolError> {
+        match self
+            .fetcher
+            .fetch_safe_redirects(url.clone(), require_https, operation.timeout())
+            .await
+        {
             Ok(response) => Ok(SourceResponse {
                 source_name: source_name.to_owned(),
                 body: response.body,

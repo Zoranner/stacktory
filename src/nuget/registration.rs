@@ -135,7 +135,11 @@ async fn serve_registration(
         };
         let upstream_url = append_relative_path(&registration_base, &request.relative)?;
         let upstream = match pool
-            .fetch_discovered_url(&member.name, upstream_url.clone(), FetchOperation::Metadata)
+            .fetch_discovered_url_following_safe_redirects(
+                &member.name,
+                upstream_url.clone(),
+                FetchOperation::Metadata,
+            )
             .await
         {
             Ok(response) => response,
@@ -255,7 +259,7 @@ pub(crate) async fn binding_for_source(
     );
     let upstream_url = append_relative_path(&registration_base, &relative)?;
     let upstream = pool
-        .fetch_discovered_url(
+        .fetch_discovered_url_following_safe_redirects(
             &snapshot.selected_proxy,
             upstream_url,
             FetchOperation::Metadata,

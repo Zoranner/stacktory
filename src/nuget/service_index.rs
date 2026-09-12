@@ -190,7 +190,11 @@ impl NugetService {
                 continue;
             }
             let upstream = match pool
-                .fetch_configured_url(&member.name, base_url.clone(), FetchOperation::Metadata)
+                .fetch_configured_url_following_safe_redirects(
+                    &member.name,
+                    base_url.clone(),
+                    FetchOperation::Metadata,
+                )
                 .await
             {
                 Ok(response) => response,
@@ -289,7 +293,11 @@ impl NugetService {
             ));
         }
         let upstream = pool
-            .fetch_configured_url(source_name, base_url.clone(), FetchOperation::Metadata)
+            .fetch_configured_url_following_safe_redirects(
+                source_name,
+                base_url.clone(),
+                FetchOperation::Metadata,
+            )
             .await?;
         let rewritten = rewrite_service_index(
             &upstream.body,

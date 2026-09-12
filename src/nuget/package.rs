@@ -115,7 +115,7 @@ async fn serve_package_index(
         }
         let upstream_url = append_path(&package_base, &format!("{package_id}/index.json"));
         let upstream = match pool
-            .fetch_discovered_url(
+            .fetch_discovered_url_following_safe_redirects(
                 &snapshot.selected_proxy,
                 upstream_url,
                 FetchOperation::Metadata,
@@ -334,7 +334,7 @@ async fn serve_package(
         let upstream_url = Url::parse(&binding.upstream_url)
             .map_err(|_| NugetError::InvalidPackage("stored package URL is invalid".to_owned()))?;
         let upstream = match pool
-            .fetch_discovered_url(
+            .fetch_discovered_url_following_safe_redirects(
                 &binding.selected_proxy,
                 upstream_url,
                 FetchOperation::Artifact,
@@ -496,7 +496,7 @@ async fn binding_for_package_index(
     })?;
     let index_url = append_path(package_base, &format!("{package_id}/index.json"));
     let response = pool
-        .fetch_discovered_url(
+        .fetch_discovered_url_following_safe_redirects(
             &snapshot.selected_proxy,
             index_url,
             FetchOperation::Metadata,

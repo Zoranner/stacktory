@@ -95,6 +95,42 @@ impl HttpFetcher {
         self.response_bytes(url, response).await
     }
 
+    pub(crate) async fn fetch_safe_redirects(
+        &self,
+        url: Url,
+        require_https: bool,
+        timeout: Duration,
+    ) -> Result<FetchResponse, FetchError> {
+        let original_url = url.clone();
+        let mut current_url = url;
+        for _ in 0..=3 {
+            let response = self
+                .client
+                .get(current_url.clone())
+                .timeout(timeout)
+                .send()
+                .await
+                .map_err(|error| FetchError::Request(current_url.clone(), error))?;
+            if response.status().is_redirection() {
+                let location = response
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|value| value.to_str().ok())
+                    .ok_or_else(|| FetchError::UnsafeRegistryRedirect(current_url.clone()))?;
+                let next_url = current_url
+                    .join(location)
+                    .map_err(|_| FetchError::UnsafeRegistryRedirect(current_url.clone()))?;
+                if !is_safe_http_redirect(&original_url, &next_url, require_https) {
+                    return Err(FetchError::UnsafeRegistryRedirect(next_url));
+                }
+                current_url = next_url;
+                continue;
+            }
+            return self.response_bytes(current_url, Ok(response)).await;
+        }
+        Err(FetchError::RegistryRedirectLimit(current_url))
+    }
+
     pub(crate) async fn fetch_registry(
         &self,
         method: Method,
@@ -303,6 +339,25 @@ fn is_safe_registry_redirect(source_url: &Url, redirect_url: &Url) -> bool {
             .any(|segment| matches!(segment, "." | ".."))
         && (same_origin(source_url, redirect_url)
             || is_public_host(redirect_url.host_str().unwrap()))
+}
+
+fn is_safe_http_redirect(source_url: &Url, redirect_url: &Url, require_https: bool) -> bool {
+    matches!(redirect_url.scheme(), "http" | "https")
+        && (!require_https || redirect_url.scheme() == "https")
+        && redirect_url.host_str().is_some()
+        && redirect_url.username().is_empty()
+        && redirect_url.password().is_none()
+        && redirect_url.query().is_none()
+        && redirect_url.fragment().is_none()
+        && !redirect_url.path().contains('\\')
+        && !redirect_url.path().contains('%')
+        && !redirect_url.path().chars().any(char::is_control)
+        && !redirect_url
+            .path()
+            .split('/')
+            .any(|segment| matches!(segment, "." | ".."))
+        && (same_origin(source_url, redirect_url)
+            || is_public_host(redirect_url.host_str().unwrap_or_default()))
 }
 
 fn same_origin(left: &Url, right: &Url) -> bool {
