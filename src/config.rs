@@ -201,6 +201,8 @@ pub enum ConfigError {
     InvalidSourceUrl(String),
     #[error("source `{0}` uses http; set require_https = false to opt in")]
     InsecureHttpSource(String),
+    #[error("NuGet source `{0}` base_url must be an actual `/v3/index.json` service index")]
+    InvalidNugetServiceIndexUrl(String),
     #[error("rustup.channels must contain at least one channel")]
     MissingRustupChannel,
     #[error("rustup channel `{0}` is invalid")]
@@ -293,7 +295,7 @@ impl Config {
         let vscode = ecosystem_config(raw.vscode)?;
         let docker = ecosystem_config(raw.docker)?;
         let npm = ecosystem_config(raw.npm)?;
-        let nuget = ecosystem_config(raw.nuget)?;
+        let nuget = nuget_config(raw.nuget)?;
         let pypi = ecosystem_config(raw.pypi)?;
         let upm = ecosystem_config(raw.upm)?;
 
@@ -324,6 +326,25 @@ fn ecosystem_config(
     raw.map(|ecosystem| SourceGraph::from_raw(ecosystem.sources))
         .transpose()
         .map(|sources| sources.map(|sources| EcosystemConfig { sources }))
+}
+
+fn nuget_config(raw: Option<RawEcosystemConfig>) -> Result<Option<EcosystemConfig>, ConfigError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let sources = SourceGraph::from_raw(raw.sources)?;
+    for source in sources.proxies() {
+        if !source
+            .base_url
+            .as_ref()
+            .is_some_and(|url| url.path().ends_with("/v3/index.json"))
+        {
+            return Err(ConfigError::InvalidNugetServiceIndexUrl(
+                source.name.clone(),
+            ));
+        }
+    }
+    Ok(Some(EcosystemConfig { sources }))
 }
 
 const fn requires_https() -> bool {

@@ -1,0 +1,458 @@
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use axum::{
+    body::Body,
+    http::{Method, StatusCode, header::CONTENT_TYPE},
+    response::{IntoResponse, Response},
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+use thiserror::Error;
+use url::Url;
+
+use crate::{
+    SourcePool,
+    audit::{AuditDetails, AuditSink},
+    sources::{
+        FetchOperation, SourcePoolError,
+        registry::{Adapter, AdapterFuture, AdapterRequest},
+    },
+};
+
+use super::path::{safe_resource_url, validate_service_index_url};
+
+const REGISTRATIONS_BASE_URL: &str = "RegistrationsBaseUrl";
+const PACKAGE_BASE_ADDRESS: &str = "PackageBaseAddress";
+
+#[derive(Debug)]
+pub struct NugetAdapter {
+    service: Arc<NugetService>,
+}
+
+#[derive(Debug)]
+pub struct NugetService {
+    root_url: Url,
+    data_dir: PathBuf,
+    audit: AuditSink,
+}
+
+#[derive(Debug, Error)]
+pub enum NugetError {
+    #[error(transparent)]
+    Source(#[from] SourcePoolError),
+    #[error("NuGet service index is invalid: {0}")]
+    InvalidServiceIndex(String),
+    #[error("NuGet storage I/O failed: {0}")]
+    Storage(#[from] io::Error),
+    #[error("NuGet JSON serialization failed: {0}")]
+    Serialization(#[from] serde_json::Error),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct ServiceIndexDescriptor {
+    selected_proxy: String,
+    registration_url: Option<String>,
+    package_base_url: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ServiceIndexSnapshot {
+    body: Vec<u8>,
+}
+
+struct RewrittenServiceIndex {
+    body: Vec<u8>,
+    registration_url: Option<Url>,
+    package_base_url: Option<Url>,
+}
+
+impl NugetAdapter {
+    pub fn new(root_url: Url, data_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            service: Arc::new(NugetService::new(root_url, data_dir)),
+        }
+    }
+
+    pub fn service(&self) -> &NugetService {
+        &self.service
+    }
+}
+
+impl NugetService {
+    pub fn new(root_url: Url, data_dir: impl Into<PathBuf>) -> Self {
+        let data_dir = data_dir.into();
+        Self {
+            root_url,
+            audit: AuditSink::new(data_dir.clone()),
+            data_dir,
+        }
+    }
+
+    async fn handle_request(
+        &self,
+        entry_name: &str,
+        request: AdapterRequest,
+        pool: &SourcePool,
+    ) -> Response {
+        if request.method != Method::GET {
+            return StatusCode::METHOD_NOT_ALLOWED.into_response();
+        }
+        if request.path.trim_start_matches('/') != "v3/index.json" {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        match self.service_index(entry_name, pool).await {
+            Ok(snapshot) => response(StatusCode::OK, "application/json", snapshot.body),
+            Err(error) => nuget_error_response(&error),
+        }
+    }
+
+    async fn service_index(
+        &self,
+        entry_name: &str,
+        pool: &SourcePool,
+    ) -> Result<ServiceIndexSnapshot, NugetError> {
+        let members = pool
+            .proxy_members(entry_name)
+            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
+        let cache_path = self.service_index_path(entry_name);
+        let descriptor_path = self.service_index_descriptor_path(entry_name);
+        if let (Some(body), Some(descriptor)) = (
+            read_if_present(&cache_path)?,
+            read_descriptor(&descriptor_path)?,
+        ) && pool.proxy_members(entry_name).is_some_and(|configured| {
+            configured
+                .iter()
+                .any(|source| source.name == descriptor.selected_proxy)
+        }) {
+            self.record(
+                "nuget_service_index_read",
+                entry_name,
+                &descriptor.selected_proxy,
+                "hit",
+                None,
+            );
+            return Ok(ServiceIndexSnapshot { body });
+        }
+
+        let mut failures = Vec::new();
+        let mut all_not_found = true;
+        for member in members {
+            let base_url = member
+                .base_url
+                .as_ref()
+                .expect("validated NuGet proxy must have a base URL");
+            if !validate_service_index_url(base_url, member.require_https) {
+                failures.push(format!("{}: invalid service index URL", member.name));
+                all_not_found = false;
+                continue;
+            }
+            let upstream = match pool
+                .fetch_configured_url(&member.name, base_url.clone(), FetchOperation::Metadata)
+                .await
+            {
+                Ok(response) => response,
+                Err(error) if is_retryable(&error) => {
+                    failures.push(format!("{}: {error}", member.name));
+                    all_not_found = false;
+                    continue;
+                }
+                Err(error) if is_group_not_found(pool, entry_name, &error) => {
+                    failures.push(format!("{}: {error}", member.name));
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            match rewrite_service_index(
+                &upstream.body,
+                &self.root_url,
+                entry_name,
+                base_url,
+                member.require_https,
+            ) {
+                Ok(rewritten) => {
+                    let descriptor = ServiceIndexDescriptor {
+                        selected_proxy: upstream.source_name.clone(),
+                        registration_url: rewritten.registration_url.as_ref().map(Url::to_string),
+                        package_base_url: rewritten.package_base_url.as_ref().map(Url::to_string),
+                    };
+                    atomic_write(&cache_path, &rewritten.body)?;
+                    atomic_write(&descriptor_path, &serde_json::to_vec(&descriptor)?)?;
+                    self.record(
+                        "nuget_service_index_published",
+                        entry_name,
+                        &upstream.source_name,
+                        "published",
+                        None,
+                    );
+                    return Ok(ServiceIndexSnapshot {
+                        body: rewritten.body,
+                    });
+                }
+                Err(error) => {
+                    failures.push(format!("{}: {error}", member.name));
+                    all_not_found = false;
+                }
+            }
+        }
+
+        self.record(
+            "nuget_service_index_fetch_failed",
+            entry_name,
+            "",
+            "failed",
+            Some(if all_not_found {
+                "not_found"
+            } else {
+                "source_failed"
+            }),
+        );
+        Err(SourcePoolError::AllSourcesFailed {
+            entry_name: entry_name.to_owned(),
+            request_key: "v3/index.json".to_owned(),
+            failures: failures.join("; "),
+            status: (pool.is_group(entry_name) && all_not_found).then_some(404),
+        }
+        .into())
+    }
+
+    fn service_index_path(&self, entry_name: &str) -> PathBuf {
+        self.data_dir
+            .join("nuget")
+            .join("metadata")
+            .join(entry_name)
+            .join("service-index.json")
+    }
+
+    fn service_index_descriptor_path(&self, entry_name: &str) -> PathBuf {
+        self.data_dir
+            .join("nuget")
+            .join("metadata")
+            .join(entry_name)
+            .join("service-index.source")
+    }
+
+    fn record(
+        &self,
+        event: &str,
+        entry_name: &str,
+        selected_proxy: &str,
+        cache_status: &str,
+        failure_category: Option<&str>,
+    ) {
+        if let Err(error) = self.audit.record_detailed(
+            event,
+            "v3/index.json",
+            if failure_category.is_some() {
+                "failure"
+            } else {
+                "success"
+            },
+            AuditDetails {
+                ecosystem: Some("nuget"),
+                entry_name: Some(entry_name),
+                object_key: Some("v3/index.json"),
+                selected_proxy: (!selected_proxy.is_empty()).then_some(selected_proxy),
+                object_type: Some("service-index"),
+                cache_status: Some(cache_status),
+                failure_category,
+            },
+        ) {
+            eprintln!("Stacktory audit write failed: {error}");
+        }
+    }
+}
+
+impl Adapter for NugetAdapter {
+    fn ecosystem(&self) -> &str {
+        "nuget"
+    }
+
+    fn handle(
+        &self,
+        source_name: String,
+        request: AdapterRequest,
+        pool: Arc<SourcePool>,
+    ) -> AdapterFuture {
+        let service = self.service.clone();
+        Box::pin(async move { service.handle_request(&source_name, request, &pool).await })
+    }
+}
+
+fn rewrite_service_index(
+    source: &[u8],
+    root_url: &Url,
+    entry_name: &str,
+    base_url: &Url,
+    require_https: bool,
+) -> Result<RewrittenServiceIndex, NugetError> {
+    let mut index: Value = serde_json::from_slice(source)?;
+    let resources = index
+        .get_mut("resources")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| NugetError::InvalidServiceIndex("resources is missing".to_owned()))?;
+    let mut rewritten = Vec::with_capacity(resources.len());
+    let mut registration_url = None;
+    let mut package_base_url = None;
+
+    for resource in resources.drain(..) {
+        let Some(object) = resource.as_object() else {
+            return Err(NugetError::InvalidServiceIndex(
+                "resource is not an object".to_owned(),
+            ));
+        };
+        let Some(resource_type) = object.get("@type").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(upstream_url) = object.get("@id").and_then(Value::as_str) else {
+            if is_supported_resource(resource_type) {
+                return Err(NugetError::InvalidServiceIndex(
+                    "supported resource has no @id".to_owned(),
+                ));
+            }
+            continue;
+        };
+        let Some(upstream_url) = Url::parse(upstream_url).ok() else {
+            if is_supported_resource(resource_type) {
+                return Err(NugetError::InvalidServiceIndex(
+                    "supported resource @id is not a URL".to_owned(),
+                ));
+            }
+            continue;
+        };
+        if resource_type.starts_with(REGISTRATIONS_BASE_URL) {
+            if !safe_resource_url(base_url, require_https, &upstream_url) {
+                return Err(NugetError::InvalidServiceIndex(
+                    "registration resource URL is outside the configured source".to_owned(),
+                ));
+            }
+            registration_url = Some(upstream_url);
+            rewritten.push(rewrite_resource(
+                object,
+                local_resource_url(root_url, entry_name, "registration/"),
+            ));
+        } else if resource_type.starts_with(PACKAGE_BASE_ADDRESS) {
+            if !safe_resource_url(base_url, require_https, &upstream_url) {
+                return Err(NugetError::InvalidServiceIndex(
+                    "package resource URL is outside the configured source".to_owned(),
+                ));
+            }
+            package_base_url = Some(upstream_url);
+            rewritten.push(rewrite_resource(
+                object,
+                local_resource_url(root_url, entry_name, "package/"),
+            ));
+        }
+    }
+    *resources = rewritten;
+    Ok(RewrittenServiceIndex {
+        body: serde_json::to_vec(&index)?,
+        registration_url,
+        package_base_url,
+    })
+}
+
+fn is_supported_resource(resource_type: &str) -> bool {
+    resource_type.starts_with(REGISTRATIONS_BASE_URL)
+        || resource_type.starts_with(PACKAGE_BASE_ADDRESS)
+}
+
+fn rewrite_resource(resource: &Map<String, Value>, local_url: Url) -> Value {
+    let mut resource = resource.clone();
+    resource.insert("@id".to_owned(), Value::String(local_url.to_string()));
+    Value::Object(resource)
+}
+
+fn local_resource_url(root_url: &Url, entry_name: &str, resource: &str) -> Url {
+    let mut url = root_url.clone();
+    let base_path = root_url.path().trim_end_matches('/');
+    url.set_path(&format!("{base_path}/mirror/nuget/{entry_name}/{resource}"));
+    url.set_query(None);
+    url.set_fragment(None);
+    url
+}
+
+fn read_descriptor(path: &Path) -> Result<Option<ServiceIndexDescriptor>, NugetError> {
+    let Some(contents) = read_if_present(path)? else {
+        return Ok(None);
+    };
+    serde_json::from_slice(&contents)
+        .map(Some)
+        .map_err(NugetError::Serialization)
+}
+
+fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>, io::Error> {
+    match fs::read(path) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), io::Error> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::other("NuGet cache path has no parent"))?;
+    fs::create_dir_all(parent)?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| io::Error::other("NuGet cache path has no file name"))?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_nanos();
+    let temporary = parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), nonce));
+    fs::write(&temporary, contents)?;
+    match fs::rename(&temporary, path) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = fs::remove_file(temporary);
+            Err(error)
+        }
+    }
+}
+
+fn is_retryable(error: &SourcePoolError) -> bool {
+    matches!(error, SourcePoolError::AllSourcesFailed { .. })
+}
+
+fn is_group_not_found(pool: &SourcePool, entry_name: &str, error: &SourcePoolError) -> bool {
+    pool.is_group(entry_name)
+        && matches!(
+            error,
+            SourcePoolError::TerminalSourceError { status: 404, .. }
+                | SourcePoolError::AllSourcesFailed {
+                    status: Some(404),
+                    ..
+                }
+        )
+}
+
+fn nuget_error_response(error: &NugetError) -> Response {
+    let status = match error {
+        NugetError::Source(SourcePoolError::UnknownEntry(_)) => StatusCode::NOT_FOUND,
+        NugetError::Source(SourcePoolError::TerminalSourceError { status, .. }) => {
+            StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY)
+        }
+        NugetError::Source(SourcePoolError::AllSourcesFailed {
+            status: Some(status),
+            ..
+        }) => StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
+        NugetError::Source(_) | NugetError::InvalidServiceIndex(_) => StatusCode::BAD_GATEWAY,
+        NugetError::Storage(_) | NugetError::Serialization(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (status, [(CONTENT_TYPE, "application/json")], Body::empty()).into_response()
+}
+
+fn response(status: StatusCode, content_type: &str, body: Vec<u8>) -> Response {
+    let mut response = (status, Body::from(body)).into_response();
+    let content_type = axum::http::HeaderValue::from_str(content_type)
+        .unwrap_or_else(|_| axum::http::HeaderValue::from_static("application/octet-stream"));
+    response.headers_mut().insert(CONTENT_TYPE, content_type);
+    response
+}

@@ -260,6 +260,52 @@ base_url = \"https://fallback.example.internal\"\n"
     );
 }
 
+#[test]
+fn nuget_proxy_requires_a_v3_service_index_url() {
+    let configuration = format!(
+        "{LOCAL_DEVELOPMENT}\n\
+\n\
+[nuget]\n\
+\n\
+[[nuget.sources]]\n\
+name = \"official\"\n\
+type = \"proxy\"\n\
+base_url = \"https://api.nuget.org/v3/index.json\"\n"
+    );
+
+    let config = Config::from_toml(&configuration).expect("NuGet service index configuration");
+    assert_eq!(
+        config
+            .nuget
+            .expect("NuGet configuration")
+            .sources
+            .get("official")
+            .expect("NuGet source")
+            .base_url
+            .as_ref()
+            .expect("NuGet service index URL")
+            .path(),
+        "/v3/index.json"
+    );
+}
+
+#[test]
+fn rejects_nuget_proxy_without_a_v3_service_index_url() {
+    let configuration = format!(
+        "{LOCAL_DEVELOPMENT}\n\
+\n\
+[nuget]\n\
+\n\
+[[nuget.sources]]\n\
+name = \"official\"\n\
+type = \"proxy\"\n\
+base_url = \"https://api.nuget.org/v3\"\n"
+    );
+
+    let error = Config::from_toml(&configuration).expect_err("NuGet registry root must fail");
+    assert!(error.to_string().contains("v3/index.json"));
+}
+
 fn assert_source_names(graph: &stacktory::SourceGraph, expected: &[&str]) {
     for name in expected {
         assert!(

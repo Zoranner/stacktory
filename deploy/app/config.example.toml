@@ -126,7 +126,7 @@ members = ["npmjs", "npmmirror", "huawei", "binary"]
 [[nuget.sources]]
 name = "official"
 type = "proxy"
-base_url = "https://api.nuget.org/v3"
+base_url = "https://api.nuget.org/v3/index.json"
 
 [[nuget.sources]]
 name = "group"

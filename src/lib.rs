@@ -5,6 +5,7 @@ pub mod cargo;
 mod config;
 pub mod http;
 pub mod npm;
+pub mod nuget;
 pub mod rustup;
 pub mod service;
 pub mod sources;
