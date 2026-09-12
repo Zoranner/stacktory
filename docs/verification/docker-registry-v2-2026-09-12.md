@@ -22,6 +22,8 @@
 - shared blob cache 命中后为当前 entry 建立 selected_proxy metadata 绑定。
 - 公开 Registry 的匿名 Bearer challenge 由 Stacktory 服务端处理，客户端不提供凭据。
 - 安全的同源或公共对象存储 blob 重定向由 Stacktory 服务端跟随，客户端只收到最终内容。
+- Registry V2 `_catalog` 和 `tags/list` 查询。
+- Stacktory `/search?q=...` 仓库名搜索、catalog 分页和 V1 路径拒绝。
 
 执行命令：
 

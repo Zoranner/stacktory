@@ -13,6 +13,18 @@ Stacktory 已提供 Docker Registry HTTP API V2 的公开只读适配器，入�
 安全的 blob 重定向和内容缓存，不要求用户提供账号、密码或 token。账号管理、私有
 仓库凭据和写入型认证不在范围内。
 
+只读查询支持：
+
+```text
+/mirror/docker/{name}/v2/_catalog
+/mirror/docker/{name}/v2/{repository}/tags/list
+/mirror/docker/{name}/search?q=<keyword>&n=<limit>
+```
+
+前两个接口对应 Registry V2 的仓库列表和 tag 列表。`search` 是 Stacktory 的
+统一只读查询接口，服务端在一个已选中的 Registry `_catalog` 分页结果中按仓库名
+过滤；它不实现 Docker Registry V1，也不把多个来源的结果合并。
+
 Stacktory 不向 Docker 客户端返回上游 Registry host。上游协议请求由服务端生成：
 
 ```text

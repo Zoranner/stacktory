@@ -273,6 +273,11 @@ Docker 使用 `/mirror/docker/{name}/v2/...`。适配器处理 Registry V2 的 `
 `Range` 语义。Docker 的内容寻址模型要求按 digest 校验并缓存对象；tag 到
 manifest 的解析结果作为 entry-scoped metadata 处理。
 
+只读查询还提供 Registry V2 的 `_catalog`、`{repository}/tags/list`，以及
+Stacktory 统一的 `/mirror/docker/{name}/search?q=...` 仓库名搜索。搜索只在一个
+selected proxy 的 catalog 分页结果内执行，不合并不同来源，也不实现 Docker
+Registry V1 搜索。
+
 Docker source 的 `base_url` 是一个 Registry V2 根地址。Stacktory 对外的
 `/mirror/docker/{name}/v2/...` 与上游的 `/v2/...` 是两层不同路径；具体的
 `/v2/{repository}/manifests/{reference}`、`/v2/{repository}/blobs/{digest}`
