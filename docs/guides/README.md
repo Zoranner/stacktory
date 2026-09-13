@@ -2,17 +2,17 @@
 
 Stacktory 的用户文档按制品库分别维护。请选择正在使用的制品库，不需要阅读其他页面。
 
-管理员需要提供 Stacktory 服务地址和入口名称。常用入口是 `group`；如果管理员提供了 `official` 等直接入口，按管理员给出的名称配置。
+管理员需要提供 Stacktory 服务地址和入口名称。常用入口是 `group`；如果管理员提供了 `official` 等直接入口，按管理员给出的名称配置。各个制品库当前是否可用以根 README 的状态表为准，本页只负责选择对应的使用文档。PyPI 尚未开放。
 
-## 可用制品库
+## 制品库文档
 
-| 制品库 | 状态 | 文档 |
-| --- | --- | --- |
-| Rustup | 可用 | [Rustup](rustup.md) |
-| Cargo | 可用 | [Cargo](cargo.md) |
-| VS Code 扩展 | 可用 | [VS Code](vscode.md) |
-| Docker Registry | 公开无认证 Registry V2 只读可用 | [Docker](docker.md) |
-| npm | 可用 | [npm](npm.md) |
-| Unity UPM | 可用 | [Unity UPM](upm.md) |
-| PyPI | 暂不可用 | [PyPI](pypi.md) |
-| NuGet | 只读 restore、查询和漏洞数据可用 | [NuGet](nuget.md) |
+| 制品库 | 文档 |
+| --- | --- |
+| Rustup | [Rustup](rustup.md) |
+| Cargo | [Cargo](cargo.md) |
+| VS Code 扩展 | [VS Code](vscode.md) |
+| Docker Registry | [Docker](docker.md) |
+| npm | [npm](npm.md) |
+| Unity UPM | [Unity UPM](upm.md) |
+| PyPI | [PyPI](pypi.md) |
+| NuGet | [NuGet](nuget.md) |
