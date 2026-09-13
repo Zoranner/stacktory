@@ -162,6 +162,9 @@ impl NugetService {
             )
             .await;
         }
+        if path.starts_with("vulnerability/") {
+            return super::vulnerability::serve(self, entry_name, path, pool).await;
+        }
         if path != "v3/index.json" {
             return StatusCode::NOT_FOUND.into_response();
         }
