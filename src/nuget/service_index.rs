@@ -480,7 +480,7 @@ fn rewrite_service_index(
         .and_then(Value::as_array_mut)
         .ok_or_else(|| NugetError::InvalidServiceIndex("resources is missing".to_owned()))?;
     let mut rewritten = Vec::with_capacity(resources.len());
-    let mut registration_url = None;
+    let mut registration_resource: Option<(u8, Url, String)> = None;
     let mut registration_urls = Vec::new();
     let mut package_base_url = None;
     let mut search_resource: Option<(u8, Url)> = None;
@@ -517,14 +517,19 @@ fn rewrite_service_index(
                     "registration resource URL is outside the configured source".to_owned(),
                 ));
             }
-            if registration_url.is_none() {
-                registration_url = Some(upstream_url.clone());
-                rewritten.push(rewrite_resource(
-                    object,
-                    local_resource_url(root_url, entry_name, "registration/"),
+            registration_urls.push(upstream_url.clone());
+            let rank = registration_resource_rank(resource_type);
+            if rank.is_some_and(|rank| {
+                registration_resource
+                    .as_ref()
+                    .is_none_or(|(current_rank, _, _)| rank > *current_rank)
+            }) {
+                registration_resource = Some((
+                    rank.expect("checked registration rank"),
+                    upstream_url,
+                    resource_type.to_owned(),
                 ));
             }
-            registration_urls.push(upstream_url);
         } else if resource_type.starts_with(PACKAGE_BASE_ADDRESS) {
             if package_base_url.is_some() {
                 continue;
@@ -569,6 +574,16 @@ fn rewrite_service_index(
             ));
         }
     }
+    let registration_url = if let Some((_, url, resource_type)) = registration_resource {
+        rewritten.push(rewrite_resource_with_type(
+            &Map::new(),
+            local_resource_url(root_url, entry_name, "registration/"),
+            Some(&resource_type),
+        ));
+        Some(url)
+    } else {
+        None
+    };
     if registration_url.is_none() || package_base_url.is_none() {
         return Err(NugetError::InvalidServiceIndex(
             "service index lacks a restore resource".to_owned(),
@@ -600,6 +615,19 @@ fn search_resource_rank(resource_type: &str) -> Option<u8> {
         "SearchQueryService/3.0.0-beta" => Some(1),
         "SearchQueryService" => Some(0),
         _ if resource_type.starts_with("SearchQueryService/") => Some(1),
+        _ => None,
+    }
+}
+
+fn registration_resource_rank(resource_type: &str) -> Option<u8> {
+    match resource_type {
+        "RegistrationsBaseUrl/Versioned" => Some(5),
+        "RegistrationsBaseUrl/3.6.0" => Some(4),
+        "RegistrationsBaseUrl/3.4.0" => Some(3),
+        "RegistrationsBaseUrl/3.0.0-rc" => Some(2),
+        "RegistrationsBaseUrl/3.0.0-beta" => Some(1),
+        "RegistrationsBaseUrl" => Some(0),
+        _ if resource_type.starts_with("RegistrationsBaseUrl/") => Some(0),
         _ => None,
     }
 }

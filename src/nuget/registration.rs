@@ -393,6 +393,22 @@ fn rewrite_object(
         })?;
         let (package_id, version, package_hash, package_hash_algorithm) = catalog_identity
             .or_else(|| {
+                let id = object.get("id").and_then(Value::as_str)?;
+                let version = object.get("version").and_then(Value::as_str)?;
+                Some((
+                    id.to_owned(),
+                    version.to_owned(),
+                    object
+                        .get("packageHash")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    object
+                        .get("packageHashAlgorithm")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                ))
+            })
+            .or_else(|| {
                 request
                     .leaf_version
                     .clone()
@@ -448,7 +464,12 @@ fn rewrite_object(
         bindings.insert(binding_key(&package_id, &version), binding);
     }
 
+    let page_like = object.contains_key("lower") || object.contains_key("upper");
+    let mut dropped_ids = Vec::new();
     for (key, value) in object.iter_mut() {
+        if key == "@context" {
+            continue;
+        }
         if key == "packageContent" || key == "catalogEntry" {
             if key == "catalogEntry"
                 && let Value::Object(catalog) = value
@@ -468,14 +489,33 @@ fn rewrite_object(
         if matches!(key.as_str(), "@id" | "parent" | "registration")
             && let Some(url) = value.as_str()
         {
-            let url = Url::parse(url)
-                .map_err(|_| NugetError::InvalidRegistration(format!("{key} URL is invalid")))?;
-            let relative = registration_relative_path(registration_base, &url)?;
-            *value = Value::String(local_registration_url(
-                &service.root_url,
-                entry_name,
-                &relative,
-            ));
+            let parsed = match Url::parse(url) {
+                Ok(parsed) => parsed,
+                Err(_) if key == "@id" => {
+                    dropped_ids.push(key.clone());
+                    continue;
+                }
+                Err(_) => {
+                    return Err(NugetError::InvalidRegistration(
+                        "registration URL is invalid".to_owned(),
+                    ));
+                }
+            };
+            match registration_relative_path(registration_base, &parsed) {
+                Ok(relative) => {
+                    *value = Value::String(local_registration_url(
+                        &service.root_url,
+                        entry_name,
+                        &relative,
+                    ));
+                }
+                Err(error) => {
+                    if key != "@id" || page_like {
+                        return Err(error);
+                    }
+                    dropped_ids.push(key.clone());
+                }
+            }
             continue;
         }
         if value.is_object() {
@@ -503,6 +543,9 @@ fn rewrite_object(
                 }
             }
         }
+    }
+    for key in dropped_ids {
+        object.remove(&key);
     }
     Ok(())
 }

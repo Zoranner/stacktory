@@ -232,6 +232,43 @@ async fn service_index_selects_one_restore_resource_from_duplicate_aliases() {
 }
 
 #[tokio::test]
+async fn service_index_prefers_the_most_capable_registration_resource() {
+    let upstream = start_service_index_with_body(|port| {
+        format!(
+            r#"{{"version":"3.0.0","resources":[
+                {{"@id":"http://127.0.0.1:{port}/v3/registration5-semver1/","@type":"RegistrationsBaseUrl"}},
+                {{"@id":"http://127.0.0.1:{port}/v3/registration5-gz-semver2/","@type":"RegistrationsBaseUrl/Versioned"}},
+                {{"@id":"http://127.0.0.1:{port}/v3-flatcontainer/","@type":"PackageBaseAddress/3.0.0"}}
+            ]}}"#
+        )
+    })
+    .await;
+    let port = upstream.port().expect("port");
+    let data_dir = tempdir().expect("data directory");
+    let router = nuget_router(upstream, data_dir.path());
+
+    let response = router
+        .oneshot(get_request("/mirror/nuget/official/v3/index.json"))
+        .await
+        .expect("service index response");
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let descriptor: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            data_dir
+                .path()
+                .join("nuget/metadata/official/service-index.source"),
+        )
+        .expect("service index source"),
+    )
+    .expect("service index source JSON");
+    assert_eq!(
+        descriptor["registration_url"],
+        format!("http://127.0.0.1:{port}/v3/registration5-gz-semver2/")
+    );
+}
+
+#[tokio::test]
 async fn service_index_accepts_a_declared_public_cross_origin_package_resource() {
     let upstream = start_service_index_with_body(|port| {
         format!(

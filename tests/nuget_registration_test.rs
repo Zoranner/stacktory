@@ -148,6 +148,66 @@ async fn invalid_registration_paths_return_not_found() {
     assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
 }
 
+#[tokio::test]
+async fn registration_index_accepts_the_official_document_shape() {
+    let (upstream, address) = start_official_shape_server().await;
+    let data_dir = tempdir().expect("data directory");
+    let router = nuget_router(upstream, address, data_dir.path());
+
+    let response = router
+        .oneshot(get_request(
+            "/mirror/nuget/official/registration/foo/index.json",
+        ))
+        .await
+        .expect("registration response");
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("registration body");
+    let registration: serde_json::Value = serde_json::from_slice(&body).expect("registration JSON");
+    let page = &registration["items"][0];
+    assert_eq!(
+        page["@id"],
+        "http://127.0.0.1:18761/mirror/nuget/official/registration/foo/page/0.json"
+    );
+    assert_eq!(
+        page["parent"],
+        "http://127.0.0.1:18761/mirror/nuget/official/registration/foo/index.json"
+    );
+    let leaf = &page["items"][0];
+    assert_eq!(
+        leaf["@id"],
+        "http://127.0.0.1:18761/mirror/nuget/official/registration/foo/1.0.0.json"
+    );
+    assert_eq!(
+        leaf["registration"],
+        "http://127.0.0.1:18761/mirror/nuget/official/registration/foo/index.json"
+    );
+    assert_eq!(
+        leaf["packageContent"],
+        "http://127.0.0.1:18761/mirror/nuget/official/package/foo/1.0.0/foo.1.0.0.nupkg"
+    );
+    assert_eq!(
+        leaf["catalogEntry"]["packageContent"],
+        "http://127.0.0.1:18761/mirror/nuget/official/package/foo/1.0.0/foo.1.0.0.nupkg"
+    );
+    assert!(leaf["catalogEntry"]["@id"].is_null());
+    assert_eq!(
+        leaf["catalogEntry"]["dependencyGroups"][0]["targetFramework"],
+        ".NETStandard2.0"
+    );
+    assert!(leaf["catalogEntry"]["dependencyGroups"][0]["@id"].is_null());
+    assert_eq!(registration["@context"]["packageContent"]["@type"], "@id");
+    assert!(!String::from_utf8_lossy(&body).contains("nuget.example"));
+    assert!(
+        data_dir
+            .path()
+            .join("nuget/metadata/official/bindings/foo/1.0.0.json")
+            .exists()
+    );
+}
+
 fn get_request(path: &str) -> Request<Body> {
     Request::get(path).body(Body::empty()).expect("request")
 }
@@ -183,6 +243,102 @@ fn nuget_router(upstream: Url, address: SocketAddr, data_dir: &Path) -> axum::Ro
         )
         .expect("registry");
     router_with_registry(registry)
+}
+
+async fn start_official_shape_server() -> (Url, SocketAddr) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let service_index = format!(
+        r#"{{
+            "version": "3.0.0",
+            "resources": [
+                {{"@id":"http://nuget.example:{}/v3/registration/","@type":"RegistrationsBaseUrl/3.6.0"}},
+                {{"@id":"http://nuget.example:{}/v3-flatcontainer/","@type":"PackageBaseAddress/3.0.0"}}
+            ]
+        }}"#,
+        address.port(),
+        address.port()
+    );
+    let registration_index = format!(
+        r#"{{
+            "@id":"http://nuget.example:{port}/v3/registration/foo/index.json",
+            "@type":["catalog:CatalogRoot","PackageRegistration","catalog:Permalink"],
+            "@context":{{
+                "@vocab":"http://schema.nuget.org/schema#",
+                "catalog":"http://schema.nuget.org/catalog#",
+                "packageContent":{{"@type":"@id"}},
+                "registration":{{"@type":"@id"}}
+            }},
+            "count":1,
+            "items":[{{
+                "@id":"http://nuget.example:{port}/v3/registration/foo/page/0.json",
+                "@type":"catalog:Permalink",
+                "count":1,
+                "lower":"1.0.0",
+                "upper":"1.0.0",
+                "parent":"http://nuget.example:{port}/v3/registration/foo/index.json",
+                "items":[{{
+                    "@id":"http://nuget.example:{port}/v3/registration/foo/1.0.0.json",
+                    "@type":"Package",
+                    "catalogEntry":{{
+                        "@id":"http://nuget.example:{port}/v3/catalog0/data/foo.1.0.0.json",
+                        "id":"foo",
+                        "version":"1.0.0",
+                        "packageContent":"http://nuget.example:{port}/v3-flatcontainer/foo/1.0.0/foo.1.0.0.nupkg",
+                        "dependencyGroups":[{{
+                            "@id":"http://nuget.example:{port}/v3/catalog0/data/foo.1.0.0.json#dependencygroup/.netstandard2.0",
+                            "targetFramework":".NETStandard2.0"
+                        }}]
+                    }},
+                    "packageContent":"http://nuget.example:{port}/v3-flatcontainer/foo/1.0.0/foo.1.0.0.nupkg",
+                    "registration":"http://nuget.example:{port}/v3/registration/foo/index.json"
+                }}]
+            }}]
+        }}"#,
+        port = address.port()
+    );
+    let router = Router::new()
+        .route(
+            "/v3/index.json",
+            get({
+                let service_index = service_index.clone();
+                move || {
+                    let service_index = service_index.clone();
+                    async move { service_index }
+                }
+            }),
+        )
+        .route(
+            "/v3/registration/foo/index.json",
+            get({
+                let registration_index = registration_index.clone();
+                move || {
+                    let registration_index = registration_index.clone();
+                    async move { registration_index }
+                }
+            }),
+        )
+        .route(
+            "/v3/registration/foo/page/0.json",
+            get({
+                let registration_index = registration_index.clone();
+                move || {
+                    let registration_index = registration_index.clone();
+                    async move { registration_index }
+                }
+            }),
+        );
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.expect("server");
+    });
+    (
+        Url::parse(&format!(
+            "http://nuget.example:{}/v3/index.json",
+            address.port()
+        ))
+        .expect("service index URL"),
+        address,
+    )
 }
 
 async fn start_registration_server(
