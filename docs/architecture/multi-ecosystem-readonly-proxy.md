@@ -13,10 +13,15 @@ restore、Docker Registry V2 和 Unity UPM 只读代理；PyPI 和 Winget
 
 ## 范围
 
-### 本期保留能力
+### 已实现能力
 
 - Rustup 命名入口和动态 manifest 镜像。
 - Cargo Sparse Index 与 crate 下载。
+- VS Code Marketplace 扩展 metadata 与 `.vsix` 代理。
+- npm 与 Unity UPM 的 npm-compatible metadata 与 tarball 代理，UPM 使用独立
+  生态入口和 scope 选择规则。
+- NuGet V3 只读 restore、只读查询和漏洞数据。
+- Docker Registry V2 只读拉取、只读查询和 CLI 根入口。
 - 公共 `sources` 配置、`proxy`/`group` source graph、来源回退、文件缓存、
   原子写入、完整性校验和 JSONL 审计。
 - 统一路由模型：
@@ -25,17 +30,11 @@ restore、Docker Registry V2 和 Unity UPM 只读代理；PyPI 和 Winget
   /mirror/{ecosystem}/{name}/...
   ```
 
-### 后续适配边界
+### 未实现的适配边界
 
-- npm：package metadata、scoped package metadata 和 tarball 下载。
-- UPM：独立的 UPM 生态入口，复用 npm-compatible metadata/tarball 核心，
-  增加 scope 选择规则。
+以下生态只有适配边界文档，没有注册路由，本文不描述其运行时行为：
+
 - PyPI：Simple API 的 HTML/JSON 表示和项目文件下载。
-- NuGet：V3 service index、Search、registration、package version index、
-  package content 和漏洞数据。
-- Docker：Registry V2 manifest、image config、layer blob、tag/digest 拉取和
-  多架构 manifest。
-- VS Code 扩展：扩展 metadata、版本信息和 `.vsix` 下载。
 - Winget：source/index、package manifest 和安装包下载。
 
 ### 明确不在范围内
@@ -234,12 +233,12 @@ Rustup 保留 channel manifest 刷新、URL 重写、dist 路径白名单、SHA-
 ### Cargo
 
 Cargo 当前实现 Sparse Index 和 crate 下载，规范入口为
-`/mirror/cargo/{name}/...`。但当前 Cargo MVP 仍按请求独立通过 SourcePool 获取
-index 和 crate，尚未实现上述通用的 metadata current/sidecar affinity，也没有
-在 artifact 请求前读取并使用通用 `selected_proxy` 绑定。因此不能把公共 affinity
-契约写成 Cargo 已完成能力；Cargo 后续修订必须补齐该绑定、摘要校验后的回退和
-sidecar 更新。Cargo Git Index、publish 和写入操作仍不在范围内。详细契约见
-`cargo-mvp.md`。
+`/mirror/cargo/{name}/...`，并已按上述通用 affinity 契约绑定来源：index 成功响应
+持久化 `selected_proxy` sidecar；crate 请求先使用该绑定，只在绑定来源不可用、
+响应无法使用或 checksum 不匹配时才按 group 顺序回退；回退得到的 crate 通过
+checksum 校验后才原子发布 artifact 并更新 sidecar。index 与 crate 仍分别由
+SourcePool 获取，不合并不同来源的版本记录。Cargo Git Index、publish 和写入操作
+仍不在范围内。详细契约见 `cargo-mvp.md`。
 
 ### npm 与 UPM
 
@@ -256,8 +255,9 @@ UPM 另行处理 scoped registry 和 Unity package scope；不能通过 npm 入�
 
 ### PyPI
 
-PyPI 使用 `/mirror/pypi/{name}/simple/...`，适配器负责项目名规范化、HTML/JSON
-表示协商、文件链接重写和 hash 校验。详细契约见 `pypi-mvp.md`。
+PyPI 尚未注册路由。目标契约使用 `/mirror/pypi/{name}/simple/...`，适配器负责
+项目名规范化、HTML/JSON 表示协商、文件链接重写和 hash 校验。详细契约见
+`pypi-mvp.md`。
 
 ### NuGet
 
@@ -297,24 +297,24 @@ manifest、image config 和 layer blob 分别记录 object type。group 只按�
 实际 `selected_proxy`、repository、object type 和 digest 复用，因此 group
 入口与其实际选中的 direct proxy 可以复用同一内容对象。
 
-Docker 适配器首期不实现 push、delete、catalog、账号管理、私有凭据、签名管理或
-构建服务；对公开 Registry 返回的匿名 Bearer challenge，Stacktory 在服务端获取
-短期 pull token，不向客户端暴露上游认证信息。真实 Docker/OCI 客户端联调必须在
-客户端支持当前 Stacktory 路径入口后单独验收。
+Docker 适配器首期不实现 push、delete、账号管理、私有凭据、签名管理、构建服务
+和 Docker Registry V1 查询；对公开 Registry 返回的匿名 Bearer challenge，
+Stacktory 在服务端获取短期 pull token，不向客户端暴露上游认证信息。真实
+Docker/OCI 客户端联调必须在客户端支持当前 Stacktory 路径入口后单独验收。
 
 ### VS Code 扩展
 
-VS Code 扩展使用 `/mirror/vscode/{name}/...`。适配器负责扩展 metadata、版本
-选择和 `.vsix` 文件下载；具体支持 Microsoft Marketplace、Open VSX 或内部
-兼容源需要在实现任务中按实际上游协议固定，不能把某个平台 API 当作通用协议。
-发布、删除、账号和 token 管理不在范围内。
+VS Code 扩展使用 `/mirror/vscode/{name}/...`。适配器代理公开的 Microsoft
+Marketplace Gallery，负责扩展 metadata、版本选择和 `.vsix` 文件下载；Open VSX
+`/api/...` 协议属于后续独立适配，不能把某个平台 API 当作通用协议。发布、删除、
+账号和 token 管理不在范围内。详细契约见 `vscode-mvp.md`。
 
 ### Winget
 
-Winget 使用 `/mirror/winget/{name}/...`。适配器负责 source/index、package
-manifest 和安装包下载，重写 manifest 中的下载地址，并校验
-`InstallerSha256`。安装包来源必须经过配置来源或协议适配器的安全校验；发布、
-manifest 写入、账号和签名管理不在范围内。
+Winget 尚未注册路由。目标契约使用 `/mirror/winget/{name}/...`，适配器负责
+source/index、package manifest 和安装包下载，重写 manifest 中的下载地址，并
+校验 `InstallerSha256`。安装包来源必须经过配置来源或协议适配器的安全校验；
+发布、manifest 写入、账号和签名管理不在范围内。
 
 ## 验证边界
 
