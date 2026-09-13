@@ -2,6 +2,7 @@ use std::{fs, sync::Arc};
 
 use stacktory::{
     Config, SourcePool,
+    audit::AuditSink,
     cargo::CargoAdapter,
     docker::register_adapter,
     http::{router_with_docker_entry, router_with_rustup_and_registry},
@@ -17,6 +18,19 @@ use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut arguments = std::env::args().skip(1);
+    match arguments.next().as_deref() {
+        None => serve().await,
+        Some("prune-legacy-artifacts") => prune_legacy_artifacts(arguments),
+        Some(command) => {
+            eprintln!("Stacktory: unknown command `{command}`");
+            eprintln!("usage: stacktory [prune-legacy-artifacts [--dry-run]]");
+            std::process::exit(2);
+        }
+    }
+}
+
+async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = Config::from_toml(&fs::read_to_string("config.toml")?)?;
     let mut docker_listeners = Vec::new();
     let registry = configured_registry(&mut config, &mut docker_listeners)?;
@@ -33,6 +47,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
     axum::serve(listener, router_with_rustup_and_registry(service, registry)).await?;
+    Ok(())
+}
+
+fn prune_legacy_artifacts(
+    arguments: impl Iterator<Item = String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut dry_run = false;
+    for argument in arguments {
+        match argument.as_str() {
+            "--dry-run" => dry_run = true,
+            other => {
+                eprintln!("Stacktory: unknown option `{other}`");
+                eprintln!("usage: stacktory [prune-legacy-artifacts [--dry-run]]");
+                std::process::exit(2);
+            }
+        }
+    }
+    let config = Config::from_toml(&fs::read_to_string("config.toml")?)?;
+    let report = retention::prune_legacy_artifacts(
+        &config.data_dir,
+        dry_run,
+        &AuditSink::new(config.data_dir.clone()),
+    );
+    println!(
+        "Stacktory: {} {} legacy artifact entries ({:.1} MiB)",
+        if dry_run { "would remove" } else { "removed" },
+        report.removed_entries,
+        report.removed_bytes as f64 / (1024.0 * 1024.0)
+    );
+    if report.failed_entries > 0 {
+        eprintln!(
+            "Stacktory: {} legacy artifact entries could not be removed",
+            report.failed_entries
+        );
+        std::process::exit(1);
+    }
     Ok(())
 }
 

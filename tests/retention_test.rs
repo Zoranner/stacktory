@@ -4,7 +4,11 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use stacktory::{RetentionConfig, audit::AuditSink, retention::sweep};
+use stacktory::{
+    RetentionConfig,
+    audit::AuditSink,
+    retention::{prune_legacy_artifacts, sweep},
+};
 use tempfile::tempdir;
 
 const DAY: u64 = 86_400;
@@ -290,4 +294,46 @@ fn skips_snapshot_cleanup_when_the_current_pointer_is_unreadable() {
     for revision in &revisions {
         assert!(channel_dir.join(revision).exists());
     }
+}
+
+#[test]
+fn reports_legacy_artifact_entries_without_removing_them_on_dry_run() {
+    let directory = tempdir().expect("temporary directory");
+    let data_dir = directory.path();
+    let legacy_crate = data_dir.join("cargo/artifacts/group/crates/serde/1.0.0.crate");
+    write_file_with_mtime(&legacy_crate, "legacy", SystemTime::now());
+
+    let report = prune_legacy_artifacts(data_dir, true, &AuditSink::new(data_dir));
+
+    assert_eq!(report.removed_entries, 1);
+    assert_eq!(report.removed_bytes, 6);
+    assert!(legacy_crate.exists());
+    assert!(!data_dir.join("audit/events.jsonl").exists());
+}
+
+#[test]
+fn removes_legacy_artifact_entries_and_keeps_object_caches() {
+    let directory = tempdir().expect("temporary directory");
+    let data_dir = directory.path();
+    let now = SystemTime::now();
+    let legacy_crate = data_dir.join("cargo/artifacts/group/crates/serde/1.0.0.crate");
+    let legacy_rustup = data_dir.join("rustup/artifacts/aliyun/stable/manifest.toml");
+    let current_crate = data_dir.join("cargo/artifacts/official/objects/crates/serde/1.0.0.crate");
+    let docker_blob = data_dir.join("docker/artifacts/official/library/alpine/blob.json");
+    write_file_with_mtime(&legacy_crate, "legacy", now);
+    write_file_with_mtime(&legacy_rustup, "legacy", now);
+    write_file_with_mtime(&current_crate, "current", now);
+    write_file_with_mtime(&docker_blob, "docker", now);
+
+    let report = prune_legacy_artifacts(data_dir, false, &AuditSink::new(data_dir));
+
+    assert_eq!(report.removed_entries, 2);
+    assert_eq!(report.failed_entries, 0);
+    assert!(!data_dir.join("cargo/artifacts/group").exists());
+    assert!(!data_dir.join("rustup/artifacts/aliyun").exists());
+    assert!(current_crate.exists());
+    assert!(docker_blob.exists());
+    let events = fs::read_to_string(data_dir.join("audit/events.jsonl")).expect("audit events");
+    assert!(events.contains("legacy_artifact_cleanup"));
+    assert!(events.contains("\"count\":2"));
 }

@@ -247,6 +247,18 @@ rustup_snapshot_revisions = 3
 - `<data_dir>/<ecosystem>/artifacts/**` 和 `<data_dir>/rustup/artifacts/**` 不在
   当前清理范围；制品容量和闲置淘汰仍需独立设计。
 
+旧布局（来源目录下没有 `objects` 层的缓存）不随服务启动或周期清理删除，只能
+显式执行维护命令：
+
+```text
+stacktory prune-legacy-artifacts --dry-run
+stacktory prune-legacy-artifacts
+```
+
+命令只处理 Rustup 和 Cargo 的来源目录，删除 `{ecosystem}/artifacts/{source}/`
+下 `objects` 之外的旧布局子树，保留当前的对象缓存；Docker 等其他生态的制品
+布局不经过这次迁移，不在清理范围内。`--dry-run` 只统计不删除。
+
 ## 生态适配器摘要
 
 ### Rustup

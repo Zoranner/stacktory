@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsStr,
     fs, io,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -15,6 +16,8 @@ const AUDIT_ROTATED_PREFIX: &str = "events.";
 const AUDIT_ROTATED_SUFFIX: &str = ".jsonl";
 const METADATA_DIR: &str = "metadata";
 const SECS_PER_DAY: u64 = 86_400;
+/// 只有 Rustup 和 Cargo 经历过"来源拥有的对象缓存"迁移，旧布局只可能出现在这两处。
+const LEGACY_ARTIFACT_ECOSYSTEMS: [&str; 2] = ["rustup", "cargo"];
 
 #[derive(Debug, Default, Eq, PartialEq)]
 pub struct SweepReport {
@@ -25,6 +28,14 @@ pub struct SweepReport {
     pub rotated_audit_file: Option<String>,
     pub pruned_audit_files: u64,
     pub audit_failed: bool,
+}
+
+#[derive(Debug, Default, Eq, PartialEq)]
+pub struct LegacyArtifactReport {
+    pub removed_entries: u64,
+    pub removed_bytes: u64,
+    pub failed_entries: u64,
+    pub dry_run: bool,
 }
 
 /// 启动后台清理任务：首次执行立即开始，之后按配置间隔重复。
@@ -60,6 +71,113 @@ pub fn sweep(
     prune_rustup_snapshots(data_dir, config.rustup_snapshot_revisions, &mut report);
     record(audit, &report);
     report
+}
+
+/// 删除 Rustup 和 Cargo 来源目录下 `objects` 之外的旧布局子树。
+///
+/// 该清理只在显式执行维护命令时运行，不属于服务启动和周期清理的一部分。
+pub fn prune_legacy_artifacts(
+    data_dir: &Path,
+    dry_run: bool,
+    audit: &AuditSink,
+) -> LegacyArtifactReport {
+    let mut report = LegacyArtifactReport {
+        dry_run,
+        ..LegacyArtifactReport::default()
+    };
+    for ecosystem in LEGACY_ARTIFACT_ECOSYSTEMS {
+        let root = data_dir.join(ecosystem).join("artifacts");
+        let Ok(sources) = fs::read_dir(&root) else {
+            continue;
+        };
+        for source in sources.flatten() {
+            if !source.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let Ok(entries) = fs::read_dir(source.path()) else {
+                continue;
+            };
+            let mut removed_from_source = 0;
+            for entry in entries.flatten() {
+                if entry.file_name() == OsStr::new("objects") {
+                    continue;
+                }
+                let path = entry.path();
+                let bytes = subtree_bytes(&path);
+                if dry_run {
+                    report.removed_entries += 1;
+                    report.removed_bytes += bytes;
+                    removed_from_source += 1;
+                    continue;
+                }
+                let removed = match entry.file_type() {
+                    Ok(kind) if kind.is_dir() => fs::remove_dir_all(&path),
+                    Ok(_) => fs::remove_file(&path),
+                    Err(error) => Err(error),
+                };
+                match removed {
+                    Ok(()) => {
+                        report.removed_entries += 1;
+                        report.removed_bytes += bytes;
+                        removed_from_source += 1;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        report.failed_entries += 1;
+                        eprintln!(
+                            "Stacktory legacy artifact cleanup failed for `{}`: {error}",
+                            path.display()
+                        );
+                    }
+                }
+            }
+            if !dry_run && removed_from_source > 0 && is_empty_dir(&source.path()) {
+                let _ = fs::remove_dir(source.path());
+            }
+        }
+    }
+    record_legacy(audit, &report);
+    report
+}
+
+fn is_empty_dir(path: &Path) -> bool {
+    fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_none())
+}
+
+fn subtree_bytes(path: &Path) -> u64 {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if !metadata.is_dir() {
+        return metadata.len();
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| subtree_bytes(&entry.path()))
+        .sum()
+}
+
+fn record_legacy(audit: &AuditSink, report: &LegacyArtifactReport) {
+    if report.dry_run || (report.removed_entries == 0 && report.failed_entries == 0) {
+        return;
+    }
+    let failed = report.failed_entries > 0;
+    write_event(
+        audit,
+        "legacy_artifact_cleanup",
+        "artifact",
+        if failed { "partial" } else { "success" },
+        AuditDetails {
+            object_type: Some("artifact"),
+            cache_status: Some("removed"),
+            failure_category: failed.then_some("remove_failed"),
+            count: Some(report.removed_entries),
+            ..AuditDetails::default()
+        },
+    );
 }
 
 fn prune_rustup_snapshots(data_dir: &Path, keep_revisions: u64, report: &mut SweepReport) {
