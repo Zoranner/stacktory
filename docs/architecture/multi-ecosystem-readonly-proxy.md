@@ -231,6 +231,7 @@ metadata 和审计文件按配置的保留窗口清理，配置由 `[retention]`
 metadata_ttl_secs = 604800
 audit_retention_days = 30
 cleanup_interval_secs = 3600
+rustup_snapshot_revisions = 3
 ```
 
 - 服务启动后立即执行一次清理，之后按 `cleanup_interval_secs` 周期执行。
@@ -239,10 +240,12 @@ cleanup_interval_secs = 3600
   的保留上限，是否按时间复用缓存仍由各适配器的命中策略决定。
 - `<data_dir>/audit/events.jsonl` 跨天后轮转为 `events.<UTC 日期>.jsonl`，超过
   `audit_retention_days` 的轮转文件被删除。
+- Rustup 每个 `{entry}/{channel}` 只保留最近 `rustup_snapshot_revisions` 个
+  修订；`current.toml` 指向的修订始终保留，指针存在但无法解析时跳过该 channel。
 - 清理按轮次记录 `metadata_cleanup` 和 `audit_cleanup` 事件，包含删除数量；
   不逐文件写审计，也不记录文件内容。
-- `<data_dir>/<ecosystem>/artifacts/**` 和 `<data_dir>/rustup/snapshots/**` 不在
-  当前清理范围；制品容量和快照修订保留仍需独立设计。
+- `<data_dir>/<ecosystem>/artifacts/**` 和 `<data_dir>/rustup/artifacts/**` 不在
+  当前清理范围；制品容量和闲置淘汰仍需独立设计。
 
 ## 生态适配器摘要
 

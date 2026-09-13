@@ -14,6 +14,7 @@ fn retention_config() -> RetentionConfig {
         metadata_ttl_secs: 7 * DAY,
         audit_retention_days: 30,
         cleanup_interval_secs: 3_600,
+        rustup_snapshot_revisions: 2,
     }
 }
 
@@ -171,4 +172,122 @@ fn tolerates_a_missing_data_directory() {
     );
 
     assert_eq!(report, stacktory::retention::SweepReport::default());
+}
+
+fn write_snapshot_revision(channel_dir: &Path, revision: &str, modified: SystemTime) {
+    write_file_with_mtime(
+        &channel_dir.join(revision).join("manifest.toml"),
+        "manifest",
+        modified,
+    );
+}
+
+fn write_current_pointer(channel_dir: &Path, revision: &str) {
+    fs::create_dir_all(channel_dir).expect("channel directory");
+    fs::write(
+        channel_dir.join("current.toml"),
+        format!(
+            "revision = \"{revision}\"\nsource_name = \"official\"\npublished_at_unix_secs = 1\n"
+        ),
+    )
+    .expect("current pointer");
+}
+
+#[test]
+fn keeps_recent_rustup_snapshot_revisions() {
+    let directory = tempdir().expect("temporary directory");
+    let data_dir = directory.path();
+    let now = SystemTime::now();
+    let channel_dir = data_dir.join("rustup/snapshots/group/stable");
+    let revisions: Vec<String> = ["a", "b", "c", "d"]
+        .iter()
+        .map(|label| label.repeat(64))
+        .collect();
+    for (index, revision) in revisions.iter().enumerate() {
+        write_snapshot_revision(
+            &channel_dir,
+            revision,
+            now - Duration::from_secs((4 - index as u64) * 1_200),
+        );
+    }
+    write_current_pointer(&channel_dir, &revisions[3]);
+
+    let report = sweep(
+        data_dir,
+        &retention_config(),
+        now,
+        &AuditSink::new(data_dir),
+    );
+
+    assert_eq!(report.removed_snapshot_revisions, 2);
+    assert!(!channel_dir.join(&revisions[0]).exists());
+    assert!(!channel_dir.join(&revisions[1]).exists());
+    assert!(channel_dir.join(&revisions[2]).exists());
+    assert!(channel_dir.join(&revisions[3]).exists());
+    assert!(channel_dir.join("current.toml").exists());
+}
+
+#[test]
+fn keeps_the_current_snapshot_revision_beyond_the_keep_window() {
+    let directory = tempdir().expect("temporary directory");
+    let data_dir = directory.path();
+    let now = SystemTime::now();
+    let channel_dir = data_dir.join("rustup/snapshots/group/stable");
+    let revisions: Vec<String> = ["a", "b", "c", "d"]
+        .iter()
+        .map(|label| label.repeat(64))
+        .collect();
+    for (index, revision) in revisions.iter().enumerate() {
+        write_snapshot_revision(
+            &channel_dir,
+            revision,
+            now - Duration::from_secs((4 - index as u64) * 1_200),
+        );
+    }
+    write_current_pointer(&channel_dir, &revisions[0]);
+
+    let report = sweep(
+        data_dir,
+        &retention_config(),
+        now,
+        &AuditSink::new(data_dir),
+    );
+
+    assert_eq!(report.removed_snapshot_revisions, 1);
+    assert!(channel_dir.join(&revisions[0]).exists());
+    assert!(!channel_dir.join(&revisions[1]).exists());
+    assert!(channel_dir.join(&revisions[2]).exists());
+    assert!(channel_dir.join(&revisions[3]).exists());
+}
+
+#[test]
+fn skips_snapshot_cleanup_when_the_current_pointer_is_unreadable() {
+    let directory = tempdir().expect("temporary directory");
+    let data_dir = directory.path();
+    let now = SystemTime::now();
+    let channel_dir = data_dir.join("rustup/snapshots/group/stable");
+    let revisions: Vec<String> = ["a", "b", "c", "d"]
+        .iter()
+        .map(|label| label.repeat(64))
+        .collect();
+    for (index, revision) in revisions.iter().enumerate() {
+        write_snapshot_revision(
+            &channel_dir,
+            revision,
+            now - Duration::from_secs((4 - index as u64) * 1_200),
+        );
+    }
+    fs::write(channel_dir.join("current.toml"), "revision =").expect("broken pointer");
+
+    let report = sweep(
+        data_dir,
+        &retention_config(),
+        now,
+        &AuditSink::new(data_dir),
+    );
+
+    assert_eq!(report.removed_snapshot_revisions, 0);
+    for revision in &revisions {
+        assert!(channel_dir.join(revision).exists());
+    }
 }

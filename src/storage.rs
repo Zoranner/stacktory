@@ -30,6 +30,12 @@ pub struct StoredSnapshot {
     pub artifact_sources: BTreeMap<DistPath, ArtifactSource>,
 }
 
+#[derive(Debug, Default, Eq, PartialEq)]
+pub struct PrunedSnapshots {
+    pub removed_revisions: u64,
+    pub failed_revisions: u64,
+}
+
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("storage I/O failed: {0}")]
@@ -179,6 +185,75 @@ impl SnapshotStore {
             .join(entry_name)
             .join(channel)
     }
+
+    /// 每个 `{entry}/{channel}` 只保留最近 `keep_revisions` 个修订。
+    ///
+    /// `current.toml` 指向的修订始终保留，即使它不是最近的修订。`current.toml`
+    /// 存在但无法解析时跳过该 channel，避免删除唯一可服务的快照。
+    pub fn prune(
+        &self,
+        entry_name: &str,
+        channel: &str,
+        keep_revisions: u64,
+    ) -> Result<PrunedSnapshots, StorageError> {
+        validate_source_name(entry_name)?;
+        validate_channel(channel)?;
+        let root = self.snapshot_root(entry_name, channel);
+        let entries = match fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(PrunedSnapshots::default());
+            }
+            Err(error) => return Err(StorageError::Io(error)),
+        };
+        let current = match fs::read_to_string(root.join("current.toml")) {
+            Ok(pointer) => match toml::from_str::<CurrentPointer>(&pointer) {
+                Ok(pointer) => Some(pointer.revision),
+                Err(_) => return Ok(PrunedSnapshots::default()),
+            },
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(StorageError::Io(error)),
+        };
+
+        let mut revisions = Vec::new();
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str().map(str::to_owned) else {
+                continue;
+            };
+            if !is_revision_name(&name) || !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) else {
+                continue;
+            };
+            revisions.push((modified, name, entry.path()));
+        }
+        revisions.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+
+        let mut pruned = PrunedSnapshots::default();
+        for (index, (_, name, path)) in revisions.iter().enumerate() {
+            if index < keep_revisions as usize || current.as_deref() == Some(name.as_str()) {
+                continue;
+            }
+            match fs::remove_dir_all(path) {
+                Ok(()) => pruned.removed_revisions += 1,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    pruned.failed_revisions += 1;
+                    eprintln!(
+                        "Stacktory snapshot cleanup failed for `{}`: {error}",
+                        path.display()
+                    );
+                }
+            }
+        }
+        Ok(pruned)
+    }
+}
+
+fn is_revision_name(name: &str) -> bool {
+    name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn unix_timestamp() -> Result<u64, StorageError> {

@@ -7,6 +7,7 @@ use std::{
 use crate::{
     audit::{AuditDetails, AuditSink},
     config::RetentionConfig,
+    storage::SnapshotStore,
 };
 
 const AUDIT_FILE: &str = "events.jsonl";
@@ -19,6 +20,8 @@ const SECS_PER_DAY: u64 = 86_400;
 pub struct SweepReport {
     pub removed_metadata_files: u64,
     pub failed_metadata_files: u64,
+    pub removed_snapshot_revisions: u64,
+    pub failed_snapshot_revisions: u64,
     pub rotated_audit_file: Option<String>,
     pub pruned_audit_files: u64,
     pub audit_failed: bool,
@@ -54,8 +57,48 @@ pub fn sweep(
     }
     prune_audit(&audit_dir, config, now, &mut report);
     clean_metadata(data_dir, config, now, &mut report);
+    prune_rustup_snapshots(data_dir, config.rustup_snapshot_revisions, &mut report);
     record(audit, &report);
     report
+}
+
+fn prune_rustup_snapshots(data_dir: &Path, keep_revisions: u64, report: &mut SweepReport) {
+    let root = data_dir.join("rustup").join("snapshots");
+    let Ok(entries) = fs::read_dir(&root) else {
+        return;
+    };
+    let store = SnapshotStore::new(data_dir);
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let entry_name = entry.file_name();
+        let Some(entry_name) = entry_name.to_str() else {
+            continue;
+        };
+        let Ok(channels) = fs::read_dir(entry.path()) else {
+            continue;
+        };
+        for channel in channels.flatten() {
+            if !channel.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let channel_name = channel.file_name();
+            let Some(channel_name) = channel_name.to_str() else {
+                continue;
+            };
+            match store.prune(entry_name, channel_name, keep_revisions) {
+                Ok(pruned) => {
+                    report.removed_snapshot_revisions += pruned.removed_revisions;
+                    report.failed_snapshot_revisions += pruned.failed_revisions;
+                }
+                Err(error) => {
+                    report.failed_snapshot_revisions += 1;
+                    eprintln!("Stacktory snapshot cleanup failed: {error}");
+                }
+            }
+        }
+    }
 }
 
 fn clean_metadata(
@@ -218,6 +261,22 @@ fn record(audit: &AuditSink, report: &SweepReport) {
                 cache_status: Some("rotated"),
                 failure_category: report.audit_failed.then_some("cleanup_failed"),
                 count: Some(report.pruned_audit_files),
+                ..AuditDetails::default()
+            },
+        );
+    }
+    if report.removed_snapshot_revisions > 0 || report.failed_snapshot_revisions > 0 {
+        let failed = report.failed_snapshot_revisions > 0;
+        write_event(
+            audit,
+            "snapshot_cleanup",
+            "snapshot",
+            if failed { "partial" } else { "success" },
+            AuditDetails {
+                object_type: Some("snapshot"),
+                cache_status: Some("expired"),
+                failure_category: failed.then_some("remove_failed"),
+                count: Some(report.removed_snapshot_revisions),
                 ..AuditDetails::default()
             },
         );

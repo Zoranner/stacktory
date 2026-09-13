@@ -24,6 +24,7 @@ pub struct Config {
 pub const DEFAULT_METADATA_TTL_SECS: u64 = 604_800;
 pub const DEFAULT_AUDIT_RETENTION_DAYS: u64 = 30;
 pub const DEFAULT_CLEANUP_INTERVAL_SECS: u64 = 3_600;
+pub const DEFAULT_RUSTUP_SNAPSHOT_REVISIONS: u64 = 3;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(default)]
@@ -31,6 +32,7 @@ pub struct RetentionConfig {
     pub metadata_ttl_secs: u64,
     pub audit_retention_days: u64,
     pub cleanup_interval_secs: u64,
+    pub rustup_snapshot_revisions: u64,
 }
 
 impl Default for RetentionConfig {
@@ -39,6 +41,7 @@ impl Default for RetentionConfig {
             metadata_ttl_secs: DEFAULT_METADATA_TTL_SECS,
             audit_retention_days: DEFAULT_AUDIT_RETENTION_DAYS,
             cleanup_interval_secs: DEFAULT_CLEANUP_INTERVAL_SECS,
+            rustup_snapshot_revisions: DEFAULT_RUSTUP_SNAPSHOT_REVISIONS,
         }
     }
 }
@@ -263,6 +266,8 @@ pub enum ConfigError {
     InvalidAuditRetentionDays,
     #[error("retention.cleanup_interval_secs must be greater than zero")]
     InvalidCleanupInterval,
+    #[error("retention.rustup_snapshot_revisions must be greater than zero")]
+    InvalidRustupSnapshotRevisions,
 }
 
 #[derive(Deserialize)]
@@ -359,6 +364,9 @@ impl Config {
         }
         if raw.retention.cleanup_interval_secs == 0 {
             return Err(ConfigError::InvalidCleanupInterval);
+        }
+        if raw.retention.rustup_snapshot_revisions == 0 {
+            return Err(ConfigError::InvalidRustupSnapshotRevisions);
         }
         if raw.rustup.channels.is_empty() {
             return Err(ConfigError::MissingRustupChannel);

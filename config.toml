@@ -10,6 +10,8 @@ metadata_ttl_secs = 604800
 audit_retention_days = 30
 # Retention task interval.
 cleanup_interval_secs = 3600
+# Rustup snapshot revisions kept per entry and channel.
+rustup_snapshot_revisions = 3
 
 [rustup]
 refresh_interval_secs = 3600
