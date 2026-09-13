@@ -154,8 +154,10 @@ Asset Store 和 Git URL 包代理。
 - npm/UPM 入口与缓存键隔离。
 - 未注册路由不暴露假支持。
 
-真实 npm CLI、Unity Package Manager 和外部 registry 联调属于实现交付后的
-独立验证，不能由本文档或公共 Rust 测试代替。
+真实 npm CLI 已通过公开 registry 验证：安装成功、metadata 与 tarball 按来源绑定
+落盘，第二个客户端命中缓存，见 `docs/verification/npm-cargo-client-2026-09-14.md`。
+Unity Package Manager 需要 Unity Editor，仍未验证，不能由本文档或公共 Rust 测试
+代替。
 
 ## 官方协议依据
 

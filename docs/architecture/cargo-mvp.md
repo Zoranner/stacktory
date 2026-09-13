@@ -128,5 +128,6 @@ Cargo 测试使用本地 HTTP 上游覆盖：
 - group index/crate 回退。
 - checksum 不匹配时不发布 artifact 缓存。
 
-真实 crates.io、目标 Nexus proxy 和 Cargo 客户端联调尚未执行；Cargo Git Index
-和写入操作属于后续独立任务。
+真实 Cargo 客户端已通过 crates.io Sparse Index 验证：`cargo fetch`、`cargo build`
+和缓存复用均通过，见 `docs/verification/npm-cargo-client-2026-09-14.md`。面向
+Nexus 等目标上游、Cargo Git Index 和写入操作仍未验证，属于后续独立任务。
