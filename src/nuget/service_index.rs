@@ -29,6 +29,7 @@ use super::path::{safe_resource_url, validate_service_index_url};
 const REGISTRATIONS_BASE_URL: &str = "RegistrationsBaseUrl";
 const PACKAGE_BASE_ADDRESS: &str = "PackageBaseAddress";
 const SEARCH_QUERY_SERVICE: &str = "SearchQueryService";
+const VULNERABILITY_INFO: &str = "VulnerabilityInfo/6.7.0";
 
 #[derive(Debug)]
 pub struct NugetAdapter {
@@ -58,6 +59,10 @@ pub enum NugetError {
     InvalidPackageIndex(String),
     #[error("NuGet search response is invalid: {0}")]
     InvalidSearch(String),
+    #[error("NuGet vulnerability index is invalid: {0}")]
+    InvalidVulnerability(String),
+    #[error("NuGet vulnerability path is invalid: {0}")]
+    InvalidVulnerabilityPath(String),
     #[error("NuGet package content integrity check failed: {0}")]
     PackageIntegrityFailure(String),
     #[error("NuGet storage I/O failed: {0}")]
@@ -77,6 +82,8 @@ pub(crate) struct ServiceIndexDescriptor {
     pub(crate) package_base_url: Option<String>,
     #[serde(default)]
     pub(crate) search_url: Option<String>,
+    #[serde(default)]
+    pub(crate) vulnerability_url: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -87,6 +94,7 @@ pub(crate) struct ServiceIndexSnapshot {
     pub(crate) registration_urls: Vec<Url>,
     pub(crate) package_base_url: Option<Url>,
     pub(crate) search_url: Option<Url>,
+    pub(crate) vulnerability_url: Option<Url>,
 }
 
 pub(crate) struct NugetAuditDetails<'a> {
@@ -104,6 +112,7 @@ struct RewrittenServiceIndex {
     registration_urls: Vec<Url>,
     package_base_url: Option<Url>,
     search_url: Option<Url>,
+    vulnerability_url: Option<Url>,
 }
 
 impl NugetAdapter {
@@ -199,6 +208,7 @@ impl NugetService {
                 )?,
                 package_base_url: parse_optional_url(descriptor.package_base_url)?,
                 search_url: parse_optional_url(descriptor.search_url)?,
+                vulnerability_url: parse_optional_url(descriptor.vulnerability_url)?,
             });
         }
 
@@ -252,6 +262,7 @@ impl NugetService {
                             .collect(),
                         package_base_url: rewritten.package_base_url.as_ref().map(Url::to_string),
                         search_url: rewritten.search_url.as_ref().map(Url::to_string),
+                        vulnerability_url: rewritten.vulnerability_url.as_ref().map(Url::to_string),
                     };
                     atomic_write(&cache_path, &rewritten.body)?;
                     atomic_write(&descriptor_path, &serde_json::to_vec(&descriptor)?)?;
@@ -269,6 +280,7 @@ impl NugetService {
                         registration_urls: rewritten.registration_urls,
                         package_base_url: rewritten.package_base_url,
                         search_url: rewritten.search_url,
+                        vulnerability_url: rewritten.vulnerability_url,
                     });
                 }
                 Err(error) => {
@@ -342,6 +354,7 @@ impl NugetService {
             registration_urls: rewritten.registration_urls,
             package_base_url: rewritten.package_base_url,
             search_url: rewritten.search_url,
+            vulnerability_url: rewritten.vulnerability_url,
         })
     }
 
@@ -360,6 +373,7 @@ impl NugetService {
                 .collect(),
             package_base_url: snapshot.package_base_url.as_ref().map(Url::to_string),
             search_url: snapshot.search_url.as_ref().map(Url::to_string),
+            vulnerability_url: snapshot.vulnerability_url.as_ref().map(Url::to_string),
         };
         atomic_write(&self.service_index_path(entry_name), &snapshot.body)?;
         atomic_write(
@@ -467,6 +481,7 @@ fn rewrite_service_index(
     let mut registration_urls = Vec::new();
     let mut package_base_url = None;
     let mut search_resource: Option<(u8, Url)> = None;
+    let mut vulnerability_url = None;
 
     for resource in resources.drain(..) {
         let Some(object) = resource.as_object() else {
@@ -535,6 +550,20 @@ fn rewrite_service_index(
             }) {
                 search_resource = Some((rank.expect("checked search resource"), upstream_url));
             }
+        } else if resource_type == VULNERABILITY_INFO {
+            if vulnerability_url.is_some() {
+                continue;
+            }
+            if !safe_resource_url(base_url, require_https, &upstream_url) {
+                return Err(NugetError::InvalidServiceIndex(
+                    "vulnerability resource URL is unsafe".to_owned(),
+                ));
+            }
+            vulnerability_url = Some(upstream_url);
+            rewritten.push(rewrite_resource(
+                object,
+                local_resource_url(root_url, entry_name, "vulnerability/index.json"),
+            ));
         }
     }
     if registration_url.is_none() || package_base_url.is_none() {
@@ -557,6 +586,7 @@ fn rewrite_service_index(
         registration_urls,
         package_base_url,
         search_url,
+        vulnerability_url,
     })
 }
 
@@ -719,6 +749,7 @@ fn nuget_error_response(error: &NugetError) -> Response {
             status: Some(status),
             ..
         }) => StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
+        NugetError::InvalidVulnerabilityPath(_) => StatusCode::NOT_FOUND,
         NugetError::Source(_)
         | NugetError::InvalidServiceIndex(_)
         | NugetError::InvalidRegistration(_)
@@ -726,6 +757,7 @@ fn nuget_error_response(error: &NugetError) -> Response {
         | NugetError::InvalidPackage(_)
         | NugetError::InvalidPackageIndex(_)
         | NugetError::InvalidSearch(_)
+        | NugetError::InvalidVulnerability(_)
         | NugetError::PackageIntegrityFailure(_) => StatusCode::BAD_GATEWAY,
         NugetError::Storage(_) | NugetError::Serialization(_) | NugetError::Audit(_) => {
             StatusCode::INTERNAL_SERVER_ERROR

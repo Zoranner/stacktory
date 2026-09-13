@@ -45,7 +45,7 @@ async fn service_index_rewrites_restore_resources_and_omits_unsupported_resource
         .expect("service index body");
     let index: serde_json::Value = serde_json::from_slice(&body).expect("service index JSON");
     let resources = index["resources"].as_array().expect("resources");
-    assert_eq!(resources.len(), 3);
+    assert_eq!(resources.len(), 4);
 
     let registration = resources
         .iter()
@@ -70,6 +70,17 @@ async fn service_index_rewrites_restore_resources_and_omits_unsupported_resource
     );
     assert!(String::from_utf8_lossy(&body).contains("SearchQueryService"));
     assert!(!String::from_utf8_lossy(&body).contains("evil.example"));
+
+    let vulnerability = resources
+        .iter()
+        .find(|resource| resource["@type"] == "VulnerabilityInfo/6.7.0")
+        .expect("vulnerability resource")["@id"]
+        .as_str()
+        .expect("vulnerability URL");
+    assert_eq!(
+        vulnerability,
+        "http://127.0.0.1:18761/mirror/nuget/official/vulnerability/index.json"
+    );
 
     assert!(
         data_dir
@@ -101,6 +112,35 @@ async fn service_index_rejects_unknown_resource_relationships() {
         .oneshot(get_request("/mirror/nuget/official/v3/index.json"))
         .await
         .expect("unsafe service index response");
+
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
+    assert!(
+        !data_dir
+            .path()
+            .join("nuget/metadata/official/service-index.json")
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn service_index_rejects_unsafe_vulnerability_resources() {
+    let upstream = start_service_index_with_body(|port| {
+        format!(
+            r#"{{"version":"3.0.0","resources":[
+                {{"@id":"http://127.0.0.1:{port}/v3/registration/","@type":"RegistrationsBaseUrl/3.6.0"}},
+                {{"@id":"http://127.0.0.1:{port}/v3-flatcontainer/","@type":"PackageBaseAddress/3.0.0"}},
+                {{"@id":"http://127.0.0.2/v3/vulnerabilities/index.json","@type":"VulnerabilityInfo/6.7.0"}}
+            ]}}"#
+        )
+    })
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = nuget_router(upstream, data_dir.path());
+
+    let response = router
+        .oneshot(get_request("/mirror/nuget/official/v3/index.json"))
+        .await
+        .expect("unsafe vulnerability response");
 
     assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
     assert!(
@@ -343,11 +383,16 @@ async fn start_service_index_server() -> Url {
                     "@type": "SearchQueryService/3.0.0"
                 }},
                 {{
+                    "@id": "http://nuget.example:{}/v3/vulnerabilities/index.json",
+                    "@type": "VulnerabilityInfo/6.7.0"
+                }},
+                {{
                     "@id": "http://evil.example/unknown",
                     "@type": "UnknownResource/1.0.0"
                 }}
             ]
         }}"#,
+        address.port(),
         address.port(),
         address.port(),
         address.port()

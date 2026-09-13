@@ -335,6 +335,8 @@ fn error_response(error: &NugetError) -> Response {
         | NugetError::InvalidRegistrationPath(_)
         | NugetError::InvalidPackage(_)
         | NugetError::InvalidPackageIndex(_)
+        | NugetError::InvalidVulnerability(_)
+        | NugetError::InvalidVulnerabilityPath(_)
         | NugetError::PackageIntegrityFailure(_) => StatusCode::BAD_GATEWAY,
         NugetError::Storage(_) | NugetError::Serialization(_) | NugetError::Audit(_) => {
             StatusCode::INTERNAL_SERVER_ERROR

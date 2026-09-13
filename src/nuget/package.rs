@@ -798,6 +798,8 @@ fn package_error_response(error: &NugetError) -> Response {
         NugetError::Source(_) | NugetError::InvalidServiceIndex(_) => StatusCode::BAD_GATEWAY,
         NugetError::InvalidRegistration(_) => StatusCode::BAD_GATEWAY,
         NugetError::InvalidRegistrationPath(_) => StatusCode::NOT_FOUND,
+        NugetError::InvalidVulnerability(_) => StatusCode::BAD_GATEWAY,
+        NugetError::InvalidVulnerabilityPath(_) => StatusCode::NOT_FOUND,
         NugetError::InvalidPackageIndex(_) => StatusCode::BAD_GATEWAY,
         NugetError::InvalidSearch(_) => StatusCode::BAD_GATEWAY,
         NugetError::PackageIntegrityFailure(_) => StatusCode::BAD_GATEWAY,

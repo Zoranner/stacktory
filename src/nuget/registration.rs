@@ -755,6 +755,8 @@ fn registration_error_response(error: &NugetError) -> Response {
         }) => StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
         NugetError::InvalidRegistration(_) => StatusCode::BAD_GATEWAY,
         NugetError::InvalidRegistrationPath(_) => StatusCode::NOT_FOUND,
+        NugetError::InvalidVulnerability(_) => StatusCode::BAD_GATEWAY,
+        NugetError::InvalidVulnerabilityPath(_) => StatusCode::NOT_FOUND,
         NugetError::Source(_) | NugetError::InvalidServiceIndex(_) => StatusCode::BAD_GATEWAY,
         NugetError::InvalidPackage(_) => StatusCode::NOT_FOUND,
         NugetError::InvalidPackageIndex(_) => StatusCode::BAD_GATEWAY,
