@@ -1576,6 +1576,7 @@ fn read_verified_artifact(
         return Ok(None);
     };
     if sha256_digest(&contents) == digest {
+        let _ = crate::retention::note_access(&path);
         Ok(Some(contents))
     } else {
         fs::remove_file(path)?;

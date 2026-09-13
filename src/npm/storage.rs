@@ -123,7 +123,10 @@ impl NpmStorage {
             Err(error) => return Err(StorageError::Io(error)),
         };
         match verify_contents(artifact_key, expectation, &contents) {
-            Ok(_) => Ok(Some(contents)),
+            Ok(_) => {
+                let _ = crate::retention::note_access(&path);
+                Ok(Some(contents))
+            }
             Err(StorageError::IntegrityMismatch(_)) => {
                 fs::remove_file(path)?;
                 Ok(None)

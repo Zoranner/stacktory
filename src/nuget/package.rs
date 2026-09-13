@@ -317,6 +317,7 @@ async fn serve_package(
         );
         if let Some(bytes) = read_if_present(&cache_path)? {
             if cache_is_valid(&bytes, &binding, &cache_path)? {
+                let _ = crate::retention::note_access(&cache_path);
                 service.record_package(
                     entry_name,
                     &package_id,

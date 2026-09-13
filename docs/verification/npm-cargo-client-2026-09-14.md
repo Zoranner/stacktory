@@ -24,7 +24,27 @@ npm install --no-audit --no-fund
 - 缓存落盘为 `npm/artifacts/npmjs/objects/group/{package}/{version}/tarball/{sha256}`
   与 `npm/metadata/group/{package}/`。
 - 第二个客户端目录使用同一服务再次安装，耗时 2 秒，审计记录两条
-  `npm_metadata_read` 且 `cache_status` 为 `hit`，未再向上游发布。
+  `npm_metadata_read` 且 `cache_status` 为 `hit`。注意 npm 自身的本地缓存会直接
+  满足 tarball 请求，因此验证制品缓存必须用独立的 `--cache` 目录，否则只会看到
+  metadata 请求。
+
+使用独立 npm cache 目录重复验证：首次安装仍经 Stacktory 发布 metadata 和两个
+tarball；再次安装时审计为 `npm_artifact_read` 且 `cache_status` 为 `hit`，服务端
+未重新访问 registry。
+
+## 访问时间与闲置淘汰
+
+使用独立 npm cache 目录，`artifact_idle_secs = 60`：
+
+- 命中缓存的 tarball 请求后，对象的修改时间被刷新到请求时刻（验证时先把对象
+  回拨到 20 分钟前，命中后从 `17:32:36` 变为 `17:52:38`），说明命中路径会更新
+  访问时间。
+- 把 tarball 修改时间回拨 20 分钟后不再访问，`cleanup_interval_secs = 2` 的清理
+  任务在下一次扫描时删除该对象，审计记录
+  `artifact_cleanup`（`cache_status` 为 `idle`，`count` 为 1）。
+- 对象被删除后，新客户端再次安装时服务端回源重新发布同一 tarball
+  （`npm_artifact_read` 后跟 `npm_artifact_published`），安装仍然成功，说明闲置
+  淘汰不破坏服务能力；未被淘汰的对象继续以 `hit` 命中。
 
 ## Cargo 客户端
 

@@ -415,6 +415,7 @@ impl VscodeService {
             let content_type =
                 read_asset_cache_metadata(&self.asset_cache_metadata_path(source_name, cache_id))?;
             if !is_stale_compressed_cache(&bytes, content_type.as_deref()) {
+                let _ = crate::retention::note_access(&cache_path);
                 self.record(
                     "vscode_marketplace_asset_read",
                     AuditDetails {

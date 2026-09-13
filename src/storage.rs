@@ -302,6 +302,7 @@ impl ArtifactCache {
         };
 
         if checksum(&contents) == expected_checksum {
+            let _ = crate::retention::note_access(&artifact_path);
             Ok(Some(contents))
         } else {
             fs::remove_file(artifact_path)?;

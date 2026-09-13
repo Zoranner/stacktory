@@ -329,6 +329,7 @@ impl CargoService {
         let cache_path = self.artifact_path(&snapshot.selected_proxy, crate_name, version);
         if let Some(contents) = read_if_present(&cache_path)? {
             if checksum(&contents).eq_ignore_ascii_case(&expected) {
+                let _ = crate::retention::note_access(&cache_path);
                 self.record_cargo(
                     "cargo_artifact_read",
                     entry_name,

@@ -12,6 +12,8 @@ audit_retention_days = 30
 cleanup_interval_secs = 3600
 # Rustup snapshot revisions kept per entry and channel.
 rustup_snapshot_revisions = 3
+# Artifact objects idle for longer than this are removed; 0 disables idle eviction.
+artifact_idle_secs = 2592000
 
 [rustup]
 refresh_interval_secs = 3600

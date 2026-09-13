@@ -23,6 +23,8 @@ const LEGACY_ARTIFACT_ECOSYSTEMS: [&str; 2] = ["rustup", "cargo"];
 pub struct SweepReport {
     pub removed_metadata_files: u64,
     pub failed_metadata_files: u64,
+    pub removed_artifact_files: u64,
+    pub failed_artifact_files: u64,
     pub removed_snapshot_revisions: u64,
     pub failed_snapshot_revisions: u64,
     pub rotated_audit_file: Option<String>,
@@ -68,9 +70,18 @@ pub fn sweep(
     }
     prune_audit(&audit_dir, config, now, &mut report);
     clean_metadata(data_dir, config, now, &mut report);
+    evict_idle_artifacts(data_dir, config, now, &mut report);
     prune_rustup_snapshots(data_dir, config.rustup_snapshot_revisions, &mut report);
     record(audit, &report);
     report
+}
+
+/// 更新对象访问时间。闲置淘汰以该时间为准，命中缓存的读取路径调用它。
+pub fn note_access(path: &Path) -> io::Result<()> {
+    fs::OpenOptions::new()
+        .write(true)
+        .open(path)?
+        .set_times(fs::FileTimes::new().set_modified(SystemTime::now()))
 }
 
 /// 删除 Rustup 和 Cargo 来源目录下 `objects` 之外的旧布局子树。
@@ -237,12 +248,56 @@ fn clean_metadata(
         }
         let root = entry.path().join(METADATA_DIR);
         if root.is_dir() {
-            remove_expired(&root, cutoff, report);
+            remove_expired_files(
+                &root,
+                cutoff,
+                "metadata",
+                &mut report.removed_metadata_files,
+                &mut report.failed_metadata_files,
+            );
         }
     }
 }
 
-fn remove_expired(dir: &Path, cutoff: SystemTime, report: &mut SweepReport) {
+fn evict_idle_artifacts(
+    data_dir: &Path,
+    config: &RetentionConfig,
+    now: SystemTime,
+    report: &mut SweepReport,
+) {
+    if config.artifact_idle_secs == 0 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(data_dir) else {
+        return;
+    };
+    let Some(cutoff) = now.checked_sub(Duration::from_secs(config.artifact_idle_secs)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let root = entry.path().join("artifacts");
+        if root.is_dir() {
+            remove_expired_files(
+                &root,
+                cutoff,
+                "artifact",
+                &mut report.removed_artifact_files,
+                &mut report.failed_artifact_files,
+            );
+        }
+    }
+}
+
+fn remove_expired_files(
+    dir: &Path,
+    cutoff: SystemTime,
+    label: &str,
+    removed: &mut u64,
+    failed: &mut u64,
+) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -252,7 +307,7 @@ fn remove_expired(dir: &Path, cutoff: SystemTime, report: &mut SweepReport) {
             continue;
         };
         if file_type.is_dir() {
-            remove_expired(&path, cutoff, report);
+            remove_expired_files(&path, cutoff, label, removed, failed);
             continue;
         }
         if !file_type.is_file() {
@@ -265,12 +320,12 @@ fn remove_expired(dir: &Path, cutoff: SystemTime, report: &mut SweepReport) {
             continue;
         }
         match fs::remove_file(&path) {
-            Ok(()) => report.removed_metadata_files += 1,
+            Ok(()) => *removed += 1,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => {
-                report.failed_metadata_files += 1;
+                *failed += 1;
                 eprintln!(
-                    "Stacktory metadata cleanup failed for `{}`: {error}",
+                    "Stacktory {label} cleanup failed for `{}`: {error}",
                     path.display()
                 );
             }
@@ -395,6 +450,22 @@ fn record(audit: &AuditSink, report: &SweepReport) {
                 cache_status: Some("expired"),
                 failure_category: failed.then_some("remove_failed"),
                 count: Some(report.removed_snapshot_revisions),
+                ..AuditDetails::default()
+            },
+        );
+    }
+    if report.removed_artifact_files > 0 || report.failed_artifact_files > 0 {
+        let failed = report.failed_artifact_files > 0;
+        write_event(
+            audit,
+            "artifact_cleanup",
+            "artifact",
+            if failed { "partial" } else { "success" },
+            AuditDetails {
+                object_type: Some("artifact"),
+                cache_status: Some("idle"),
+                failure_category: failed.then_some("remove_failed"),
+                count: Some(report.removed_artifact_files),
                 ..AuditDetails::default()
             },
         );

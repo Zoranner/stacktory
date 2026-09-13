@@ -7,7 +7,7 @@ use std::{
 use stacktory::{
     RetentionConfig,
     audit::AuditSink,
-    retention::{prune_legacy_artifacts, sweep},
+    retention::{note_access, prune_legacy_artifacts, sweep},
 };
 use tempfile::tempdir;
 
@@ -19,6 +19,7 @@ fn retention_config() -> RetentionConfig {
         audit_retention_days: 30,
         cleanup_interval_secs: 3_600,
         rustup_snapshot_revisions: 2,
+        artifact_idle_secs: 30 * DAY,
     }
 }
 
@@ -62,16 +63,18 @@ fn removes_expired_metadata_and_keeps_fresh_files() {
 }
 
 #[test]
-fn keeps_artifacts_and_rustup_snapshots() {
+fn evicts_idle_artifacts_and_keeps_recent_ones() {
     let directory = tempdir().expect("temporary directory");
     let data_dir = directory.path();
     let now = SystemTime::now();
     let old = now - Duration::from_secs(60 * DAY);
-    let artifact = data_dir.join("rustup/artifacts/group/objects/2026-08-20/rust-std.tar.xz");
-    let crate_file = data_dir.join("cargo/artifacts/group/objects/crates/serde/1.0.0.crate");
+    let idle_rustup = data_dir.join("rustup/artifacts/group/objects/2026-08-20/rust-std.tar.xz");
+    let idle_crate = data_dir.join("cargo/artifacts/group/objects/crates/serde/1.0.0.crate");
+    let fresh_blob = data_dir.join("docker/artifacts/official/library/alpine/blob");
     let snapshot = data_dir.join("rustup/snapshots/group/stable/revision/manifest.toml");
-    write_file_with_mtime(&artifact, "artifact", old);
-    write_file_with_mtime(&crate_file, "crate", old);
+    write_file_with_mtime(&idle_rustup, "artifact", old);
+    write_file_with_mtime(&idle_crate, "crate", old);
+    write_file_with_mtime(&fresh_blob, "blob", now - Duration::from_secs(60));
     write_file_with_mtime(&snapshot, "manifest", old);
 
     let report = sweep(
@@ -81,10 +84,33 @@ fn keeps_artifacts_and_rustup_snapshots() {
         &AuditSink::new(data_dir),
     );
 
-    assert_eq!(report.removed_metadata_files, 0);
-    assert!(artifact.exists());
-    assert!(crate_file.exists());
+    assert_eq!(report.removed_artifact_files, 2);
+    assert!(!idle_rustup.exists());
+    assert!(!idle_crate.exists());
+    assert!(fresh_blob.exists());
     assert!(snapshot.exists());
+    let events = fs::read_to_string(data_dir.join("audit/events.jsonl")).expect("audit events");
+    assert!(events.contains("\"artifact_cleanup\""));
+}
+
+#[test]
+fn keeps_an_idle_artifact_that_was_accessed() {
+    let directory = tempdir().expect("temporary directory");
+    let data_dir = directory.path();
+    let now = SystemTime::now();
+    let artifact = data_dir.join("npm/artifacts/npmjs/objects/group/is-odd/3.0.1/tarball/sha256");
+    write_file_with_mtime(&artifact, "tarball", now - Duration::from_secs(60 * DAY));
+
+    note_access(&artifact).expect("access time update");
+    let report = sweep(
+        data_dir,
+        &retention_config(),
+        now,
+        &AuditSink::new(data_dir),
+    );
+
+    assert_eq!(report.removed_artifact_files, 0);
+    assert!(artifact.exists());
 }
 
 #[test]

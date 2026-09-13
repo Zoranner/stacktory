@@ -25,6 +25,7 @@ pub const DEFAULT_METADATA_TTL_SECS: u64 = 604_800;
 pub const DEFAULT_AUDIT_RETENTION_DAYS: u64 = 30;
 pub const DEFAULT_CLEANUP_INTERVAL_SECS: u64 = 3_600;
 pub const DEFAULT_RUSTUP_SNAPSHOT_REVISIONS: u64 = 3;
+pub const DEFAULT_ARTIFACT_IDLE_SECS: u64 = 2_592_000;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(default)]
@@ -33,6 +34,7 @@ pub struct RetentionConfig {
     pub audit_retention_days: u64,
     pub cleanup_interval_secs: u64,
     pub rustup_snapshot_revisions: u64,
+    pub artifact_idle_secs: u64,
 }
 
 impl Default for RetentionConfig {
@@ -42,6 +44,7 @@ impl Default for RetentionConfig {
             audit_retention_days: DEFAULT_AUDIT_RETENTION_DAYS,
             cleanup_interval_secs: DEFAULT_CLEANUP_INTERVAL_SECS,
             rustup_snapshot_revisions: DEFAULT_RUSTUP_SNAPSHOT_REVISIONS,
+            artifact_idle_secs: DEFAULT_ARTIFACT_IDLE_SECS,
         }
     }
 }

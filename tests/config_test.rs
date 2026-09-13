@@ -66,12 +66,13 @@ fn applies_default_retention_configuration() {
     assert_eq!(config.retention.audit_retention_days, 30);
     assert_eq!(config.retention.cleanup_interval_secs, 3_600);
     assert_eq!(config.retention.rustup_snapshot_revisions, 3);
+    assert_eq!(config.retention.artifact_idle_secs, 2_592_000);
 }
 
 #[test]
 fn accepts_explicit_retention_configuration() {
     let configuration = LOCAL_DEVELOPMENT.to_owned()
-        + "\n[retention]\nmetadata_ttl_secs = 86_400\naudit_retention_days = 7\ncleanup_interval_secs = 600\nrustup_snapshot_revisions = 4\n";
+        + "\n[retention]\nmetadata_ttl_secs = 86_400\naudit_retention_days = 7\ncleanup_interval_secs = 600\nrustup_snapshot_revisions = 4\nartifact_idle_secs = 0\n";
 
     let config = Config::from_toml(&configuration).expect("explicit retention configuration");
 
@@ -79,6 +80,7 @@ fn accepts_explicit_retention_configuration() {
     assert_eq!(config.retention.audit_retention_days, 7);
     assert_eq!(config.retention.cleanup_interval_secs, 600);
     assert_eq!(config.retention.rustup_snapshot_revisions, 4);
+    assert_eq!(config.retention.artifact_idle_secs, 0);
 }
 
 #[test]
