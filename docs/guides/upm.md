@@ -27,5 +27,6 @@ Stacktory 服务端只提供 `/mirror/upm/{name}/...` registry 入口，不维�
 UPM 使用 npm-compatible metadata 和 tarball 下载协议，但使用 Unity package name，
 例如 `com.company.package`。UPM 与 npm 使用独立的入口、缓存和审计生态。
 
-当前只支持 package metadata 查询和 tarball 下载，不支持 package 发布、删除、账号、
-token、权限管理、Asset Store、Unity Editor 或 Git URL 包代理。
+当前支持 package metadata 查询、指定版本查询、dist-tags 查询、关键字搜索、ping 和
+tarball 下载，不支持 package 发布、删除、账号、token、权限管理、Asset Store、
+Unity Editor 或 Git URL 包代理。

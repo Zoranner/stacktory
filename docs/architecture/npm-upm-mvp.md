@@ -58,8 +58,15 @@ members = ["internal", "official"]
 ```text
 GET /mirror/npm/{name}/{package}
 GET /mirror/npm/{name}/@scope%2F{package}
+GET /mirror/npm/{name}/{package}/{version}
+GET /mirror/npm/{name}/-/package/{package}/dist-tags
+GET /mirror/npm/{name}/-/v1/search
+GET /mirror/npm/{name}/-/ping
 GET /mirror/npm/{name}/tarballs/{artifact-key}
 ```
+
+版本查询、dist-tags、search 和 ping 是只读查询接口：search 仅透传官方支持的查询
+参数，版本与 dist-tags 从已重写的 metadata 派生，不新增缓存表示。
 
 上面的 `<package>`、`<version>` 和 scoped package 路径只是协议对象键；实现必须
 按 npm package name 规则校验路径。scoped metadata 的原始请求路径只允许
@@ -87,6 +94,9 @@ UPM 使用独立生态入口：
 ```text
 /mirror/upm/{name}/...
 ```
+
+UPM 入口提供与 npm 相同的只读查询（package metadata、指定版本、dist-tags、search、
+ping）和 tarball 下载，但使用 Unity package name 校验。
 
 UPM 的 registry 传输复用 npm-compatible metadata 和 tarball 核心，但 Unity 客户端
 通过项目 `Packages/manifest.json` 中的 `scopedRegistries` 决定哪些 package scope

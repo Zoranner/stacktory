@@ -65,6 +65,8 @@ bunx <package>
 
 ## 只读边界
 
-当前只支持 metadata 查询和 tarball 下载，不支持 `npm publish`、`unpublish`、dist-tag 修改、账号、token、权限管理或其他写入 API。
+当前支持 package metadata 查询、指定版本查询、dist-tags 查询、registry 搜索、ping 和
+tarball 下载；不支持 `npm publish`、`unpublish`、dist-tag 修改、账号、token、权限管理
+或其他写入 API。
 
 metadata 命中某个上游来源后，版本对象中的 tarball 地址会改写为 Stacktory 内部地址。后续 tarball 请求优先使用同一个来源；来源不可用或完整性校验失败时，group 才按管理员声明的顺序回退。
