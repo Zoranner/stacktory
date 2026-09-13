@@ -2,9 +2,10 @@ use std::{io, path::PathBuf, sync::Arc};
 
 use axum::{
     body::Body,
-    http::{Method, StatusCode, header::CONTENT_TYPE},
+    http::{HeaderMap, Method, StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
 };
+use serde_json::Value;
 use thiserror::Error;
 use url::Url;
 
@@ -88,6 +89,12 @@ pub enum NpmError {
     MissingArtifact(String),
     #[error("all npm sources failed for `{package}`: {failures}")]
     AllSourcesFailed { package: String, failures: String },
+    #[error("npm version `{package}@{version}` was not found")]
+    MissingVersion { package: String, version: String },
+    #[error("npm search query is invalid: {0}")]
+    InvalidSearchQuery(String),
+    #[error("npm search response is invalid")]
+    InvalidSearchResponse,
 }
 
 impl NpmAdapter {
@@ -139,6 +146,24 @@ impl NpmService {
             return StatusCode::METHOD_NOT_ALLOWED.into_response();
         }
         let path = request.raw_path.trim_start_matches('/');
+        if path == "-/ping" {
+            return match self
+                .ping(entry_name, request.query.as_deref(), &request.headers, pool)
+                .await
+            {
+                Ok(body) => response(StatusCode::OK, "application/json", body),
+                Err(error) => npm_error_response(&error),
+            };
+        }
+        if path == "-/v1/search" {
+            return match self
+                .search(entry_name, request.query.as_deref(), &request.headers, pool)
+                .await
+            {
+                Ok(body) => response(StatusCode::OK, "application/json", body),
+                Err(error) => npm_error_response(&error),
+            };
+        }
         if let Some(artifact_key) = path.strip_prefix("tarballs/") {
             let artifact_key = match parse_artifact_path(artifact_key) {
                 Ok(path) => path.artifact_key,
@@ -146,6 +171,18 @@ impl NpmService {
             };
             return match self.tarball(entry_name, &artifact_key, pool).await {
                 Ok(body) => response(StatusCode::OK, "application/octet-stream", body),
+                Err(error) => npm_error_response(&error),
+            };
+        }
+        if let Ok(package) = parse_dist_tags_path_for_flavor(self.flavor, path) {
+            return match self.dist_tags(entry_name, &package, pool).await {
+                Ok(body) => response(StatusCode::OK, "application/json", body),
+                Err(error) => npm_error_response(&error),
+            };
+        }
+        if let Ok((package, version)) = parse_version_path_for_flavor(self.flavor, path) {
+            return match self.version(entry_name, &package, &version, pool).await {
+                Ok(body) => response(StatusCode::OK, "application/json", body),
                 Err(error) => npm_error_response(&error),
             };
         }
@@ -157,6 +194,160 @@ impl NpmService {
             Ok(body) => response(StatusCode::OK, "application/json", body),
             Err(error) => npm_error_response(&error),
         }
+    }
+
+    async fn version(
+        &self,
+        entry_name: &str,
+        package: &str,
+        version: &str,
+        pool: &SourcePool,
+    ) -> Result<Vec<u8>, NpmError> {
+        let metadata = self.metadata(entry_name, package, pool).await?;
+        let body: Value = serde_json::from_slice(&metadata)
+            .map_err(|error| NpmError::Metadata(NpmMetadataError::InvalidJson(error)))?;
+        let version_body = body
+            .get("versions")
+            .and_then(Value::as_object)
+            .and_then(|versions| versions.get(version))
+            .cloned()
+            .ok_or_else(|| NpmError::MissingVersion {
+                package: package.to_owned(),
+                version: version.to_owned(),
+            })?;
+        serde_json::to_vec(&version_body)
+            .map_err(|error| NpmError::Metadata(NpmMetadataError::InvalidJson(error)))
+    }
+
+    async fn dist_tags(
+        &self,
+        entry_name: &str,
+        package: &str,
+        pool: &SourcePool,
+    ) -> Result<Vec<u8>, NpmError> {
+        let metadata = self.metadata(entry_name, package, pool).await?;
+        let body: Value = serde_json::from_slice(&metadata)
+            .map_err(|error| NpmError::Metadata(NpmMetadataError::InvalidJson(error)))?;
+        let tags = body
+            .get("dist-tags")
+            .filter(|value| value.is_object())
+            .cloned()
+            .unwrap_or_else(|| Value::Object(Default::default()));
+        serde_json::to_vec(&tags)
+            .map_err(|error| NpmError::Metadata(NpmMetadataError::InvalidJson(error)))
+    }
+
+    async fn ping(
+        &self,
+        entry_name: &str,
+        query: Option<&str>,
+        headers: &HeaderMap,
+        pool: &SourcePool,
+    ) -> Result<Vec<u8>, NpmError> {
+        let query = validate_read_query(query)?;
+        let mut failures = Vec::new();
+        for member in pool
+            .proxy_members(entry_name)
+            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?
+        {
+            match pool
+                .fetch_proxy_registry_path_with_query(
+                    &member.name,
+                    "-/ping",
+                    query.as_deref(),
+                    Method::GET,
+                    upstream_headers(headers),
+                    FetchOperation::Metadata,
+                )
+                .await
+            {
+                Ok(response) => {
+                    self.record(
+                        &self.event("ping_read"),
+                        entry_name,
+                        "-/ping",
+                        Some(&response.source_name),
+                        "miss",
+                        None,
+                    );
+                    return Ok(response.body);
+                }
+                Err(error) if is_retryable_source(&error) => {
+                    failures.push(format!("{}: {error}", member.name));
+                }
+                Err(error) if is_not_found(&error) && pool.is_group(entry_name) => {
+                    failures.push(format!("{}: {error}", member.name));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(NpmError::AllSourcesFailed {
+            package: "-/ping".to_owned(),
+            failures: failures.join("; "),
+        })
+    }
+
+    async fn search(
+        &self,
+        entry_name: &str,
+        query: Option<&str>,
+        headers: &HeaderMap,
+        pool: &SourcePool,
+    ) -> Result<Vec<u8>, NpmError> {
+        let query = validate_search_query(query)?;
+        let mut failures = Vec::new();
+        for member in pool
+            .proxy_members(entry_name)
+            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?
+        {
+            let response = match pool
+                .fetch_proxy_registry_path_with_query(
+                    &member.name,
+                    "-/v1/search",
+                    query.as_deref(),
+                    Method::GET,
+                    upstream_headers(headers),
+                    FetchOperation::Metadata,
+                )
+                .await
+            {
+                Ok(response) => response,
+                Err(error) if is_retryable_source(&error) => {
+                    failures.push(format!("{}: {error}", member.name));
+                    continue;
+                }
+                Err(error) if is_not_found(&error) && pool.is_group(entry_name) => {
+                    failures.push(format!("{}: {error}", member.name));
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let value = serde_json::from_slice::<Value>(&response.body)
+                .map_err(|_| NpmError::InvalidSearchResponse);
+            let Ok(value) = value else {
+                failures.push(format!("{}: invalid search response", member.name));
+                continue;
+            };
+            if !value.get("objects").is_some_and(Value::is_array)
+                || !value.get("total").is_some_and(Value::is_number)
+            {
+                failures.push(format!("{}: invalid search response", member.name));
+                continue;
+            }
+            self.record(
+                &self.event("search_read"),
+                entry_name,
+                "-/v1/search",
+                Some(&response.source_name),
+                "miss",
+                None,
+            );
+            return Ok(response.body);
+        }
+        Err(NpmError::AllSourcesFailed {
+            package: "-/v1/search".to_owned(),
+            failures: failures.join("; "),
+        })
     }
 
     pub async fn metadata(
@@ -574,11 +765,105 @@ fn is_retryable_npm(error: &NpmError, pool: &SourcePool, entry_name: &str) -> bo
     )
 }
 
+fn parse_dist_tags_path_for_flavor(flavor: RegistryFlavor, path: &str) -> Result<String, NpmError> {
+    let package_path = path
+        .strip_prefix("-/package/")
+        .and_then(|path| path.strip_suffix("/dist-tags"))
+        .ok_or_else(|| NpmError::MissingArtifact(path.to_owned()))?;
+    (flavor.parse_package_path)(package_path)
+        .map_err(|_| NpmError::MissingArtifact(package_path.to_owned()))
+}
+
+fn parse_version_path_for_flavor(
+    flavor: RegistryFlavor,
+    path: &str,
+) -> Result<(String, String), NpmError> {
+    let (package_path, version) = path
+        .rsplit_once('/')
+        .ok_or_else(|| NpmError::MissingArtifact(path.to_owned()))?;
+    if semver::Version::parse(version).is_err() {
+        return Err(NpmError::MissingArtifact(path.to_owned()));
+    }
+    let package = (flavor.parse_package_path)(package_path)
+        .map_err(|_| NpmError::MissingArtifact(package_path.to_owned()))?;
+    Ok((package, version.to_owned()))
+}
+
+fn upstream_headers(headers: &HeaderMap) -> HeaderMap {
+    let mut selected = HeaderMap::new();
+    if let Some(value) = headers.get("accept") {
+        selected.insert("accept", value.clone());
+    }
+    selected
+}
+
+fn validate_read_query(query: Option<&str>) -> Result<Option<String>, NpmError> {
+    let Some(query) = query else {
+        return Ok(None);
+    };
+    validate_query_encoding(query)?;
+    Ok(Some(query.to_owned()))
+}
+
+fn validate_search_query(query: Option<&str>) -> Result<Option<String>, NpmError> {
+    let query = validate_read_query(query)?;
+    if let Some(query_value) = query.as_deref() {
+        for (key, value) in url::form_urlencoded::parse(query_value.as_bytes()) {
+            if !matches!(
+                key.as_ref(),
+                "text" | "size" | "from" | "quality" | "popularity" | "maintenance"
+            ) {
+                return Err(NpmError::InvalidSearchQuery(key.into_owned()));
+            }
+            if matches!(key.as_ref(), "size" | "from") {
+                let value = value.into_owned();
+                value
+                    .parse::<u32>()
+                    .map_err(|_| NpmError::InvalidSearchQuery(value.clone()))?;
+                continue;
+            }
+            if matches!(key.as_ref(), "quality" | "popularity" | "maintenance") {
+                let value = value.into_owned();
+                let score = value
+                    .parse::<f64>()
+                    .map_err(|_| NpmError::InvalidSearchQuery(value.clone()))?;
+                if !(0.0..=1.0).contains(&score) {
+                    return Err(NpmError::InvalidSearchQuery(value));
+                }
+            }
+        }
+    }
+    Ok(query)
+}
+
+fn validate_query_encoding(query: &str) -> Result<(), NpmError> {
+    let bytes = query.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len()
+                || !bytes[index + 1].is_ascii_hexdigit()
+                || !bytes[index + 2].is_ascii_hexdigit()
+            {
+                return Err(NpmError::InvalidSearchQuery(query.to_owned()));
+            }
+            index += 3;
+        } else {
+            index += 1;
+        }
+    }
+    if query.contains('#') || query.chars().any(char::is_control) {
+        return Err(NpmError::InvalidSearchQuery(query.to_owned()));
+    }
+    Ok(())
+}
+
 fn npm_error_response(error: &NpmError) -> Response {
     let status = match error {
-        NpmError::MissingArtifact(_) | NpmError::Metadata(NpmMetadataError::Path(_)) => {
-            StatusCode::NOT_FOUND
-        }
+        NpmError::MissingArtifact(_)
+        | NpmError::MissingVersion { .. }
+        | NpmError::Metadata(NpmMetadataError::Path(_)) => StatusCode::NOT_FOUND,
+        NpmError::InvalidSearchQuery(_) => StatusCode::BAD_REQUEST,
         NpmError::Source(SourcePoolError::UnknownEntry(_)) => StatusCode::NOT_FOUND,
         NpmError::Source(SourcePoolError::TerminalSourceError { status, .. }) => {
             StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY)
@@ -587,9 +872,10 @@ fn npm_error_response(error: &NpmError) -> Response {
             status: Some(status),
             ..
         }) if *status == 404 => StatusCode::NOT_FOUND,
-        NpmError::Source(_) | NpmError::Metadata(_) | NpmError::AllSourcesFailed { .. } => {
-            StatusCode::BAD_GATEWAY
-        }
+        NpmError::Source(_)
+        | NpmError::Metadata(_)
+        | NpmError::InvalidSearchResponse
+        | NpmError::AllSourcesFailed { .. } => StatusCode::BAD_GATEWAY,
         NpmError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     status.into_response()

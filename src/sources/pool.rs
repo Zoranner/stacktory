@@ -533,12 +533,9 @@ fn source_url_raw(source: &SourceConfig, request_key: &str) -> Result<Url, Sourc
         .base_url
         .as_ref()
         .expect("validated proxy source must have a base URL");
-    let base_path = base_url.path().trim_end_matches('/');
-    let mut url = base_url.clone();
-    url.set_raw_path(&format!("{base_path}/{request_key}"));
-    url.set_query(None);
-    url.set_fragment(None);
-    Ok(url)
+    let base = base_url.as_str().trim_end_matches('/');
+    Url::parse(&format!("{base}/{request_key}"))
+        .map_err(|_| SourcePoolError::InvalidRequestKey(request_key.to_owned()))
 }
 
 fn normalize_proxy_path(request_key: &str) -> Result<String, SourcePoolError> {
@@ -582,7 +579,7 @@ fn valid_discovered_url(source: &SourceConfig, url: &Url) -> bool {
     let Some(base_url) = source.base_url.as_ref() else {
         return false;
     };
-    (base_url.scheme() == url.scheme()
+    base_url.scheme() == url.scheme()
         && base_url.host_str() == url.host_str()
         && base_url.port_or_known_default() == url.port_or_known_default()
         && url.username().is_empty()
