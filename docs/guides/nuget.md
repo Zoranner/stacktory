@@ -4,7 +4,7 @@
 
 Stacktory 已实现 NuGet V3 所需的只读 service index、Search、package version
 index、registration、`.nupkg` 下载和漏洞数据路由。真实 .NET 客户端已通过
-官方源和本地 HTTP 上游验证。
+官方源和本地 HTTP 上游验证，包括 restore、搜索、过时版本、弃用和漏洞检查。
 
 ## 配置 NuGet source
 
@@ -51,10 +51,15 @@ dotnet restore --source https://stacktory.example.internal/mirror/nuget/group/v3
 dotnet package search Newtonsoft.Json --source https://stacktory.example.internal/mirror/nuget/group/v3/index.json --take 5
 dotnet list package --outdated --source https://stacktory.example.internal/mirror/nuget/group/v3/index.json
 dotnet list package --vulnerable --source https://stacktory.example.internal/mirror/nuget/group/v3/index.json
+dotnet list package --deprecated --source https://stacktory.example.internal/mirror/nuget/group/v3/index.json
 ```
 
-漏洞检查读取上游 `VulnerabilityInfo/6.7.0` 资源；上游未提供该资源时，
-Stacktory 不会在 service index 中暴露漏洞地址，客户端按无审计数据继续。
+`dotnet restore` 的 NuGetAudit 与直接读取 VulnerabilityInfo 资源的客户端通过
+`VulnerabilityInfo/6.7.0` 获取漏洞数据；上游未提供该资源时，Stacktory 不会在
+service index 中暴露漏洞地址，客户端按无审计数据继续。`--vulnerable` 和
+`--deprecated` 还会读取 registration 元数据，因此入口必须暴露 registration
+resource；适配器已按客户端偏好选择信息最完整的 `RegistrationsBaseUrl/Versioned`
+基址。
 
 不支持 push、delete、unlist、API key、登录、权限、账号、symbol server
 或其他写入型 NuGet API。用户不需要也不应配置上游 NuGet 地址；

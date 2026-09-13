@@ -71,6 +71,11 @@ Service index 是 metadata。它选中的 selected proxy 必须绑定到后续 r
 和 package content 请求。group 不把两个 service index 的资源列表合并；来源
 失败或资源校验失败时才按 group 顺序回退。
 
+当上游同时声明多个 `RegistrationsBaseUrl` 别名时，适配器按 NuGet 客户端的
+偏好顺序（`/Versioned`、`/3.6.0` 优先）选择一个对外暴露，避免退回信息较少的
+semver1 registration；未选中的别名地址只参与 search 结果的 registration 链接
+重写。
+
 ### Registration
 
 适配器只读取 restore 需要的 registration index/page/leaf 资源，保留包 ID、版本、
@@ -80,6 +85,11 @@ listed/deprecation 等上游字段，不在公共层解释 NuGet 特有的版本
 
 若 registration 返回的 content URL 不在已校验的上游资源范围内，适配器必须
 拒绝该响应，不得跟随任意 CDN 或客户端注入地址。
+
+registration 文档中的 JSON-LD `@context` 属于术语定义，不参与重写；`catalogEntry`
+或对象自身的 `id`/`version` 必须能证明 package content 的归属。无法入口化的
+内嵌 `@id`（catalog、dependency group 标识）会被丢弃，`parent`/`registration`
+等外链指针校验失败时整份响应按来源失败处理。
 
 ### Package content
 
@@ -166,8 +176,9 @@ restore 资源 sidecar 和 selected proxy 仍有效时命中；package content �
 - 未知 service resource、外部重定向、路径穿越和写入型请求被拒绝。
 - 未注册 `/mirror/nuget/{name}/...` 之外的假路由不暴露。
 
-真实 `dotnet restore` 已使用官方 NuGet 源和本地 HTTP 上游分别验证；生产部署
-行为仍需按部署环境单独联调。
+真实客户端已使用官方 NuGet 源分别验证 `dotnet restore`（含传递依赖和
+NuGetAudit）、`dotnet list package --vulnerable/--outdated/--deprecated` 和
+`dotnet package search`；生产部署行为仍需按部署环境单独联调。
 
 ## 官方协议依据
 
