@@ -143,6 +143,7 @@ name = "group"
 type = "group"
 members = ["official"]
 
+# PyPI adapter is not registered yet; this section does not create any route.
 [pypi]
 
 [[pypi.sources]]
