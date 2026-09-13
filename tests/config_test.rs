@@ -1,4 +1,4 @@
-use stacktory::Config;
+use stacktory::{Config, ConfigError, RetentionConfig};
 
 const LOCAL_DEVELOPMENT: &str = r#"
 listen_address = "127.0.0.1"
@@ -55,6 +55,52 @@ fn accepts_local_development_configuration() {
         "https"
     );
     assert!(config.cargo.is_none());
+}
+
+#[test]
+fn applies_default_retention_configuration() {
+    let config = Config::from_toml(LOCAL_DEVELOPMENT).expect("local development configuration");
+
+    assert_eq!(config.retention, RetentionConfig::default());
+    assert_eq!(config.retention.metadata_ttl_secs, 604_800);
+    assert_eq!(config.retention.audit_retention_days, 30);
+    assert_eq!(config.retention.cleanup_interval_secs, 3_600);
+}
+
+#[test]
+fn accepts_explicit_retention_configuration() {
+    let configuration = LOCAL_DEVELOPMENT.to_owned()
+        + "\n[retention]\nmetadata_ttl_secs = 86_400\naudit_retention_days = 7\ncleanup_interval_secs = 600\n";
+
+    let config = Config::from_toml(&configuration).expect("explicit retention configuration");
+
+    assert_eq!(config.retention.metadata_ttl_secs, 86_400);
+    assert_eq!(config.retention.audit_retention_days, 7);
+    assert_eq!(config.retention.cleanup_interval_secs, 600);
+}
+
+#[test]
+fn rejects_zero_retention_values() {
+    let cases = [
+        (
+            "[retention]\nmetadata_ttl_secs = 0\n",
+            ConfigError::InvalidMetadataTtl,
+        ),
+        (
+            "[retention]\naudit_retention_days = 0\n",
+            ConfigError::InvalidAuditRetentionDays,
+        ),
+        (
+            "[retention]\ncleanup_interval_secs = 0\n",
+            ConfigError::InvalidCleanupInterval,
+        ),
+    ];
+
+    for (section, expected) in cases {
+        let configuration = LOCAL_DEVELOPMENT.to_owned() + "\n" + section;
+        let error = Config::from_toml(&configuration).expect_err("zero retention value");
+        assert_eq!(error.to_string(), expected.to_string());
+    }
 }
 
 #[test]

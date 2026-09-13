@@ -7,6 +7,7 @@ use stacktory::{
     http::{router_with_docker_entry, router_with_rustup_and_registry},
     npm::NpmAdapter,
     nuget::NugetAdapter,
+    retention,
     service::RustupService,
     sources::registry::AdapterRegistry,
     upm::UpmAdapter,
@@ -20,6 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut docker_listeners = Vec::new();
     let registry = configured_registry(&mut config, &mut docker_listeners)?;
     let listener = TcpListener::bind((config.listen_address, config.listen_port)).await?;
+    retention::spawn(config.data_dir.clone(), config.retention);
     let service = Arc::new(RustupService::new(config)?);
     for docker_listener in docker_listeners {
         let listener = TcpListener::bind((docker_listener.address, docker_listener.port)).await?;
@@ -119,8 +121,8 @@ mod tests {
 
     use axum::{body::Body, http::Request};
     use stacktory::{
-        Config, EcosystemConfig, NugetConfig, RustupConfig, SourceConfig, SourceGraph, SourceType,
-        UpmConfig, http::router_with_registry,
+        Config, EcosystemConfig, NugetConfig, RetentionConfig, RustupConfig, SourceConfig,
+        SourceGraph, SourceType, UpmConfig, http::router_with_registry,
     };
     use tower::ServiceExt;
     use url::Url;
@@ -132,6 +134,7 @@ mod tests {
             listen_port: 18761,
             data_dir: tempfile::tempdir().expect("data directory").keep(),
             root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
+            retention: RetentionConfig::default(),
             rustup: RustupConfig {
                 refresh_interval_secs: 60,
                 channels: vec!["stable".to_owned()],

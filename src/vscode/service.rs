@@ -216,6 +216,7 @@ impl VscodeService {
                 object_type: Some("metadata"),
                 cache_status: Some("published"),
                 failure_category: None,
+                count: None,
             },
         );
         Ok(rewritten.body)
@@ -424,6 +425,7 @@ impl VscodeService {
                         object_type: Some("artifact"),
                         cache_status: Some("hit"),
                         failure_category: None,
+                        count: None,
                     },
                 );
                 return Ok(MarketplaceAsset {
@@ -472,6 +474,7 @@ impl VscodeService {
                 object_type: Some("artifact"),
                 cache_status: Some("published"),
                 failure_category: None,
+                count: None,
             },
         );
         Ok(MarketplaceAsset {

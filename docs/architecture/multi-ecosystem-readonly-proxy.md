@@ -222,6 +222,28 @@ artifact，但不得重新解释这些值。旧缓存是否允许 stale serving 
 链、metadata/artifact 类型、cache hit/miss、发布结果和失败类别。不记录上游
 响应正文、访问凭据或完整制品内容。
 
+### 数据生命周期
+
+metadata 和审计文件按配置的保留窗口清理，配置由 `[retention]` 承载：
+
+```toml
+[retention]
+metadata_ttl_secs = 604800
+audit_retention_days = 30
+cleanup_interval_secs = 3600
+```
+
+- 服务启动后立即执行一次清理，之后按 `cleanup_interval_secs` 周期执行。
+- `<data_dir>/<ecosystem>/metadata/**` 中修改时间早于 `metadata_ttl_secs` 的
+  文件会被删除，客户端下次请求时重新获取并重建缓存与来源绑定。该值是 metadata
+  的保留上限，是否按时间复用缓存仍由各适配器的命中策略决定。
+- `<data_dir>/audit/events.jsonl` 跨天后轮转为 `events.<UTC 日期>.jsonl`，超过
+  `audit_retention_days` 的轮转文件被删除。
+- 清理按轮次记录 `metadata_cleanup` 和 `audit_cleanup` 事件，包含删除数量；
+  不逐文件写审计，也不记录文件内容。
+- `<data_dir>/<ecosystem>/artifacts/**` 和 `<data_dir>/rustup/snapshots/**` 不在
+  当前清理范围；制品容量和快照修订保留仍需独立设计。
+
 ## 生态适配器摘要
 
 ### Rustup

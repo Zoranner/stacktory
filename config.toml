@@ -3,6 +3,14 @@ listen_port = 18761
 data_dir = "data"
 root_url = "https://localhost:18762"
 
+[retention]
+# Ecosystem metadata files older than this are removed by the retention task.
+metadata_ttl_secs = 604800
+# Rotated audit files are kept for this many days.
+audit_retention_days = 30
+# Retention task interval.
+cleanup_interval_secs = 3600
+
 [rustup]
 refresh_interval_secs = 3600
 channels = ["stable", "beta", "nightly"]

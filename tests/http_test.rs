@@ -14,7 +14,7 @@ use axum::{
 };
 use sha2::{Digest, Sha256};
 use stacktory::{
-    Config, RustupConfig, SourceConfig, SourceGraph, SourceType,
+    Config, RetentionConfig, RustupConfig, SourceConfig, SourceGraph, SourceType,
     http::{router, router_with_rustup},
     service::RustupService,
 };
@@ -91,6 +91,7 @@ async fn public_rustup_artifact_route_serves_only_a_verified_published_artifact(
         listen_port: 18761,
         data_dir: PathBuf::from(data_dir.path()),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
+        retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
             channels: vec!["stable".to_owned()],
@@ -177,6 +178,7 @@ async fn rustup_group_route_serves_manifest() {
         listen_port: 18761,
         data_dir: data_dir.path().to_path_buf(),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
+        retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
             channels: vec!["stable".to_owned()],
@@ -292,6 +294,7 @@ async fn rustup_group_artifact_stays_with_the_manifest_source() {
         listen_port: 18761,
         data_dir: data_dir.path().to_path_buf(),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
+        retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
             channels: vec!["stable".to_owned()],
@@ -363,6 +366,7 @@ async fn rustup_proxy_route_serves_only_its_proxy() {
         listen_port: 18761,
         data_dir: data_dir.path().to_path_buf(),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
+        retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
             channels: vec!["stable".to_owned()],
@@ -403,6 +407,7 @@ async fn unknown_rustup_artifact_source_returns_not_found_before_snapshot_lookup
         listen_port: 18761,
         data_dir: data_dir.path().to_path_buf(),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
+        retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
             channels: vec!["stable".to_owned()],
@@ -491,6 +496,7 @@ async fn legacy_rustup_route_returns_not_found() {
         listen_port: 18761,
         data_dir: data_dir.path().to_path_buf(),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
+        retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
             channels: vec!["stable".to_owned()],

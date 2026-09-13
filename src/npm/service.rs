@@ -687,6 +687,7 @@ impl NpmService {
                 }),
                 cache_status: Some(cache_status),
                 failure_category,
+                count: None,
             },
         ) {
             eprintln!("Stacktory audit write failed: {error}");

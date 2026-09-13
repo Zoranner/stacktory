@@ -10,6 +10,7 @@ pub struct Config {
     pub listen_port: u16,
     pub data_dir: PathBuf,
     pub root_url: Url,
+    pub retention: RetentionConfig,
     pub rustup: RustupConfig,
     pub cargo: Option<CargoConfig>,
     pub vscode: Option<VscodeConfig>,
@@ -18,6 +19,28 @@ pub struct Config {
     pub nuget: Option<NugetConfig>,
     pub pypi: Option<PypiConfig>,
     pub upm: Option<UpmConfig>,
+}
+
+pub const DEFAULT_METADATA_TTL_SECS: u64 = 604_800;
+pub const DEFAULT_AUDIT_RETENTION_DAYS: u64 = 30;
+pub const DEFAULT_CLEANUP_INTERVAL_SECS: u64 = 3_600;
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(default)]
+pub struct RetentionConfig {
+    pub metadata_ttl_secs: u64,
+    pub audit_retention_days: u64,
+    pub cleanup_interval_secs: u64,
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            metadata_ttl_secs: DEFAULT_METADATA_TTL_SECS,
+            audit_retention_days: DEFAULT_AUDIT_RETENTION_DAYS,
+            cleanup_interval_secs: DEFAULT_CLEANUP_INTERVAL_SECS,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -234,6 +257,12 @@ pub enum ConfigError {
     InvalidRustupChannel(String),
     #[error("rustup.refresh_interval_secs must be greater than zero")]
     InvalidRustupRefreshInterval,
+    #[error("retention.metadata_ttl_secs must be greater than zero")]
+    InvalidMetadataTtl,
+    #[error("retention.audit_retention_days must be greater than zero")]
+    InvalidAuditRetentionDays,
+    #[error("retention.cleanup_interval_secs must be greater than zero")]
+    InvalidCleanupInterval,
 }
 
 #[derive(Deserialize)]
@@ -242,6 +271,8 @@ struct RawConfig {
     listen_port: u16,
     data_dir: PathBuf,
     root_url: Url,
+    #[serde(default)]
+    retention: RetentionConfig,
     rustup: RawRustupConfig,
     cargo: Option<RawEcosystemConfig>,
     vscode: Option<RawEcosystemConfig>,
@@ -320,6 +351,15 @@ impl Config {
         if raw.rustup.refresh_interval_secs == 0 {
             return Err(ConfigError::InvalidRustupRefreshInterval);
         }
+        if raw.retention.metadata_ttl_secs == 0 {
+            return Err(ConfigError::InvalidMetadataTtl);
+        }
+        if raw.retention.audit_retention_days == 0 {
+            return Err(ConfigError::InvalidAuditRetentionDays);
+        }
+        if raw.retention.cleanup_interval_secs == 0 {
+            return Err(ConfigError::InvalidCleanupInterval);
+        }
         if raw.rustup.channels.is_empty() {
             return Err(ConfigError::MissingRustupChannel);
         }
@@ -342,6 +382,7 @@ impl Config {
             listen_port: raw.listen_port,
             data_dir: raw.data_dir,
             root_url: raw.root_url,
+            retention: raw.retention,
             rustup: RustupConfig {
                 refresh_interval_secs: raw.rustup.refresh_interval_secs,
                 channels: raw.rustup.channels,

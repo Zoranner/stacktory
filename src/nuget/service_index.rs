@@ -445,6 +445,7 @@ impl NugetService {
                 object_type: Some(details.object_type),
                 cache_status: Some(details.cache_status),
                 failure_category: details.failure_category,
+                count: None,
             },
         )?;
         Ok(())

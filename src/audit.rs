@@ -43,6 +43,8 @@ struct AuditEvent<'a> {
     cache_status: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure_category: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    count: Option<u64>,
 }
 
 #[derive(Default)]
@@ -54,6 +56,7 @@ pub struct AuditDetails<'a> {
     pub object_type: Option<&'a str>,
     pub cache_status: Option<&'a str>,
     pub failure_category: Option<&'a str>,
+    pub count: Option<u64>,
 }
 
 impl AuditSink {
@@ -102,6 +105,7 @@ impl AuditSink {
                 object_type: details.object_type,
                 cache_status: details.cache_status,
                 failure_category: details.failure_category,
+                count: details.count,
             },
         )?;
         file.write_all(b"\n")?;
