@@ -3,11 +3,12 @@
 ## 状态与目标
 
 本文档定义并记录已实现的 NuGet V3 只读适配边界。当前已完成 service index、Search、
-package version index、registration、package content、来源绑定、缓存、审计和运行时
-注册；真实外部 NuGet 服务与 `dotnet restore` 已完成验证。本 MVP 不引入数据库。
+package version index、registration、package content、漏洞数据、来源绑定、缓存、
+审计和运行时注册；真实外部 NuGet 服务与 `dotnet restore` 已完成验证。本 MVP 不
+引入数据库。
 
-首期服务 V3 service index、Search、registration 和 package content 等只读能力。
-push、delete、API key、账号、符号服务器和写入型 NuGet API 保持后续独立范围。
+首期服务 V3 service index、Search、registration、package content 和漏洞数据等只读
+能力。push、delete、API key、账号、符号服务器和写入型 NuGet API 保持后续独立范围。
 
 ## 公共来源契约
 
@@ -35,10 +36,10 @@ members = ["internal", "official"]
 `base_url` 必须是实际的 V3 service index JSON 地址
 `.../v3/index.json`，而不是 registry root、管理页面地址或其他未定义形态。
 适配器从该 JSON 文档读取资源的 `@type` 和 `@id`，校验并重写支持的
-registration、package content 和 search resource 地址。search resource 在本
-MVP 只被发现和安全校验，不注册搜索路由、不转发搜索请求；后续搜索适配必须
-另行定义。group 不配置 `base_url`，只按成员顺序回退同一生态的 proxy；没有
-group 时多个 proxy 不自动组合。
+registration、package content、search 和 `VulnerabilityInfo/6.7.0` resource
+地址。发现到的资源只通过当前 `/mirror/nuget/{name}/...` 入口对外提供，客户端
+不能通过查询参数或路径补充外部 URL。group 不配置 `base_url`，只按成员顺序
+回退同一生态的 proxy；没有 group 时多个 proxy 不自动组合。
 
 ## 路由与适配职责
 
@@ -50,6 +51,8 @@ GET /mirror/nuget/{name}/search/query?{query}
 GET /mirror/nuget/{name}/package/{id}/index.json
 GET /mirror/nuget/{name}/registration/{*path}
 GET /mirror/nuget/{name}/package/{id}/{version}/{id}.{version}.nupkg
+GET /mirror/nuget/{name}/vulnerability/index.json
+GET /mirror/nuget/{name}/vulnerability/data/{file}.json
 ```
 
 第一个 `{name}` 是 Stacktory proxy/group 入口。NuGet package ID 的大小写按
@@ -59,10 +62,10 @@ GET /mirror/nuget/{name}/package/{id}/{version}/{id}.{version}.nupkg
 ### Service index
 
 适配器读取 `base_url` 指向的 service index JSON，解析资源的 `@type`、`@id`
-和可选版本信息，发现 registration、package content 和 search resource。返回
-客户端的支持资源 `@id` 必须重写到当前 `/mirror/nuget/{name}/...` 入口，
-不能暴露上游 host；SearchQueryService 只允许发现和安全转发查询参数，不接受
-客户端提供的外部 URL。
+和可选版本信息，发现 registration、package content、search 和漏洞数据
+resource。返回客户端的支持资源 `@id` 必须重写到当前 `/mirror/nuget/{name}/...`
+入口，不能暴露上游 host；SearchQueryService 只允许发现和安全转发查询参数，
+不接受客户端提供的外部 URL。
 
 Service index 是 metadata。它选中的 selected proxy 必须绑定到后续 registration
 和 package content 请求。group 不把两个 service index 的资源列表合并；来源
@@ -88,6 +91,18 @@ registration 或 service index 的受限资源关系证明其属于当前 packag
 信息，但不能声称完成上游声明的完整性验证。完整性失败不得返回成功内容，也
 不得发布坏缓存。
 
+### 漏洞数据
+
+`VulnerabilityInfo/6.7.0` 提供 NuGet 审计数据，`dotnet restore` 的 NuGetAudit 和
+`dotnet list package --vulnerable` 都读取该资源。适配器只暴露上游 service index
+声明的 `/vulnerability/index.json`，以及该索引声明的
+`/vulnerability/data/{file}.json`；索引中的文件地址必须与当前 proxy 同源并通过
+安全校验，客户端自造的未声明文件名返回 `404`。
+
+漏洞索引和数据文件分别缓存并绑定 selected proxy；group 按成员顺序回退，但
+不合并不同来源的漏洞集合。数据文件只有解析为 JSON 对象且每个值都是数组时才
+写入缓存。
+
 ## 缓存、来源与错误
 
 缓存键至少包含：
@@ -98,25 +113,28 @@ entry_name
 service-index
 registration
 package-content
+vulnerability-index
+vulnerability-data
 package-id
 version
 representation
 selected_proxy
 ```
 
-service index、registration 和 package content 分别缓存。相同 package ID/version
-在不同命名入口或不同 selected proxy 下不能共享没有来源绑定的文件。
+service index、registration、package content、漏洞索引和漏洞数据分别缓存。相同
+package ID/version 在不同命名入口或不同 selected proxy 下不能共享没有来源绑定的
+文件。
 
 本 MVP 不做隐式 stale-while-revalidate 或跨来源拼接。metadata 缓存只有在 JSON、
 restore 资源 sidecar 和 selected proxy 仍有效时命中；package content 缓存每次命中
 仍执行已声明摘要或本地 SHA-256 校验。需要强制重新获取时由管理员清理对应
 `data_dir/nuget` 缓存。
 
-- 未知入口、非法资源路径、未知 package/version 或未被 restore metadata 引用
-  的 content：`404`。
+- 未知入口、非法资源路径、未知 package/version、未被 restore metadata 引用的
+  content 或未被漏洞索引声明的文件名：`404`。
 - 上游明确的客户端错误直接返回，不无条件回退。
-- 上游不可用、registration 无法解析、资源关系不受信任或 nupkg 完整性失败：
-  按 group 顺序回退；全部失败返回 `502`。
+- 上游不可用、registration 无法解析、资源关系不受信任（包括漏洞文件地址越界）
+  或 nupkg 完整性失败：按 group 顺序回退；全部失败返回 `502`。
 - 本地缓存、原子写入或审计失败：`500`。
 
 旧 metadata 在刷新失败时是否可继续服务，必须作为 NuGet 适配器的明确缓存
@@ -125,9 +143,9 @@ restore 资源 sidecar 和 selected proxy 仍有效时命中；package content �
 
 ## 只读范围
 
-首期不注册或不实现：
+不注册或不实现：
 
-- `RegistrationsBaseUrl` 之外的其他动态注册服务。
+- `SearchAutocompleteService`、`Catalog`、`RepositorySignatures` 和展示类 URI 模板。
 - `PackagePublish/2.0.0`、push、delete、unlist 和版本写入。
 - API key、登录、权限、租户和账号管理。
 - symbol package、符号服务器和 NuGet.org 特有的其他服务。
@@ -144,6 +162,7 @@ restore 资源 sidecar 和 selected proxy 仍有效时命中；package content �
 - registration page/leaf 的读取、package ID/version 路径校验。
 - selected proxy 绑定、group 回退和不合并不同来源内容。
 - nupkg 摘要校验、坏包不落盘和缓存键隔离。
+- 漏洞索引重写、未声明文件名、越界文件地址拒绝和 group 回退。
 - 未知 service resource、外部重定向、路径穿越和写入型请求被拒绝。
 - 未注册 `/mirror/nuget/{name}/...` 之外的假路由不暴露。
 
@@ -156,3 +175,5 @@ restore 资源 sidecar 和 selected proxy 仍有效时命中；package content �
   V3 API 资源和 restore 相关协议入口。
 - [NuGet service index](https://learn.microsoft.com/en-us/nuget/api/service-index)：
   service index、资源发现、registration 和 package content。
+- [NuGet vulnerability info](https://learn.microsoft.com/en-us/nuget/api/vulnerability-info)：
+  漏洞索引和数据文件格式。

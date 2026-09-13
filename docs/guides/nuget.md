@@ -3,8 +3,8 @@
 ## 状态
 
 Stacktory 已实现 NuGet V3 所需的只读 service index、Search、package version
-index、registration 和 `.nupkg` 下载路由。真实 .NET 客户端已通过官方源
-和本地 HTTP 上游验证。
+index、registration、`.nupkg` 下载和漏洞数据路由。真实 .NET 客户端已通过
+官方源和本地 HTTP 上游验证。
 
 ## 配置 NuGet source
 
@@ -30,7 +30,7 @@ dotnet restore --source stacktory
 
 ## 支持范围
 
-适配器只支持 restore 所需的以下入口：
+适配器只支持以下只读入口：
 
 ```text
 GET /mirror/nuget/{name}/v3/index.json
@@ -38,8 +38,28 @@ GET /mirror/nuget/{name}/search/query?{query}
 GET /mirror/nuget/{name}/package/{id}/index.json
 GET /mirror/nuget/{name}/registration/{*path}
 GET /mirror/nuget/{name}/package/{id}/{version}/{id}.{version}.nupkg
+GET /mirror/nuget/{name}/vulnerability/index.json
+GET /mirror/nuget/{name}/vulnerability/data/{file}.json
 ```
+
+## 只读命令
+
+还原、搜索、过时版本和漏洞检查都只读取 Stacktory：
+
+```text
+dotnet restore --source https://stacktory.example.internal/mirror/nuget/group/v3/index.json
+dotnet package search Newtonsoft.Json --source https://stacktory.example.internal/mirror/nuget/group/v3/index.json --take 5
+dotnet list package --outdated --source https://stacktory.example.internal/mirror/nuget/group/v3/index.json
+dotnet list package --vulnerable --source https://stacktory.example.internal/mirror/nuget/group/v3/index.json
+```
+
+漏洞检查读取上游 `VulnerabilityInfo/6.7.0` 资源；上游未提供该资源时，
+Stacktory 不会在 service index 中暴露漏洞地址，客户端按无审计数据继续。
 
 不支持 push、delete、unlist、API key、登录、权限、账号、symbol server
 或其他写入型 NuGet API。用户不需要也不应配置上游 NuGet 地址；
 上游 service index 由 Stacktory 管理员在服务端配置。
+
+明文 HTTP 入口只用于内网联调和本地验证，需要在 `NuGet.Config` 的
+`packageSources` 中显式打开 `allowInsecureConnections`；生产入口应使用
+HTTPS，并让 `require_https` 保持生效。

@@ -31,7 +31,8 @@ restore、Docker Registry V2 和 Unity UPM 只读代理；PyPI 和 Winget
 - UPM：独立的 UPM 生态入口，复用 npm-compatible metadata/tarball 核心，
   增加 scope 选择规则。
 - PyPI：Simple API 的 HTML/JSON 表示和项目文件下载。
-- NuGet：V3 service index、registration 和 package content。
+- NuGet：V3 service index、Search、registration、package version index、
+  package content 和漏洞数据。
 - Docker：Registry V2 manifest、image config、layer blob、tag/digest 拉取和
   多架构 manifest。
 - VS Code 扩展：扩展 metadata、版本信息和 `.vsix` 下载。
@@ -41,7 +42,7 @@ restore、Docker Registry V2 和 Unity UPM 只读代理；PyPI 和 Winget
 
 - npm publish、unpublish、账号和 token 管理。
 - PyPI 上传、删除、账号和 token 管理。
-- NuGet push、delete、搜索、API key、账号和动态注册服务。
+- NuGet push、delete、API key、账号和动态注册服务。
 - Docker 镜像推送、删除、账号、签名管理和构建服务。
 - VS Code 扩展发布、删除、账号和 token 管理。
 - Winget source 发布、manifest 写入、账号和签名管理。
@@ -260,10 +261,10 @@ PyPI 使用 `/mirror/pypi/{name}/simple/...`，适配器负责项目名规范化
 
 ### NuGet
 
-NuGet 已注册 `/mirror/nuget/{name}/v3/...` 及 Search 只读入口，适配器负责
-service index、Search、registration 和 package content 的资源发现、关系校验、
-来源绑定、摘要校验和 group 回退；写入型 API 保持后续独立范围。详细契约见
-`nuget-mvp.md`。
+NuGet 已注册 `/mirror/nuget/{name}/v3/...` 及 Search、漏洞数据只读入口，适配器
+负责 service index、Search、registration、package content 和漏洞数据的资源
+发现、关系校验、来源绑定、摘要校验和 group 回退；写入型 API 保持后续独立范围。
+详细契约见 `nuget-mvp.md`。
 
 ### Docker
 
