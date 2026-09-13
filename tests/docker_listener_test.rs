@@ -63,6 +63,35 @@ async fn mirror_route_remains_available_alongside_standard_registry_root() {
     assert_eq!(root.status(), axum::http::StatusCode::OK);
 }
 
+#[tokio::test]
+async fn standard_registry_root_serves_probe_and_nested_paths() {
+    let data_dir = tempdir().expect("data directory");
+    let registry = docker_registry(data_dir.path());
+    let router = router_with_docker_entry(registry, "official");
+
+    let probe = router
+        .clone()
+        .oneshot(
+            Request::get("/v2/")
+                .body(Body::empty())
+                .expect("probe request"),
+        )
+        .await
+        .expect("probe response");
+    let nested = router
+        .oneshot(
+            Request::post("/v2/library/alpine/manifests/latest")
+                .body(Body::empty())
+                .expect("nested request"),
+        )
+        .await
+        .expect("nested response");
+
+    assert_eq!(probe.status(), axum::http::StatusCode::OK);
+    // 405 说明嵌套路径仍由 Docker 适配器处理；未匹配路由只会返回 404。
+    assert_eq!(nested.status(), axum::http::StatusCode::METHOD_NOT_ALLOWED);
+}
+
 fn docker_registry(data_dir: &std::path::Path) -> AdapterRegistry {
     AdapterRegistry::new()
         .with_adapter(

@@ -78,7 +78,9 @@ fn registry_routes(registry: AdapterRegistry, docker_entry: Option<String>) -> R
         .route("/mirror/{ecosystem}/{name}/{*path}", any(named_source))
         .layer(middleware::from_fn(registry_cors));
     if docker_entry.is_some() {
-        router = router.route("/v2/{*path}", any(docker_root_source));
+        router = router
+            .route("/v2/", any(docker_root_source))
+            .route("/v2/{*path}", any(docker_root_source));
     }
     router.with_state(RegistryRouteState {
         registry,
@@ -170,7 +172,6 @@ async fn named_source(
 
 async fn docker_root_source(
     State(state): State<RegistryRouteState>,
-    Path(path): Path<String>,
     OriginalUri(uri): OriginalUri,
     method: Method,
     headers: header::HeaderMap,
@@ -189,14 +190,18 @@ async fn docker_root_source(
         Ok(body) => body.to_vec(),
         Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
     };
-    let raw_path = uri.path().strip_prefix('/').unwrap_or(&path).to_owned();
+    let raw_path = uri
+        .path()
+        .strip_prefix('/')
+        .unwrap_or(uri.path())
+        .to_owned();
     registered
         .adapter
         .handle(
             entry_name.to_owned(),
             AdapterRequest {
                 method,
-                path,
+                path: raw_path.clone(),
                 raw_path,
                 query: uri.query().map(str::to_owned),
                 headers,

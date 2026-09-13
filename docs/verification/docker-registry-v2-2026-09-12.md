@@ -34,7 +34,25 @@ cargo test --test docker_artifact_test
 cargo test --test docker_cache_test
 cargo test --test docker_group_test
 cargo test --test docker_registration_test
+cargo test --test docker_listener_test
 ```
+
+## 标准 Registry 根入口
+
+`listen_port` 根入口原先只注册 `/v2/{*path}`；matchit 的 catch-all 不匹配空尾段，
+因此标准 Registry V2 能力探测 `GET /v2/` 返回 404。现同时注册 `/v2/` 和
+`/v2/{*path}`，两个入口仍由同一个 Docker 适配器处理。
+
+2026 年 9 月 14 日在本机运行 `target/debug/stacktory.exe`，docker source 配置
+`listen_port = 18772`，验证结果：
+
+- `GET http://127.0.0.1:18772/v2/` 返回 `200` 和
+  `Docker-Distribution-Api-Version: registry/2.0`。
+- `GET http://127.0.0.1:18772/mirror/docker/official/v2/` 返回 `200`，mirror
+  入口与根入口并存。
+- `GET http://127.0.0.1:18772/v2/library/alpine/manifests/latest` 返回 `200`、
+  OCI image index 和 `Docker-Content-Digest`，上游请求由服务端生成。
+- `GET /v2`（无尾斜杠）仍返回 `404`；Registry V2 能力探测按协议使用 `/v2/`。
 
 ## Static And Rust Verification
 
