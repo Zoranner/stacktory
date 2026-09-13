@@ -1,7 +1,7 @@
 const [backendUrlArgument, portArgument, certPathArgument, keyPathArgument] =
   process.argv.slice(2);
 const backendUrl = new URL(
-  backendUrlArgument ?? "http://127.0.0.1:18763",
+  backendUrlArgument ?? "http://127.0.0.1:18761",
 );
 const port = Number(portArgument ?? "18762");
 const certPath = certPathArgument;
