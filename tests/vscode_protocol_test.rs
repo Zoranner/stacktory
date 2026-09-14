@@ -1,9 +1,11 @@
 use std::{
+    fs,
     net::SocketAddr,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    time::{Duration, SystemTime},
 };
 
 use axum::{
@@ -204,6 +206,26 @@ async fn marketplace_asset_cache_is_shared_by_group_and_its_proxy() {
         .expect("group asset response");
     assert_eq!(group_asset.status(), StatusCode::OK);
 
+    let artifacts = data_dir
+        .path()
+        .join("stores/vscode/artifacts/official/objects/marketplace");
+    let object = fs::read_dir(&artifacts)
+        .expect("artifacts directory")
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_none())
+        .expect("cached asset object");
+    let sidecar = object.with_extension("toml");
+    let backdated = SystemTime::now() - Duration::from_secs(3_600);
+    for path in [&object, &sidecar] {
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .expect("open cached asset file")
+            .set_times(fs::FileTimes::new().set_modified(backdated))
+            .expect("backdate cached asset file");
+    }
+
     let direct_query = router
         .clone()
         .oneshot(query_request_for("official"))
@@ -216,12 +238,19 @@ async fn marketplace_asset_cache_is_shared_by_group_and_its_proxy() {
         .expect("direct asset response");
     assert_eq!(direct_asset.status(), StatusCode::OK);
     assert_eq!(asset_requests.load(Ordering::SeqCst), 1);
-    assert!(
-        data_dir
-            .path()
-            .join("stores/vscode/artifacts/official/objects/marketplace")
-            .exists()
-    );
+    assert!(artifacts.exists());
+    let refreshed_after = SystemTime::now() - Duration::from_secs(60);
+    for path in [&object, &sidecar] {
+        let modified = fs::metadata(path)
+            .expect("cached asset metadata")
+            .modified()
+            .expect("cached asset modification time");
+        assert!(
+            modified > refreshed_after,
+            "cache hit must refresh access time for `{}`",
+            path.display()
+        );
+    }
 }
 
 fn query_request() -> Request<Body> {
