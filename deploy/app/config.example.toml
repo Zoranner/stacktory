@@ -1,6 +1,7 @@
 listen_address = "0.0.0.0"
 listen_port = 18761
 data_dir = "/app/data"
+log_dir = "/app/logs"
 root_url = "https://stacktory.example.internal"
 
 [retention]
@@ -14,6 +15,8 @@ cleanup_interval_secs = 3600
 rustup_snapshot_revisions = 3
 # Artifact objects idle for longer than this are removed; 0 disables idle eviction.
 artifact_idle_secs = 7776000
+# Rotated run logs are kept for this many days.
+log_retention_days = 30
 
 [rustup]
 refresh_interval_secs = 3600

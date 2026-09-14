@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use stacktory::{Config, ConfigError, RetentionConfig};
 
 const LOCAL_DEVELOPMENT: &str = r#"
@@ -84,6 +86,27 @@ fn accepts_explicit_retention_configuration() {
 }
 
 #[test]
+fn applies_default_log_configuration() {
+    let config = Config::from_toml(LOCAL_DEVELOPMENT).expect("local development configuration");
+
+    assert_eq!(config.log_dir, PathBuf::from("logs"));
+    assert_eq!(config.retention.log_retention_days, 30);
+}
+
+#[test]
+fn accepts_explicit_log_configuration() {
+    let configuration = LOCAL_DEVELOPMENT.replace(
+        "data_dir = \"./var/stacktory\"",
+        "data_dir = \"./var/stacktory\"\nlog_dir = \"/var/log/stacktory\"",
+    ) + "\n[retention]\nlog_retention_days = 7\n";
+
+    let config = Config::from_toml(&configuration).expect("explicit log configuration");
+
+    assert_eq!(config.log_dir, PathBuf::from("/var/log/stacktory"));
+    assert_eq!(config.retention.log_retention_days, 7);
+}
+
+#[test]
 fn rejects_zero_retention_values() {
     let cases = [
         (
@@ -101,6 +124,10 @@ fn rejects_zero_retention_values() {
         (
             "[retention]\nrustup_snapshot_revisions = 0\n",
             ConfigError::InvalidRustupSnapshotRevisions,
+        ),
+        (
+            "[retention]\nlog_retention_days = 0\n",
+            ConfigError::InvalidLogRetentionDays,
         ),
     ];
 

@@ -305,7 +305,7 @@ impl RustupService {
 
     fn record_audit(&self, event: &str, target: &str, outcome: &str) {
         if let Err(error) = self.audit.record(event, target, outcome) {
-            eprintln!("Stacktory audit write failed: {error}");
+            crate::logging::error(format!("audit write failed: {error}"));
         }
     }
 }

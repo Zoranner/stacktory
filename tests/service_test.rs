@@ -56,6 +56,7 @@ async fn refresh_publishes_a_rewritten_manifest_snapshot() {
         listen_address: "127.0.0.1".parse().expect("address"),
         listen_port: 18761,
         data_dir: PathBuf::from(directory.path()),
+        log_dir: PathBuf::from("logs"),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
@@ -136,6 +137,7 @@ async fn artifact_cache_is_shared_by_group_and_its_proxy() {
         listen_address: "127.0.0.1".parse().expect("address"),
         listen_port: 18761,
         data_dir: data_dir.path().to_path_buf(),
+        log_dir: PathBuf::from("logs"),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
@@ -248,6 +250,7 @@ async fn proxy_manifest_can_reference_another_configured_proxy() {
         listen_address: "127.0.0.1".parse().expect("address"),
         listen_port: 18761,
         data_dir: data_dir.path().to_path_buf(),
+        log_dir: PathBuf::from("logs"),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
@@ -351,6 +354,7 @@ async fn artifact_request_uses_the_source_matched_by_manifest_url() {
         listen_address: "127.0.0.1".parse().expect("address"),
         listen_port: 18761,
         data_dir: data_dir.path().to_path_buf(),
+        log_dir: PathBuf::from("logs"),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
@@ -563,6 +567,7 @@ async fn artifacts_follow_each_channel_snapshot_source_and_keep_separate_caches(
         listen_address: "127.0.0.1".parse().expect("address"),
         listen_port: 18761,
         data_dir: data_dir.path().to_path_buf(),
+        log_dir: PathBuf::from("logs"),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
@@ -833,6 +838,7 @@ fn service_for(upstream: Url, data_dir: PathBuf) -> RustupService {
         listen_address: "127.0.0.1".parse().expect("address"),
         listen_port: 18761,
         data_dir,
+        log_dir: PathBuf::from("logs"),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {

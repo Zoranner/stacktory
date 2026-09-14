@@ -12,6 +12,8 @@ __pycache__/
 # Local configuration and editor state
 deploy/app/config.toml
 deploy/data/
+deploy/logs/
 /data/
+/logs/
 .idea/
 .vscode/

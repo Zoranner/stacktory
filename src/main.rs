@@ -6,6 +6,7 @@ use stacktory::{
     cargo::CargoAdapter,
     docker::register_adapter,
     http::{router_with_docker_entry, router_with_rustup_and_registry},
+    logging,
     npm::NpmAdapter,
     nuget::NugetAdapter,
     retention,
@@ -32,17 +33,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = Config::from_toml(&fs::read_to_string("config.toml")?)?;
+    let log_path = logging::init(config.log_dir.clone())?;
     let mut docker_listeners = Vec::new();
     let registry = configured_registry(&mut config, &mut docker_listeners)?;
     let listener = TcpListener::bind((config.listen_address, config.listen_port)).await?;
-    retention::spawn(config.data_dir.clone(), config.retention);
+    retention::spawn(
+        config.data_dir.clone(),
+        config.log_dir.clone(),
+        config.retention,
+    );
+    logging::info(format!(
+        "listening on {}:{}; data_dir={}; log_dir={}; log_file={}",
+        config.listen_address,
+        config.listen_port,
+        config.data_dir.display(),
+        config.log_dir.display(),
+        log_path.display()
+    ));
     let service = Arc::new(RustupService::new(config)?);
     for docker_listener in docker_listeners {
         let listener = TcpListener::bind((docker_listener.address, docker_listener.port)).await?;
         let router = router_with_docker_entry(registry.clone(), docker_listener.entry_name);
         tokio::spawn(async move {
             if let Err(error) = axum::serve(listener, router).await {
-                eprintln!("Stacktory Docker listener failed: {error}");
+                logging::error(format!("docker listener failed: {error}"));
             }
         });
     }
@@ -167,7 +181,7 @@ fn configured_registry(
 
 #[cfg(test)]
 mod tests {
-    use std::net::IpAddr;
+    use std::{net::IpAddr, path::PathBuf};
 
     use axum::{body::Body, http::Request};
     use stacktory::{
@@ -183,6 +197,7 @@ mod tests {
             listen_address: "127.0.0.1".parse::<IpAddr>().expect("address"),
             listen_port: 18761,
             data_dir: tempfile::tempdir().expect("data directory").keep(),
+            log_dir: PathBuf::from("logs"),
             root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
             retention: RetentionConfig::default(),
             rustup: RustupConfig {

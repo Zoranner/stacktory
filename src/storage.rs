@@ -239,10 +239,10 @@ impl SnapshotStore {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => {
                     pruned.failed_revisions += 1;
-                    eprintln!(
-                        "Stacktory snapshot cleanup failed for `{}`: {error}",
+                    crate::logging::error(format!(
+                        "snapshot cleanup failed for `{}`: {error}",
                         path.display()
-                    );
+                    ));
                 }
             }
         }

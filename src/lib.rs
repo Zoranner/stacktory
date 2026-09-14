@@ -6,6 +6,7 @@ mod config;
 pub mod docker;
 pub mod http;
 pub mod layout;
+pub mod logging;
 pub mod npm;
 pub mod nuget;
 pub mod retention;
@@ -15,6 +16,8 @@ pub mod sources;
 pub mod storage;
 pub mod upm;
 pub mod vscode;
+
+mod timeformat;
 
 pub use config::{
     CargoConfig, Config, ConfigError, DockerConfig, EcosystemConfig, NpmConfig, NugetConfig,

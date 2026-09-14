@@ -20,6 +20,7 @@ fn retention_config() -> RetentionConfig {
         cleanup_interval_secs: 3_600,
         rustup_snapshot_revisions: 2,
         artifact_idle_secs: 30 * DAY,
+        log_retention_days: 30,
     }
 }
 
@@ -50,6 +51,7 @@ fn removes_expired_metadata_and_keeps_fresh_files() {
 
     let report = sweep(
         data_dir,
+        &data_dir.join("logs"),
         &retention_config(),
         now,
         &AuditSink::new(data_dir),
@@ -80,6 +82,7 @@ fn evicts_idle_artifacts_and_keeps_recent_ones() {
 
     let report = sweep(
         data_dir,
+        &data_dir.join("logs"),
         &retention_config(),
         now,
         &AuditSink::new(data_dir),
@@ -106,6 +109,7 @@ fn keeps_an_idle_artifact_that_was_accessed() {
     note_access(&artifact).expect("access time update");
     let report = sweep(
         data_dir,
+        &data_dir.join("logs"),
         &retention_config(),
         now,
         &AuditSink::new(data_dir),
@@ -130,6 +134,7 @@ fn rotates_the_current_audit_file_and_prunes_retired_files() {
 
     let report = sweep(
         data_dir,
+        &data_dir.join("logs"),
         &retention_config(),
         now,
         &AuditSink::new(data_dir),
@@ -153,6 +158,40 @@ fn rotates_the_current_audit_file_and_prunes_retired_files() {
 }
 
 #[test]
+fn rotates_the_log_file_and_prunes_retired_logs() {
+    let directory = tempdir().expect("temporary directory");
+    let data_dir = directory.path();
+    let log_dir = data_dir.join("logs");
+    let now = SystemTime::now();
+    let current = log_dir.join("stacktory.log");
+    let retired = log_dir.join("stacktory.19700101.log");
+    let recent = log_dir.join("stacktory.29991231.log");
+    write_file_with_mtime(&current, "old line\n", now - Duration::from_secs(DAY));
+    write_file_with_mtime(&retired, "retired line\n", now - Duration::from_secs(DAY));
+    write_file_with_mtime(&recent, "recent line\n", now);
+
+    let report = sweep(
+        data_dir,
+        &log_dir,
+        &retention_config(),
+        now,
+        &AuditSink::new(data_dir),
+    );
+
+    let rotated = report.rotated_log_file.expect("rotated log file");
+    assert!(rotated.starts_with("stacktory.") && rotated.ends_with(".log"));
+    assert_eq!(
+        fs::read_to_string(log_dir.join(rotated)).expect("rotated log contents"),
+        "old line\n"
+    );
+    assert!(!retired.exists());
+    assert!(recent.exists());
+    assert_eq!(report.pruned_log_files, 1);
+    let events = fs::read_to_string(data_dir.join("audit/events.jsonl")).expect("audit events");
+    assert!(events.contains("\"log_cleanup\""));
+}
+
+#[test]
 fn keeps_the_audit_file_written_today() {
     let directory = tempdir().expect("temporary directory");
     let data_dir = directory.path();
@@ -162,6 +201,7 @@ fn keeps_the_audit_file_written_today() {
 
     let report = sweep(
         data_dir,
+        &data_dir.join("logs"),
         &retention_config(),
         now,
         &AuditSink::new(data_dir),
@@ -181,6 +221,7 @@ fn records_metadata_cleanup_in_the_audit_log() {
 
     sweep(
         data_dir,
+        &data_dir.join("logs"),
         &retention_config(),
         now,
         &AuditSink::new(data_dir),
@@ -198,6 +239,7 @@ fn tolerates_a_missing_data_directory() {
 
     let report = sweep(
         &data_dir,
+        &data_dir.join("logs"),
         &retention_config(),
         SystemTime::now(),
         &AuditSink::new(&data_dir),
@@ -246,6 +288,7 @@ fn keeps_recent_rustup_snapshot_revisions() {
 
     let report = sweep(
         data_dir,
+        &data_dir.join("logs"),
         &retention_config(),
         now,
         &AuditSink::new(data_dir),
@@ -280,6 +323,7 @@ fn keeps_the_current_snapshot_revision_beyond_the_keep_window() {
 
     let report = sweep(
         data_dir,
+        &data_dir.join("logs"),
         &retention_config(),
         now,
         &AuditSink::new(data_dir),
@@ -313,6 +357,7 @@ fn skips_snapshot_cleanup_when_the_current_pointer_is_unreadable() {
 
     let report = sweep(
         data_dir,
+        &data_dir.join("logs"),
         &retention_config(),
         now,
         &AuditSink::new(data_dir),

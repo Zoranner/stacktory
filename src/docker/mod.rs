@@ -784,7 +784,7 @@ impl DockerService {
                 count: None,
             },
         ) {
-            eprintln!("Stacktory audit write failed: {error}");
+            crate::logging::error(format!("audit write failed: {error}"));
         }
     }
 

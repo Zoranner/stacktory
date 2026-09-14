@@ -9,6 +9,7 @@ pub struct Config {
     pub listen_address: IpAddr,
     pub listen_port: u16,
     pub data_dir: PathBuf,
+    pub log_dir: PathBuf,
     pub root_url: Url,
     pub retention: RetentionConfig,
     pub rustup: RustupConfig,
@@ -26,6 +27,8 @@ pub const DEFAULT_AUDIT_RETENTION_DAYS: u64 = 30;
 pub const DEFAULT_CLEANUP_INTERVAL_SECS: u64 = 3_600;
 pub const DEFAULT_RUSTUP_SNAPSHOT_REVISIONS: u64 = 3;
 pub const DEFAULT_ARTIFACT_IDLE_SECS: u64 = 7_776_000;
+pub const DEFAULT_LOG_RETENTION_DAYS: u64 = 30;
+pub const DEFAULT_LOG_DIR: &str = "logs";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(default)]
@@ -35,6 +38,7 @@ pub struct RetentionConfig {
     pub cleanup_interval_secs: u64,
     pub rustup_snapshot_revisions: u64,
     pub artifact_idle_secs: u64,
+    pub log_retention_days: u64,
 }
 
 impl Default for RetentionConfig {
@@ -45,6 +49,7 @@ impl Default for RetentionConfig {
             cleanup_interval_secs: DEFAULT_CLEANUP_INTERVAL_SECS,
             rustup_snapshot_revisions: DEFAULT_RUSTUP_SNAPSHOT_REVISIONS,
             artifact_idle_secs: DEFAULT_ARTIFACT_IDLE_SECS,
+            log_retention_days: DEFAULT_LOG_RETENTION_DAYS,
         }
     }
 }
@@ -271,6 +276,8 @@ pub enum ConfigError {
     InvalidCleanupInterval,
     #[error("retention.rustup_snapshot_revisions must be greater than zero")]
     InvalidRustupSnapshotRevisions,
+    #[error("retention.log_retention_days must be greater than zero")]
+    InvalidLogRetentionDays,
 }
 
 #[derive(Deserialize)]
@@ -278,6 +285,8 @@ struct RawConfig {
     listen_address: IpAddr,
     listen_port: u16,
     data_dir: PathBuf,
+    #[serde(default = "default_log_dir")]
+    log_dir: PathBuf,
     root_url: Url,
     #[serde(default)]
     retention: RetentionConfig,
@@ -371,6 +380,9 @@ impl Config {
         if raw.retention.rustup_snapshot_revisions == 0 {
             return Err(ConfigError::InvalidRustupSnapshotRevisions);
         }
+        if raw.retention.log_retention_days == 0 {
+            return Err(ConfigError::InvalidLogRetentionDays);
+        }
         if raw.rustup.channels.is_empty() {
             return Err(ConfigError::MissingRustupChannel);
         }
@@ -392,6 +404,7 @@ impl Config {
             listen_address: raw.listen_address,
             listen_port: raw.listen_port,
             data_dir: raw.data_dir,
+            log_dir: raw.log_dir,
             root_url: raw.root_url,
             retention: raw.retention,
             rustup: RustupConfig {
@@ -474,6 +487,10 @@ fn nuget_config(raw: Option<RawEcosystemConfig>) -> Result<Option<EcosystemConfi
 
 const fn requires_https() -> bool {
     true
+}
+
+fn default_log_dir() -> PathBuf {
+    PathBuf::from(DEFAULT_LOG_DIR)
 }
 
 fn is_valid_channel(channel: &str) -> bool {

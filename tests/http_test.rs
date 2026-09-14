@@ -90,6 +90,7 @@ async fn public_rustup_artifact_route_serves_only_a_verified_published_artifact(
         listen_address: "127.0.0.1".parse().expect("address"),
         listen_port: 18761,
         data_dir: PathBuf::from(data_dir.path()),
+        log_dir: PathBuf::from("logs"),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
@@ -177,6 +178,7 @@ async fn rustup_group_route_serves_manifest() {
         listen_address: "127.0.0.1".parse().expect("address"),
         listen_port: 18761,
         data_dir: data_dir.path().to_path_buf(),
+        log_dir: PathBuf::from("logs"),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
@@ -293,6 +295,7 @@ async fn rustup_group_artifact_stays_with_the_manifest_source() {
         listen_address: "127.0.0.1".parse().expect("address"),
         listen_port: 18761,
         data_dir: data_dir.path().to_path_buf(),
+        log_dir: PathBuf::from("logs"),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
@@ -365,6 +368,7 @@ async fn rustup_proxy_route_serves_only_its_proxy() {
         listen_address: "127.0.0.1".parse().expect("address"),
         listen_port: 18761,
         data_dir: data_dir.path().to_path_buf(),
+        log_dir: PathBuf::from("logs"),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
@@ -406,6 +410,7 @@ async fn unknown_rustup_artifact_source_returns_not_found_before_snapshot_lookup
         listen_address: "127.0.0.1".parse().expect("address"),
         listen_port: 18761,
         data_dir: data_dir.path().to_path_buf(),
+        log_dir: PathBuf::from("logs"),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
@@ -495,6 +500,7 @@ async fn legacy_rustup_route_returns_not_found() {
         listen_address: "127.0.0.1".parse().expect("address"),
         listen_port: 18761,
         data_dir: data_dir.path().to_path_buf(),
+        log_dir: PathBuf::from("logs"),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {

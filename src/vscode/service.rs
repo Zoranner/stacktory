@@ -548,7 +548,7 @@ impl VscodeService {
             },
             details,
         ) {
-            eprintln!("Stacktory audit write failed: {error}");
+            crate::logging::error(format!("audit write failed: {error}"));
         }
     }
 }
