@@ -21,8 +21,8 @@ npm install --no-audit --no-fund
 - 首次安装成功，`node_modules` 含 `is-odd` 与传递依赖 `is-number`，耗时 5 秒。
 - 审计记录 `npm_metadata_published`（`is-odd`、`is-number`）和两条
   `npm_artifact_published`，`selected_proxy` 均为 `npmjs`。
-- 缓存落盘为 `npm/artifacts/npmjs/objects/group/{package}/{version}/tarball/{sha256}`
-  与 `npm/metadata/group/{package}/`。
+- 缓存落盘为 `stores/npm/artifacts/npmjs/objects/group/{package}/{version}/tarball/{sha256}`
+  与 `stores/npm/metadata/group/{package}/`。
 - 第二个客户端目录使用同一服务再次安装，耗时 2 秒，审计记录两条
   `npm_metadata_read` 且 `cache_status` 为 `hit`。注意 npm 自身的本地缓存会直接
   满足 tarball 请求，因此验证制品缓存必须用独立的 `--cache` 目录，否则只会看到
@@ -73,8 +73,8 @@ cargo build
 - 审计记录 `cargo_index_published`（`it/oa/itoa`）、后续 `cargo_index_read`
   `cache_status` 为 `hit`、`cargo_artifact_read` 首次为 `miss`，随后
   `cargo_artifact_published` 发布 `crates/itoa/1.0.18.crate`。
-- 缓存落盘为 `cargo/artifacts/official/objects/crates/itoa/1.0.18.crate`、
-  `cargo/metadata/group/index/it/oa/itoa` 和同目录的 `.source` 来源绑定。
+- 缓存落盘为 `stores/cargo/artifacts/official/objects/crates/itoa/1.0.18.crate`、
+  `stores/cargo/metadata/group/index/it/oa/itoa` 和同目录的 `.source` 来源绑定。
 - 使用另一个空 `CARGO_HOME` 再次 `cargo fetch`，审计显示 index 与 crate 都是
   `cache_status` 为 `hit`，未重新访问 crates.io。
 

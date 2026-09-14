@@ -48,8 +48,8 @@ Gallery query 必须返回 `results[].extensions[].versions[].files[]`。每个 
 并保存：
 
 ```text
-data_dir/vscode/metadata/{name}/marketplace/{query-id}.json
-data_dir/vscode/metadata/{name}/marketplace/assets/{asset-id}.toml
+data_dir/stores/vscode/metadata/{name}/marketplace/{query-id}.json
+data_dir/stores/vscode/metadata/{name}/marketplace/assets/{asset-id}.toml
 ```
 
 `query-id` 是原始 query body 的 SHA-256。资源描述符保存 selected proxy、原始资源 URL
@@ -61,12 +61,13 @@ data_dir/vscode/metadata/{name}/marketplace/assets/{asset-id}.toml
 资源对象按实际 proxy 和上游 URL identity 缓存：
 
 ```text
-data_dir/vscode/artifacts/{proxy}/objects/marketplace/{asset-id}
-data_dir/vscode/artifacts/{proxy}/objects/marketplace/{asset-id}.toml
+data_dir/stores/vscode/artifacts/{proxy}/objects/marketplace/{asset-id}
+data_dir/stores/vscode/artifacts/{proxy}/objects/marketplace/{asset-id}.toml
 ```
 
-sidecar 保存上游 `Content-Type`，命中缓存时原样返回。group 和直接 proxy 只要绑定到同一
-actual proxy 与资源 URL，即可复用同一对象。
+sidecar 保存上游 `Content-Type`，命中缓存时原样返回，并与主对象一起更新访问时间，
+因此闲置淘汰时两者同进同退。group 和直接 proxy 只要绑定到同一 actual proxy 与
+资源 URL，即可复用同一对象。
 
 审计记录 `ecosystem = "vscode"`、entry name、asset/query object key、selected proxy、
 metadata/artifact 类型、cache 状态和失败类别，不记录 query body、响应正文、资源内容或

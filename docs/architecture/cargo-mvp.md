@@ -83,8 +83,8 @@ Sparse Registry 的 `dl` 配置模板负责重写。
 缓存不使用数据库，且与 Rustup 缓存分开：
 
 ```text
-data_dir/cargo/metadata/{entry}/index/{object-key}
-data_dir/cargo/artifacts/{proxy}/objects/crates/{crate}/{version}.crate
+data_dir/stores/cargo/metadata/{entry}/index/{object-key}
+data_dir/stores/cargo/artifacts/{proxy}/objects/crates/{crate}/{version}.crate
 ```
 
 index 只有在 UTF-8、JSON Lines、合法 crate 名称、严格 SemVer 版本和 checksum 均

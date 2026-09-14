@@ -128,7 +128,7 @@ manifest 及 `.sha256`，验证原始 manifest
 source_name 隔离，目录完成后原子替换 `current.toml` 指针。读取请求始终先读取
 入口指针再读取同一快照，因此不会观察到不配对的公开 manifest/checksum；同一份
 manifest 可以为不同制品绑定不同 proxy，不按每次 artifact 请求重新选择来源。
-制品目录为 `data_dir/rustup/artifacts/{proxy}/objects/{dist-path}`；入口名和 channel
+制品目录为 `data_dir/stores/rustup/artifacts/{proxy}/objects/{dist-path}`；入口名和 channel
 属于 snapshot，不属于二进制制品缓存键。
 
 direct proxy 入口只从自身获取 channel manifest；但 manifest 中的 dist URL 可以匹配

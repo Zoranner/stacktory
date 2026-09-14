@@ -138,7 +138,7 @@ package ID/version 在不同命名入口或不同 selected proxy 下不能共享
 本 MVP 不做隐式 stale-while-revalidate 或跨来源拼接。metadata 缓存只有在 JSON、
 restore 资源 sidecar 和 selected proxy 仍有效时命中；package content 缓存每次命中
 仍执行已声明摘要或本地 SHA-256 校验。需要强制重新获取时由管理员清理对应
-`data_dir/nuget` 缓存。
+`data_dir/stores/nuget` 缓存。
 
 - 未知入口、非法资源路径、未知 package/version、未被 restore metadata 引用的
   content 或未被漏洞索引声明的文件名：`404`。

@@ -166,6 +166,17 @@ MVP 不使用数据库。配置在启动时从本地文件加载；metadata、ar
 快照和审计事件使用本地文件系统。文件系统是当前缓存、快照和审计的唯一事实
 存储，不存在隐藏的数据库索引或第二缓存事实源。
 
+数据目录只分两类：`stores` 下按生态分片的数据，以及 `audit` 下的全局审计事实。
+适配器只负责在 `metadata` 或对象根之下拼接协议对象键，路径前缀由
+`src/layout.rs` 统一生成，不在各适配器重复拼接。
+
+```text
+<data_dir>/stores/<ecosystem>/metadata/...                  入口拥有的元数据与来源绑定
+<data_dir>/stores/<ecosystem>/artifacts/<来源>/objects/...  实际来源拥有的对象
+<data_dir>/stores/rustup/snapshots/<入口>/<channel>/...     Rustup 快照
+<data_dir>/audit/events.jsonl                               全局审计事件
+```
+
 只有在需要跨实例协调、复杂审计查询、账号权限、发布审批或关系型制品治理时，
 才重新评估数据库。仅仅为了缓存索引、来源回退或审计追加不引入数据库。
 
@@ -236,33 +247,35 @@ artifact_idle_secs = 7776000
 ```
 
 - 服务启动后立即执行一次清理，之后按 `cleanup_interval_secs` 周期执行。
-- `<data_dir>/<ecosystem>/metadata/**` 中修改时间早于 `metadata_ttl_secs` 的
+- `<data_dir>/stores/<ecosystem>/metadata/**` 中修改时间早于 `metadata_ttl_secs` 的
   文件会被删除，客户端下次请求时重新获取并重建缓存与来源绑定。该值是 metadata
   的保留上限，是否按时间复用缓存仍由各适配器的命中策略决定。
 - `<data_dir>/audit/events.jsonl` 跨天后轮转为 `events.<UTC 日期>.jsonl`，超过
   `audit_retention_days` 的轮转文件被删除。
 - Rustup 每个 `{entry}/{channel}` 只保留最近 `rustup_snapshot_revisions` 个
   修订；`current.toml` 指向的修订始终保留，指针存在但无法解析时跳过该 channel。
-- 制品对象按闲置时间淘汰：`<data_dir>/<ecosystem>/artifacts/**` 中修改时间早于
-  `artifact_idle_secs`（缺省 90 天）的文件会被删除，`artifact_idle_secs = 0`
-  关闭该清理。
+- 制品对象按闲置时间淘汰：`<data_dir>/stores/<ecosystem>/artifacts/**` 中修改时间
+  早于 `artifact_idle_secs`（缺省 90 天）的文件会被删除，`artifact_idle_secs = 0`
+  关闭该清理。制品旁的 sidecar 在命中缓存时与主对象一起更新访问时间，两者共享
+  同一个淘汰窗口。
   命中缓存时适配器通过 `note_access` 更新对象修改时间，因此"修改时间"表示最近
   一次访问时间，而不是写入时间。制品都可以重新获取，删除不会造成不可恢复的
   数据丢失；不实现容量上限，淘汰只由闲置时间决定。
-- 清理按轮次记录 `metadata_cleanup` 和 `audit_cleanup` 事件，包含删除数量；
+- 清理按轮次记录 `metadata_cleanup`、`artifact_cleanup`、`snapshot_cleanup` 和
+  `audit_cleanup` 事件，包含删除数量；维护命令记录 `legacy_layout_cleanup`。
   不逐文件写审计，也不记录文件内容。
 
-旧布局（来源目录下没有 `objects` 层的缓存）不随服务启动或周期清理删除，只能
-显式执行维护命令：
+旧布局留下的缓存不随服务启动或周期清理删除，只能显式执行维护命令：
 
 ```text
-stacktory prune-legacy-artifacts --dry-run
-stacktory prune-legacy-artifacts
+stacktory prune-legacy-layout --dry-run
+stacktory prune-legacy-layout
 ```
 
-命令只处理 Rustup 和 Cargo 的来源目录，删除 `{ecosystem}/artifacts/{source}/`
-下 `objects` 之外的旧布局子树，保留当前的对象缓存；Docker 等其他生态的制品
-布局不经过这次迁移，不在清理范围内。`--dry-run` 只统计不删除。
+命令删除两类内容：平铺布局时期的 `<data_dir>/<ecosystem>/` 整个目录，以及
+`<data_dir>/stores/<ecosystem>/artifacts/<来源>/` 下 `objects` 之外的条目。
+只有同时包含 `metadata`、`artifacts` 或 `snapshots` 子目录的顶层目录才会被当作
+生态目录删除，`stores` 和 `audit` 始终保留。`--dry-run` 只统计不删除。
 
 ## 生态适配器摘要
 
