@@ -175,7 +175,11 @@ MVP 不使用数据库。配置在启动时从本地文件加载；metadata、ar
 <data_dir>/stores/<ecosystem>/artifacts/<来源>/objects/...  实际来源拥有的对象
 <data_dir>/stores/rustup/snapshots/<入口>/<channel>/...     Rustup 快照
 <data_dir>/audit/events.jsonl                               全局审计事件
+<log_dir>/stacktory.log                                     运行日志（默认 `logs`）
 ```
+
+运行日志不属于数据目录：它由 `log_dir` 指定，服务启动时创建并追加写入，同时
+保留 stderr 输出，便于容器和本地调试各自取用。
 
 只有在需要跨实例协调、复杂审计查询、账号权限、发布审批或关系型制品治理时，
 才重新评估数据库。仅仅为了缓存索引、来源回退或审计追加不引入数据库。
@@ -244,6 +248,7 @@ audit_retention_days = 30
 cleanup_interval_secs = 3600
 rustup_snapshot_revisions = 3
 artifact_idle_secs = 7776000
+log_retention_days = 30
 ```
 
 - 服务启动后立即执行一次清理，之后按 `cleanup_interval_secs` 周期执行。
@@ -252,6 +257,8 @@ artifact_idle_secs = 7776000
   的保留上限，是否按时间复用缓存仍由各适配器的命中策略决定。
 - `<data_dir>/audit/events.jsonl` 跨天后轮转为 `events.<UTC 日期>.jsonl`，超过
   `audit_retention_days` 的轮转文件被删除。
+- `<log_dir>/stacktory.log` 按同样的规则轮转为 `stacktory.<UTC 日期>.log`，超过
+  `log_retention_days` 的轮转文件被删除。
 - Rustup 每个 `{entry}/{channel}` 只保留最近 `rustup_snapshot_revisions` 个
   修订；`current.toml` 指向的修订始终保留，指针存在但无法解析时跳过该 channel。
 - 制品对象按闲置时间淘汰：`<data_dir>/stores/<ecosystem>/artifacts/**` 中修改时间
@@ -261,9 +268,9 @@ artifact_idle_secs = 7776000
   命中缓存时适配器通过 `note_access` 更新对象修改时间，因此"修改时间"表示最近
   一次访问时间，而不是写入时间。制品都可以重新获取，删除不会造成不可恢复的
   数据丢失；不实现容量上限，淘汰只由闲置时间决定。
-- 清理按轮次记录 `metadata_cleanup`、`artifact_cleanup`、`snapshot_cleanup` 和
-  `audit_cleanup` 事件，包含删除数量；维护命令记录 `legacy_layout_cleanup`。
-  不逐文件写审计，也不记录文件内容。
+- 清理按轮次记录 `metadata_cleanup`、`artifact_cleanup`、`snapshot_cleanup`、
+  `audit_cleanup` 和 `log_cleanup` 事件，包含删除数量；维护命令记录
+  `legacy_layout_cleanup`。不逐文件写审计，也不记录文件内容。
 
 旧布局留下的缓存不随服务启动或周期清理删除，只能显式执行维护命令：
 
