@@ -25,7 +25,7 @@ pub const DEFAULT_METADATA_TTL_SECS: u64 = 604_800;
 pub const DEFAULT_AUDIT_RETENTION_DAYS: u64 = 30;
 pub const DEFAULT_CLEANUP_INTERVAL_SECS: u64 = 3_600;
 pub const DEFAULT_RUSTUP_SNAPSHOT_REVISIONS: u64 = 3;
-pub const DEFAULT_ARTIFACT_IDLE_SECS: u64 = 2_592_000;
+pub const DEFAULT_ARTIFACT_IDLE_SECS: u64 = 7_776_000;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(default)]

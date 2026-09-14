@@ -232,7 +232,7 @@ metadata_ttl_secs = 604800
 audit_retention_days = 30
 cleanup_interval_secs = 3600
 rustup_snapshot_revisions = 3
-artifact_idle_secs = 2592000
+artifact_idle_secs = 7776000
 ```
 
 - 服务启动后立即执行一次清理，之后按 `cleanup_interval_secs` 周期执行。
@@ -244,7 +244,8 @@ artifact_idle_secs = 2592000
 - Rustup 每个 `{entry}/{channel}` 只保留最近 `rustup_snapshot_revisions` 个
   修订；`current.toml` 指向的修订始终保留，指针存在但无法解析时跳过该 channel。
 - 制品对象按闲置时间淘汰：`<data_dir>/<ecosystem>/artifacts/**` 中修改时间早于
-  `artifact_idle_secs` 的文件会被删除，`artifact_idle_secs = 0` 关闭该清理。
+  `artifact_idle_secs`（缺省 90 天）的文件会被删除，`artifact_idle_secs = 0`
+  关闭该清理。
   命中缓存时适配器通过 `note_access` 更新对象修改时间，因此"修改时间"表示最近
   一次访问时间，而不是写入时间。制品都可以重新获取，删除不会造成不可恢复的
   数据丢失；不实现容量上限，淘汰只由闲置时间决定。

@@ -66,7 +66,7 @@ fn applies_default_retention_configuration() {
     assert_eq!(config.retention.audit_retention_days, 30);
     assert_eq!(config.retention.cleanup_interval_secs, 3_600);
     assert_eq!(config.retention.rustup_snapshot_revisions, 3);
-    assert_eq!(config.retention.artifact_idle_secs, 2_592_000);
+    assert_eq!(config.retention.artifact_idle_secs, 7_776_000);
 }
 
 #[test]
