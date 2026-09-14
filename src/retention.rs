@@ -8,16 +8,20 @@ use std::{
 use crate::{
     audit::{AuditDetails, AuditSink},
     config::RetentionConfig,
+    layout,
     storage::SnapshotStore,
 };
 
 const AUDIT_FILE: &str = "events.jsonl";
 const AUDIT_ROTATED_PREFIX: &str = "events.";
 const AUDIT_ROTATED_SUFFIX: &str = ".jsonl";
-const METADATA_DIR: &str = "metadata";
 const SECS_PER_DAY: u64 = 86_400;
-/// 只有 Rustup 和 Cargo 经历过"来源拥有的对象缓存"迁移，旧布局只可能出现在这两处。
-const LEGACY_ARTIFACT_ECOSYSTEMS: [&str; 2] = ["rustup", "cargo"];
+/// 平铺布局时期的生态目录特征：至少包含其中一种子目录。
+const ECOSYSTEM_TREE_MARKERS: [&str; 3] = [
+    layout::METADATA_DIR,
+    layout::ARTIFACTS_DIR,
+    layout::SNAPSHOTS_DIR,
+];
 
 #[derive(Debug, Default, Eq, PartialEq)]
 pub struct SweepReport {
@@ -33,7 +37,7 @@ pub struct SweepReport {
 }
 
 #[derive(Debug, Default, Eq, PartialEq)]
-pub struct LegacyArtifactReport {
+pub struct LegacyLayoutReport {
     pub removed_entries: u64,
     pub removed_bytes: u64,
     pub failed_entries: u64,
@@ -52,10 +56,11 @@ pub fn spawn(data_dir: PathBuf, config: RetentionConfig) {
     });
 }
 
-/// 删除过期的生态 metadata 文件，轮转并清理审计事件文件。
+/// 按保留窗口清理生态存储和审计文件。
 ///
-/// 只处理 `<data_dir>/<ecosystem>/metadata` 下的缓存文件和 `<data_dir>/audit` 下的
-/// 审计文件；制品和 Rustup 快照不在本次清理范围内。
+/// metadata 按 `metadata_ttl_secs` 过期，制品按 `artifact_idle_secs` 淘汰，Rustup
+/// 快照按 `rustup_snapshot_revisions` 保留，审计事件按天轮转并保留
+/// `audit_retention_days` 天。
 pub fn sweep(
     data_dir: &Path,
     config: &RetentionConfig,
@@ -63,7 +68,7 @@ pub fn sweep(
     audit: &AuditSink,
 ) -> SweepReport {
     let mut report = SweepReport::default();
-    let audit_dir = data_dir.join("audit");
+    let audit_dir = layout::audit_root(data_dir);
     if let Err(error) = rotate_audit(&audit_dir, now, &mut report) {
         report.audit_failed = true;
         eprintln!("Stacktory audit rotation failed: {error}");
@@ -84,62 +89,43 @@ pub fn note_access(path: &Path) -> io::Result<()> {
         .set_times(fs::FileTimes::new().set_modified(SystemTime::now()))
 }
 
-/// 删除 Rustup 和 Cargo 来源目录下 `objects` 之外的旧布局子树。
+/// 删除旧数据布局留下的、当前代码不会再读取的缓存。
+///
+/// 规则：
+/// 1. 平铺布局时期的生态目录（`<data_dir>/<ecosystem>/…`）：整棵删除。
+/// 2. `<data_dir>/stores/<ecosystem>/artifacts/<来源>/` 下 `objects` 之外的条目：
+///    删除，覆盖"来源目录直接存放对象"和 Docker 曾把仓库名放进对象路径的旧形态。
 ///
 /// 该清理只在显式执行维护命令时运行，不属于服务启动和周期清理的一部分。
-pub fn prune_legacy_artifacts(
+pub fn prune_legacy_layout(
     data_dir: &Path,
     dry_run: bool,
     audit: &AuditSink,
-) -> LegacyArtifactReport {
-    let mut report = LegacyArtifactReport {
+) -> LegacyLayoutReport {
+    let mut report = LegacyLayoutReport {
         dry_run,
-        ..LegacyArtifactReport::default()
+        ..LegacyLayoutReport::default()
     };
-    for ecosystem in LEGACY_ARTIFACT_ECOSYSTEMS {
-        let root = data_dir.join(ecosystem).join("artifacts");
-        let Ok(sources) = fs::read_dir(&root) else {
+    for entry in read_dirs(data_dir) {
+        if entry.file_name() == OsStr::new(layout::STORES_DIR)
+            || entry.file_name() == OsStr::new(layout::AUDIT_DIR)
+        {
             continue;
-        };
-        for source in sources.flatten() {
-            if !source.file_type().is_ok_and(|kind| kind.is_dir()) {
-                continue;
-            }
-            let Ok(entries) = fs::read_dir(source.path()) else {
-                continue;
-            };
+        }
+        if !is_ecosystem_tree(&entry.path()) {
+            continue;
+        }
+        remove_entry(&entry.path(), dry_run, &mut report);
+    }
+    for ecosystem in read_dirs(&layout::stores_root(data_dir)) {
+        for source in read_dirs(&ecosystem.path().join(layout::ARTIFACTS_DIR)) {
             let mut removed_from_source = 0;
-            for entry in entries.flatten() {
-                if entry.file_name() == OsStr::new("objects") {
+            for entry in read_dirs(&source.path()) {
+                if entry.file_name() == OsStr::new(layout::OBJECTS_DIR) {
                     continue;
                 }
-                let path = entry.path();
-                let bytes = subtree_bytes(&path);
-                if dry_run {
-                    report.removed_entries += 1;
-                    report.removed_bytes += bytes;
+                if remove_entry(&entry.path(), dry_run, &mut report) {
                     removed_from_source += 1;
-                    continue;
-                }
-                let removed = match entry.file_type() {
-                    Ok(kind) if kind.is_dir() => fs::remove_dir_all(&path),
-                    Ok(_) => fs::remove_file(&path),
-                    Err(error) => Err(error),
-                };
-                match removed {
-                    Ok(()) => {
-                        report.removed_entries += 1;
-                        report.removed_bytes += bytes;
-                        removed_from_source += 1;
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                    Err(error) => {
-                        report.failed_entries += 1;
-                        eprintln!(
-                            "Stacktory legacy artifact cleanup failed for `{}`: {error}",
-                            path.display()
-                        );
-                    }
                 }
             }
             if !dry_run && removed_from_source > 0 && is_empty_dir(&source.path()) {
@@ -149,6 +135,54 @@ pub fn prune_legacy_artifacts(
     }
     record_legacy(audit, &report);
     report
+}
+
+fn read_dirs(path: &Path) -> Vec<fs::DirEntry> {
+    let Ok(entries) = fs::read_dir(path) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .collect()
+}
+
+/// 平铺布局的生态目录特征：直接包含 `metadata`、`artifacts` 或 `snapshots`。
+fn is_ecosystem_tree(path: &Path) -> bool {
+    ECOSYSTEM_TREE_MARKERS
+        .iter()
+        .any(|marker| path.join(marker).is_dir())
+}
+
+/// 删除条目并记录到报告；返回是否删除成功（`--dry-run` 视为已处理）。
+fn remove_entry(path: &Path, dry_run: bool, report: &mut LegacyLayoutReport) -> bool {
+    let bytes = subtree_bytes(path);
+    if dry_run {
+        report.removed_entries += 1;
+        report.removed_bytes += bytes;
+        return true;
+    }
+    let removed = match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(path),
+        Ok(_) => fs::remove_file(path),
+        Err(error) => Err(error),
+    };
+    match removed {
+        Ok(()) => {
+            report.removed_entries += 1;
+            report.removed_bytes += bytes;
+            true
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error) => {
+            report.failed_entries += 1;
+            eprintln!(
+                "Stacktory legacy layout cleanup failed for `{}`: {error}",
+                path.display()
+            );
+            false
+        }
+    }
 }
 
 fn is_empty_dir(path: &Path) -> bool {
@@ -171,18 +205,18 @@ fn subtree_bytes(path: &Path) -> u64 {
         .sum()
 }
 
-fn record_legacy(audit: &AuditSink, report: &LegacyArtifactReport) {
+fn record_legacy(audit: &AuditSink, report: &LegacyLayoutReport) {
     if report.dry_run || (report.removed_entries == 0 && report.failed_entries == 0) {
         return;
     }
     let failed = report.failed_entries > 0;
     write_event(
         audit,
-        "legacy_artifact_cleanup",
-        "artifact",
+        "legacy_layout_cleanup",
+        "layout",
         if failed { "partial" } else { "success" },
         AuditDetails {
-            object_type: Some("artifact"),
+            object_type: Some("layout"),
             cache_status: Some("removed"),
             failure_category: failed.then_some("remove_failed"),
             count: Some(report.removed_entries),
@@ -192,7 +226,7 @@ fn record_legacy(audit: &AuditSink, report: &LegacyArtifactReport) {
 }
 
 fn prune_rustup_snapshots(data_dir: &Path, keep_revisions: u64, report: &mut SweepReport) {
-    let root = data_dir.join("rustup").join("snapshots");
+    let root = layout::snapshots_root(data_dir, "rustup");
     let Ok(entries) = fs::read_dir(&root) else {
         return;
     };
@@ -236,7 +270,7 @@ fn clean_metadata(
     now: SystemTime,
     report: &mut SweepReport,
 ) {
-    let Ok(entries) = fs::read_dir(data_dir) else {
+    let Ok(entries) = fs::read_dir(layout::stores_root(data_dir)) else {
         return;
     };
     let Some(cutoff) = now.checked_sub(Duration::from_secs(config.metadata_ttl_secs)) else {
@@ -246,7 +280,7 @@ fn clean_metadata(
         if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
             continue;
         }
-        let root = entry.path().join(METADATA_DIR);
+        let root = entry.path().join(layout::METADATA_DIR);
         if root.is_dir() {
             remove_expired_files(
                 &root,
@@ -268,7 +302,7 @@ fn evict_idle_artifacts(
     if config.artifact_idle_secs == 0 {
         return;
     }
-    let Ok(entries) = fs::read_dir(data_dir) else {
+    let Ok(entries) = fs::read_dir(layout::stores_root(data_dir)) else {
         return;
     };
     let Some(cutoff) = now.checked_sub(Duration::from_secs(config.artifact_idle_secs)) else {
@@ -278,7 +312,7 @@ fn evict_idle_artifacts(
         if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
             continue;
         }
-        let root = entry.path().join("artifacts");
+        let root = entry.path().join(layout::ARTIFACTS_DIR);
         if root.is_dir() {
             remove_expired_files(
                 &root,

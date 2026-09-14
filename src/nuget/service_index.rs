@@ -387,17 +387,13 @@ impl NugetService {
     }
 
     pub(crate) fn service_index_path(&self, entry_name: &str) -> PathBuf {
-        self.data_dir
-            .join("nuget")
-            .join("metadata")
+        crate::layout::metadata_root(&self.data_dir, "nuget")
             .join(entry_name)
             .join("service-index.json")
     }
 
     pub(crate) fn service_index_descriptor_path(&self, entry_name: &str) -> PathBuf {
-        self.data_dir
-            .join("nuget")
-            .join("metadata")
+        crate::layout::metadata_root(&self.data_dir, "nuget")
             .join(entry_name)
             .join("service-index.source")
     }

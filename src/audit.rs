@@ -62,7 +62,7 @@ pub struct AuditDetails<'a> {
 impl AuditSink {
     pub fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
-            path: data_dir.into().join("audit/events.jsonl"),
+            path: crate::layout::audit_root(&data_dir.into()).join("events.jsonl"),
             write_lock: Mutex::new(()),
         }
     }

@@ -48,7 +48,7 @@ async fn registration_falls_back_without_merging_sources() {
         &std::fs::read(
             data_dir
                 .path()
-                .join("nuget/metadata/group/service-index.source"),
+                .join("stores/nuget/metadata/group/service-index.source"),
         )
         .expect("service index source"),
     )
@@ -101,7 +101,7 @@ async fn package_integrity_failure_falls_back_and_updates_binding_source() {
         &std::fs::read(
             data_dir
                 .path()
-                .join("nuget/metadata/group/bindings/foo/1.0.0.json"),
+                .join("stores/nuget/metadata/group/bindings/foo/1.0.0.json"),
         )
         .expect("binding"),
     )
@@ -137,7 +137,7 @@ async fn package_version_index_falls_back_without_merging_sources() {
         &std::fs::read(
             data_dir
                 .path()
-                .join("nuget/metadata/group/service-index.source"),
+                .join("stores/nuget/metadata/group/service-index.source"),
         )
         .expect("service index source"),
     )

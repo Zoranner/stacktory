@@ -640,9 +640,7 @@ fn local_package_url(root_url: &Url, entry_name: &str, package_id: &str, version
 }
 
 fn registration_path(data_dir: &Path, entry_name: &str, relative: &str) -> PathBuf {
-    data_dir
-        .join("nuget")
-        .join("metadata")
+    crate::layout::metadata_root(data_dir, "nuget")
         .join(entry_name)
         .join("registration")
         .join(relative)
@@ -664,9 +662,7 @@ pub(crate) fn binding_path(
     package_id: &str,
     version: &str,
 ) -> PathBuf {
-    data_dir
-        .join("nuget")
-        .join("metadata")
+    crate::layout::metadata_root(data_dir, "nuget")
         .join(entry_name)
         .join("bindings")
         .join(package_id.to_ascii_lowercase())

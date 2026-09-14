@@ -59,7 +59,7 @@ fn rejects_snapshots_without_per_artifact_sources() {
     let checksum = "1111111111111111111111111111111111111111111111111111111111111111";
     let snapshot_dir = directory
         .path()
-        .join("rustup/snapshots/test/stable")
+        .join("stores/rustup/snapshots/test/stable")
         .join(checksum);
     std::fs::create_dir_all(&snapshot_dir).expect("snapshot directory");
     std::fs::write(snapshot_dir.join("manifest.toml"), "manifest").expect("manifest");
@@ -72,7 +72,7 @@ fn rejects_snapshots_without_per_artifact_sources() {
     std::fs::write(
         directory
             .path()
-            .join("rustup/snapshots/test/stable/current.toml"),
+            .join("stores/rustup/snapshots/test/stable/current.toml"),
         format!("revision = \"{checksum}\"\nsource_name = \"test\"\npublished_at_unix_secs = 1\n"),
     )
     .expect("current pointer");

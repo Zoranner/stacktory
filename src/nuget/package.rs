@@ -681,11 +681,7 @@ fn package_cache_path(
     package_id: &str,
     version: &str,
 ) -> PathBuf {
-    data_dir
-        .join("nuget")
-        .join("artifacts")
-        .join(selected_proxy)
-        .join("objects")
+    crate::layout::artifact_objects_root(data_dir, "nuget", selected_proxy)
         .join("package")
         .join(package_id.to_ascii_lowercase())
         .join(version.to_ascii_lowercase())
@@ -697,9 +693,7 @@ fn package_cache_path(
 }
 
 fn package_index_path(data_dir: &Path, entry_name: &str, package_id: &str) -> PathBuf {
-    data_dir
-        .join("nuget")
-        .join("metadata")
+    crate::layout::metadata_root(data_dir, "nuget")
         .join(entry_name)
         .join("package-index")
         .join(format!("{package_id}.json"))

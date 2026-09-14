@@ -83,7 +83,7 @@ async fn verified_manifest_and_blob_content_are_reused_from_cache() {
         data_dir
             .path()
             .join(format!(
-                "docker/artifacts/official/library/demo/manifest/{}",
+                "stores/docker/artifacts/official/objects/manifest/{}",
                 manifest_digest.replace(':', "-")
             ))
             .exists()
@@ -92,7 +92,7 @@ async fn verified_manifest_and_blob_content_are_reused_from_cache() {
         data_dir
             .path()
             .join(format!(
-                "docker/artifacts/official/library/demo/config/{}",
+                "stores/docker/artifacts/official/objects/config/{}",
                 config_digest.replace(':', "-")
             ))
             .exists()
@@ -203,7 +203,7 @@ async fn wrong_blob_digest_is_not_returned_or_cached() {
         !data_dir
             .path()
             .join(format!(
-                "docker/artifacts/official/library/demo/config/{}",
+                "stores/docker/artifacts/official/objects/config/{}",
                 expected_digest.replace(':', "-")
             ))
             .exists()

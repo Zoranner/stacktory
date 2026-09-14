@@ -48,7 +48,7 @@ async fn registration_index_rewrites_leaf_and_package_content_relationships() {
     assert!(
         data_dir
             .path()
-            .join("nuget/metadata/official/bindings/foo/1.0.0.json")
+            .join("stores/nuget/metadata/official/bindings/foo/1.0.0.json")
             .exists()
     );
 
@@ -106,7 +106,7 @@ async fn registration_rejects_package_content_outside_the_discovered_package_res
     assert!(
         !data_dir
             .path()
-            .join("nuget/metadata/official/bindings/foo/1.0.0.json")
+            .join("stores/nuget/metadata/official/bindings/foo/1.0.0.json")
             .exists()
     );
 }
@@ -128,7 +128,7 @@ async fn registration_leaf_rejects_a_catalog_version_different_from_the_request(
     assert!(
         !data_dir
             .path()
-            .join("nuget/metadata/official/bindings/foo/2.0.0.json")
+            .join("stores/nuget/metadata/official/bindings/foo/2.0.0.json")
             .exists()
     );
 }
@@ -203,7 +203,7 @@ async fn registration_index_accepts_the_official_document_shape() {
     assert!(
         data_dir
             .path()
-            .join("nuget/metadata/official/bindings/foo/1.0.0.json")
+            .join("stores/nuget/metadata/official/bindings/foo/1.0.0.json")
             .exists()
     );
 }

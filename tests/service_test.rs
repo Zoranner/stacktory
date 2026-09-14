@@ -178,7 +178,7 @@ async fn artifact_cache_is_shared_by_group_and_its_proxy() {
     assert!(
         data_dir
             .path()
-            .join("rustup/artifacts/official/objects")
+            .join("stores/rustup/artifacts/official/objects")
             .join(path.as_str())
             .exists()
     );
@@ -386,7 +386,7 @@ async fn artifact_request_uses_the_source_matched_by_manifest_url() {
     assert!(
         data_dir
             .path()
-            .join("rustup/artifacts/artifact/objects/2026-09-03/rustc.tar.xz")
+            .join("stores/rustup/artifacts/artifact/objects/2026-09-03/rustc.tar.xz")
             .exists()
     );
 }
@@ -420,7 +420,7 @@ async fn artifact_request_rejects_content_that_does_not_match_the_manifest_hash(
     assert!(
         !data_dir
             .path()
-            .join("rustup/artifacts")
+            .join("stores/rustup/artifacts")
             .join(path.as_str())
             .exists()
     );
@@ -628,13 +628,13 @@ async fn artifacts_follow_each_channel_snapshot_source_and_keep_separate_caches(
     assert!(
         data_dir
             .path()
-            .join("rustup/artifacts/first/objects/2026-08-20/rustc.tar.xz")
+            .join("stores/rustup/artifacts/first/objects/2026-08-20/rustc.tar.xz")
             .exists()
     );
     assert!(
         data_dir
             .path()
-            .join("rustup/artifacts/second/objects/2026-08-20/rustc.tar.xz")
+            .join("stores/rustup/artifacts/second/objects/2026-08-20/rustc.tar.xz")
             .exists()
     );
 }
@@ -816,7 +816,7 @@ fn expire_current_snapshot(data_dir: &std::path::Path, channel: &str, service: &
     let snapshot = service.manifest("test", channel).expect("snapshot");
     std::fs::write(
         data_dir
-            .join("rustup/snapshots")
+            .join("stores/rustup/snapshots")
             .join("test")
             .join(channel)
             .join("current.toml"),

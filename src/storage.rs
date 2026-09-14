@@ -179,9 +179,7 @@ impl SnapshotStore {
     }
 
     fn snapshot_root(&self, entry_name: &str, channel: &str) -> PathBuf {
-        self.data_dir
-            .join("rustup")
-            .join("snapshots")
+        crate::layout::snapshots_root(&self.data_dir, "rustup")
             .join(entry_name)
             .join(channel)
     }
@@ -311,11 +309,7 @@ impl ArtifactCache {
     }
 
     fn artifact_path(&self, source_name: &str, path: &DistPath) -> PathBuf {
-        self.data_dir
-            .join("rustup")
-            .join("artifacts")
-            .join(source_name)
-            .join("objects")
+        crate::layout::artifact_objects_root(&self.data_dir, "rustup", source_name)
             .join(path.as_str())
     }
 }

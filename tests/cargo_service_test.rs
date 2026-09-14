@@ -208,7 +208,7 @@ async fn cargo_artifact_cache_is_shared_by_group_and_its_proxy() {
     assert!(
         data_dir
             .path()
-            .join("cargo/artifacts/official/objects/crates/serde/1.0.0.crate")
+            .join("stores/cargo/artifacts/official/objects/crates/serde/1.0.0.crate")
             .exists()
     );
 }
@@ -335,7 +335,7 @@ async fn cargo_affinity_starts_at_index_source_and_updates_after_checksum_fallba
         std::fs::read_to_string(
             data_dir
                 .path()
-                .join("cargo/metadata/group/index/se/rd/serde.source")
+                .join("stores/cargo/metadata/group/index/se/rd/serde.source")
         )
         .expect("selected proxy sidecar"),
         "second\n"
@@ -382,7 +382,7 @@ async fn cargo_crate_hash_mismatch_does_not_publish_cache() {
     assert!(
         !data_dir
             .path()
-            .join("cargo/artifacts/primary/objects/crates/serde/1.0.0.crate")
+            .join("stores/cargo/artifacts/primary/objects/crates/serde/1.0.0.crate")
             .exists()
     );
 }
@@ -481,7 +481,7 @@ async fn cargo_missing_proxy_config_does_not_publish_cache() {
     assert!(
         !data_dir
             .path()
-            .join("cargo/artifacts/primary/objects/crates/serde/1.0.0.crate")
+            .join("stores/cargo/artifacts/primary/objects/crates/serde/1.0.0.crate")
             .exists()
     );
 }
@@ -521,7 +521,7 @@ async fn cargo_invalid_proxy_dl_does_not_publish_cache() {
     assert!(
         !data_dir
             .path()
-            .join("cargo/artifacts/primary/objects/crates/serde/1.0.0.crate")
+            .join("stores/cargo/artifacts/primary/objects/crates/serde/1.0.0.crate")
             .exists()
     );
 }
@@ -684,7 +684,7 @@ async fn cargo_config_forbidden_is_terminal_and_does_not_publish_cache() {
     assert!(
         !data_dir
             .path()
-            .join("cargo/artifacts/primary/objects/crates/serde/1.0.0.crate")
+            .join("stores/cargo/artifacts/primary/objects/crates/serde/1.0.0.crate")
             .exists()
     );
 }
@@ -695,7 +695,7 @@ async fn invalid_index_cache_is_deleted_and_refetched() {
     let data_dir = tempdir().expect("data directory");
     let cache_path = data_dir
         .path()
-        .join("cargo/metadata/primary/index/se/rd/serde");
+        .join("stores/cargo/metadata/primary/index/se/rd/serde");
     std::fs::create_dir_all(cache_path.parent().expect("cache parent")).expect("cache directory");
     std::fs::write(&cache_path, b"invalid index").expect("invalid cache");
     let upstream = start_server(Router::new().route(
@@ -730,7 +730,7 @@ async fn wrong_crate_index_cache_is_deleted_and_refetched() {
     let data_dir = tempdir().expect("data directory");
     let cache_path = data_dir
         .path()
-        .join("cargo/metadata/primary/index/se/rd/serde");
+        .join("stores/cargo/metadata/primary/index/se/rd/serde");
     std::fs::create_dir_all(cache_path.parent().expect("cache parent")).expect("cache directory");
     std::fs::write(&cache_path, wrong_cache).expect("wrong crate cache");
     let upstream = start_server(Router::new().route(
@@ -762,7 +762,9 @@ async fn wrong_crate_index_cache_is_deleted_and_refetched() {
 async fn cargo_storage_failure_returns_internal_server_error() {
     let index_body = valid_index_body("expected crate");
     let data_dir = tempdir().expect("data directory");
-    std::fs::write(data_dir.path().join("cargo"), b"not a directory").expect("blocking cache file");
+    std::fs::create_dir_all(data_dir.path().join("stores")).expect("stores directory");
+    std::fs::write(data_dir.path().join("stores/cargo"), b"not a directory")
+        .expect("blocking cache file");
     let upstream = start_server(Router::new().route(
         "/se/rd/serde",
         get({

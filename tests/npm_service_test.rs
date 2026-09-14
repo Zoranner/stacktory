@@ -146,7 +146,7 @@ async fn falls_back_after_tarball_integrity_failure_and_keeps_metadata_source_bi
     assert!(
         data_dir
             .path()
-            .join("npm/artifacts/second/objects")
+            .join("stores/npm/artifacts/second/objects")
             .exists()
     );
 }

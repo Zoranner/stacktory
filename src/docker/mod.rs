@@ -322,7 +322,6 @@ impl DockerService {
             && let Some(body) = read_verified_artifact(
                 &self.data_dir,
                 &metadata.selected_proxy,
-                namespace,
                 object_type,
                 &metadata.digest,
             )?
@@ -398,7 +397,6 @@ impl DockerService {
                     write_verified_artifact(
                         &self.data_dir,
                         &source_name,
-                        namespace,
                         object_type,
                         &digest,
                         &upstream.body,
@@ -546,7 +544,6 @@ impl DockerService {
             && let Some(body) = read_verified_artifact(
                 &self.data_dir,
                 &metadata.selected_proxy,
-                repository,
                 manifest_object_type(metadata.content_type.as_deref()),
                 &metadata.digest,
             )?
@@ -572,9 +569,7 @@ impl DockerService {
 
         if let ManifestReference::Digest(digest) = reference {
             for source_name in candidate_sources(pool, entry_name, None)? {
-                if let Some(cached) =
-                    read_cached_manifest(&self.data_dir, &source_name, repository, digest)?
-                {
+                if let Some(cached) = read_cached_manifest(&self.data_dir, &source_name, digest)? {
                     let metadata = ManifestMetadata {
                         repository: repository.to_owned(),
                         reference: digest.clone(),
@@ -638,7 +633,6 @@ impl DockerService {
                         write_verified_artifact(
                             &self.data_dir,
                             &metadata.selected_proxy,
-                            repository,
                             object_type,
                             &metadata.digest,
                             &upstream.body,
@@ -750,10 +744,7 @@ impl DockerService {
         metadata: &ManifestMetadata,
         body: &[u8],
     ) -> Result<(), DockerError> {
-        let path = self
-            .data_dir
-            .join("docker")
-            .join("metadata")
+        let path = crate::layout::metadata_root(&self.data_dir, "docker")
             .join(entry_name)
             .join(&metadata.repository)
             .join("manifests")
@@ -836,7 +827,6 @@ impl DockerService {
             && let Some(body) = read_verified_artifact(
                 &self.data_dir,
                 &metadata.selected_proxy,
-                repository,
                 &metadata.object_type,
                 digest,
             )?
@@ -927,7 +917,6 @@ impl DockerService {
                     write_verified_artifact(
                         &self.data_dir,
                         &source_name,
-                        repository,
                         &metadata.object_type,
                         digest,
                         &upstream.body,
@@ -1395,7 +1384,7 @@ fn read_shared_blob_metadata(
     repository: &str,
     digest: &str,
 ) -> Result<Option<BlobMetadata>, DockerError> {
-    let root = data_dir.join("docker").join("metadata");
+    let root = crate::layout::metadata_root(data_dir, "docker");
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -1422,9 +1411,7 @@ fn read_manifest_metadata(
     reference: &str,
     accept: Option<&str>,
 ) -> Result<Option<ManifestMetadata>, DockerError> {
-    let path = data_dir
-        .join("docker")
-        .join("metadata")
+    let path = crate::layout::metadata_root(data_dir, "docker")
         .join(entry_name)
         .join(repository)
         .join("manifests")
@@ -1493,9 +1480,7 @@ fn query_metadata_path(
         "docker\0{entry_name}\0{object_type}\0{namespace}\0{request_key}\0{}",
         query.unwrap_or_default()
     );
-    data_dir
-        .join("docker")
-        .join("metadata")
+    crate::layout::metadata_root(data_dir, "docker")
         .join(entry_name)
         .join("queries")
         .join(format!("{}.json", sha256_hex(identity.as_bytes())))
@@ -1504,13 +1489,10 @@ fn query_metadata_path(
 fn read_cached_manifest(
     data_dir: &Path,
     selected_proxy: &str,
-    repository: &str,
     digest: &str,
 ) -> Result<Option<CachedManifest>, DockerError> {
     for object_type in ["manifest", "image-index"] {
-        if let Some(body) =
-            read_verified_artifact(data_dir, selected_proxy, repository, object_type, digest)?
-        {
+        if let Some(body) = read_verified_artifact(data_dir, selected_proxy, object_type, digest)? {
             let content_type = serde_json::from_slice::<Value>(&body)
                 .ok()
                 .and_then(|value| {
@@ -1531,9 +1513,7 @@ fn blob_metadata_path(
     repository: &str,
     digest: &str,
 ) -> PathBuf {
-    data_dir
-        .join("docker")
-        .join("metadata")
+    crate::layout::metadata_root(data_dir, "docker")
         .join(entry_name)
         .join(repository)
         .join("blobs")
@@ -1551,15 +1531,10 @@ fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>, io::Error> {
 fn artifact_path(
     data_dir: &Path,
     selected_proxy: &str,
-    repository: &str,
     object_type: &str,
     digest: &str,
 ) -> PathBuf {
-    data_dir
-        .join("docker")
-        .join("artifacts")
-        .join(selected_proxy)
-        .join(repository)
+    crate::layout::artifact_objects_root(data_dir, "docker", selected_proxy)
         .join(object_type)
         .join(metadata_file_key(digest))
 }
@@ -1567,11 +1542,10 @@ fn artifact_path(
 fn read_verified_artifact(
     data_dir: &Path,
     selected_proxy: &str,
-    repository: &str,
     object_type: &str,
     digest: &str,
 ) -> Result<Option<Vec<u8>>, DockerError> {
-    let path = artifact_path(data_dir, selected_proxy, repository, object_type, digest);
+    let path = artifact_path(data_dir, selected_proxy, object_type, digest);
     let Some(contents) = read_if_present(&path)? else {
         return Ok(None);
     };
@@ -1587,7 +1561,6 @@ fn read_verified_artifact(
 fn write_verified_artifact(
     data_dir: &Path,
     selected_proxy: &str,
-    repository: &str,
     object_type: &str,
     digest: &str,
     contents: &[u8],
@@ -1600,7 +1573,7 @@ fn write_verified_artifact(
         });
     }
     atomic_write(
-        &artifact_path(data_dir, selected_proxy, repository, object_type, digest),
+        &artifact_path(data_dir, selected_proxy, object_type, digest),
         contents,
     )
     .map_err(DockerError::Storage)

@@ -485,18 +485,14 @@ impl VscodeService {
     }
 
     fn query_path(&self, entry_name: &str, request_body: &[u8]) -> PathBuf {
-        self.data_dir
-            .join("vscode")
-            .join("metadata")
+        crate::layout::metadata_root(&self.data_dir, "vscode")
             .join(entry_name)
             .join("marketplace")
             .join(format!("{}.json", sha256(request_body)))
     }
 
     fn asset_descriptor_path(&self, entry_name: &str, asset_id: &str) -> PathBuf {
-        self.data_dir
-            .join("vscode")
-            .join("metadata")
+        crate::layout::metadata_root(&self.data_dir, "vscode")
             .join(entry_name)
             .join("marketplace")
             .join("assets")
@@ -504,9 +500,7 @@ impl VscodeService {
     }
 
     fn resource_descriptor_path(&self, entry_name: &str, extension_key: &str) -> PathBuf {
-        self.data_dir
-            .join("vscode")
-            .join("metadata")
+        crate::layout::metadata_root(&self.data_dir, "vscode")
             .join(entry_name)
             .join("marketplace")
             .join("resources")
@@ -514,9 +508,7 @@ impl VscodeService {
     }
 
     fn extension_descriptor_path(&self, entry_name: &str, extension_key: &str) -> PathBuf {
-        self.data_dir
-            .join("vscode")
-            .join("metadata")
+        crate::layout::metadata_root(&self.data_dir, "vscode")
             .join(entry_name)
             .join("marketplace")
             .join("extensions")
@@ -524,9 +516,7 @@ impl VscodeService {
     }
 
     fn asset_base_descriptor_path(&self, entry_name: &str, asset_base_id: &str) -> PathBuf {
-        self.data_dir
-            .join("vscode")
-            .join("metadata")
+        crate::layout::metadata_root(&self.data_dir, "vscode")
             .join(entry_name)
             .join("marketplace")
             .join("asset-bases")
@@ -534,11 +524,7 @@ impl VscodeService {
     }
 
     fn asset_path(&self, source_name: &str, asset_id: &str) -> PathBuf {
-        self.data_dir
-            .join("vscode")
-            .join("artifacts")
-            .join(source_name)
-            .join("objects")
+        crate::layout::artifact_objects_root(&self.data_dir, "vscode", source_name)
             .join("marketplace")
             .join(asset_id)
     }

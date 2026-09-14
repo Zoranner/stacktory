@@ -56,7 +56,7 @@ async fn marketplace_query_rewrites_assets_and_publishes_descriptors() {
         data_dir
             .path()
             .join(format!(
-                "vscode/metadata/group/marketplace/assets/{asset_id}.toml"
+                "stores/vscode/metadata/group/marketplace/assets/{asset_id}.toml"
             ))
             .exists()
     );
@@ -219,7 +219,7 @@ async fn marketplace_asset_cache_is_shared_by_group_and_its_proxy() {
     assert!(
         data_dir
             .path()
-            .join("vscode/artifacts/official/objects/marketplace")
+            .join("stores/vscode/artifacts/official/objects/marketplace")
             .exists()
     );
 }

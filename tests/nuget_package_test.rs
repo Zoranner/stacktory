@@ -63,7 +63,7 @@ async fn package_content_is_verified_and_reused_from_source_bound_cache() {
     assert!(
         data_dir
             .path()
-            .join("nuget/artifacts/official/objects/package/foo/1.0.0/foo.1.0.0.nupkg")
+            .join("stores/nuget/artifacts/official/objects/package/foo/1.0.0/foo.1.0.0.nupkg")
             .exists()
     );
 }
@@ -90,7 +90,7 @@ async fn package_content_digest_failure_does_not_publish_or_return_the_bad_bytes
     assert!(
         !data_dir
             .path()
-            .join("nuget/artifacts/official/objects/package/foo/1.0.0/foo.1.0.0.nupkg")
+            .join("stores/nuget/artifacts/official/objects/package/foo/1.0.0/foo.1.0.0.nupkg")
             .exists()
     );
 }
@@ -114,7 +114,7 @@ async fn package_content_without_upstream_digest_uses_local_cache_hash() {
     assert_eq!(first.status(), axum::http::StatusCode::OK);
     let cache = data_dir
         .path()
-        .join("nuget/artifacts/official/objects/package/foo/1.0.0/foo.1.0.0.nupkg");
+        .join("stores/nuget/artifacts/official/objects/package/foo/1.0.0/foo.1.0.0.nupkg");
     assert!(cache.exists());
     assert!(cache.with_file_name("foo.1.0.0.nupkg.meta.json").exists());
 
@@ -159,7 +159,7 @@ async fn package_content_without_upstream_digest_rejects_non_nupkg_content() {
     assert!(
         !data_dir
             .path()
-            .join("nuget/artifacts/official/objects/package/foo/1.0.0/foo.1.0.0.nupkg")
+            .join("stores/nuget/artifacts/official/objects/package/foo/1.0.0/foo.1.0.0.nupkg")
             .exists()
     );
 }

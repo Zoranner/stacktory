@@ -216,22 +216,20 @@ impl NpmStorage {
     }
 
     pub fn artifact_path(&self, key: &NpmCacheKey, artifact_key: &str) -> PathBuf {
-        self.data_dir
-            .join(&self.ecosystem)
-            .join("artifacts")
-            .join(safe_component(&key.selected_proxy))
-            .join("objects")
-            .join(safe_component(&key.entry))
-            .join(safe_component(&key.package))
-            .join(safe_component(&key.version))
-            .join(safe_component(&key.representation))
-            .join(artifact_key)
+        crate::layout::artifact_objects_root(
+            &self.data_dir,
+            &self.ecosystem,
+            &safe_component(&key.selected_proxy),
+        )
+        .join(safe_component(&key.entry))
+        .join(safe_component(&key.package))
+        .join(safe_component(&key.version))
+        .join(safe_component(&key.representation))
+        .join(artifact_key)
     }
 
     fn metadata_body_path(&self, key: &NpmCacheKey) -> PathBuf {
-        self.data_dir
-            .join(&self.ecosystem)
-            .join("metadata")
+        crate::layout::metadata_root(&self.data_dir, &self.ecosystem)
             .join(safe_component(&key.entry))
             .join(safe_component(&key.package))
             .join(safe_component(&key.selected_proxy))
@@ -243,18 +241,14 @@ impl NpmStorage {
     }
 
     fn metadata_pointer_path(&self, entry: &str, package: &str) -> PathBuf {
-        self.data_dir
-            .join(&self.ecosystem)
-            .join("metadata")
+        crate::layout::metadata_root(&self.data_dir, &self.ecosystem)
             .join(safe_component(entry))
             .join(safe_component(package))
             .join("current.toml")
     }
 
     fn descriptor_path(&self, entry: &str, artifact_key: &str) -> PathBuf {
-        self.data_dir
-            .join(&self.ecosystem)
-            .join("metadata")
+        crate::layout::metadata_root(&self.data_dir, &self.ecosystem)
             .join(safe_component(entry))
             .join("descriptors")
             .join(format!("{artifact_key}.json"))

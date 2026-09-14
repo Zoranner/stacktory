@@ -85,13 +85,13 @@ async fn service_index_rewrites_restore_resources_and_omits_unsupported_resource
     assert!(
         data_dir
             .path()
-            .join("nuget/metadata/official/service-index.json")
+            .join("stores/nuget/metadata/official/service-index.json")
             .exists()
     );
     assert!(
         data_dir
             .path()
-            .join("nuget/metadata/official/service-index.source")
+            .join("stores/nuget/metadata/official/service-index.source")
             .exists()
     );
 }
@@ -117,7 +117,7 @@ async fn service_index_rejects_unknown_resource_relationships() {
     assert!(
         !data_dir
             .path()
-            .join("nuget/metadata/official/service-index.json")
+            .join("stores/nuget/metadata/official/service-index.json")
             .exists()
     );
 }
@@ -146,7 +146,7 @@ async fn service_index_rejects_unsafe_vulnerability_resources() {
     assert!(
         !data_dir
             .path()
-            .join("nuget/metadata/official/service-index.json")
+            .join("stores/nuget/metadata/official/service-index.json")
             .exists()
     );
 }
@@ -154,7 +154,7 @@ async fn service_index_rejects_unsafe_vulnerability_resources() {
 #[tokio::test]
 async fn service_index_returns_internal_error_when_audit_storage_fails() {
     let data_dir = tempdir().expect("data directory");
-    let metadata_dir = data_dir.path().join("nuget/metadata/official");
+    let metadata_dir = data_dir.path().join("stores/nuget/metadata/official");
     std::fs::create_dir_all(&metadata_dir).expect("metadata directory");
     std::fs::write(
         metadata_dir.join("service-index.json"),
@@ -257,7 +257,7 @@ async fn service_index_prefers_the_most_capable_registration_resource() {
         &std::fs::read(
             data_dir
                 .path()
-                .join("nuget/metadata/official/service-index.source"),
+                .join("stores/nuget/metadata/official/service-index.source"),
         )
         .expect("service index source"),
     )

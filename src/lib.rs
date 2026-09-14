@@ -5,6 +5,7 @@ pub mod cargo;
 mod config;
 pub mod docker;
 pub mod http;
+pub mod layout;
 pub mod npm;
 pub mod nuget;
 pub mod retention;

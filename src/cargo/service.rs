@@ -547,9 +547,7 @@ impl CargoService {
     }
 
     fn metadata_path(&self, entry_name: &str, object_key: &str) -> PathBuf {
-        self.data_dir
-            .join("cargo")
-            .join("metadata")
+        crate::layout::metadata_root(&self.data_dir, "cargo")
             .join(entry_name)
             .join("index")
             .join(object_key)
@@ -565,11 +563,7 @@ impl CargoService {
     }
 
     fn artifact_path(&self, source_name: &str, crate_name: &str, version: &str) -> PathBuf {
-        self.data_dir
-            .join("cargo")
-            .join("artifacts")
-            .join(source_name)
-            .join("objects")
+        crate::layout::artifact_objects_root(&self.data_dir, "cargo", source_name)
             .join("crates")
             .join(crate_name)
             .join(format!("{version}.crate"))

@@ -64,7 +64,7 @@ async fn upm_serves_metadata_and_tarball_through_its_own_route() {
     assert!(
         data_dir
             .path()
-            .join("upm/artifacts/official/objects")
+            .join("stores/upm/artifacts/official/objects")
             .exists()
     );
     assert!(!data_dir.path().join("npm").exists());

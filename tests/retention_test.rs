@@ -7,7 +7,7 @@ use std::{
 use stacktory::{
     RetentionConfig,
     audit::AuditSink,
-    retention::{note_access, prune_legacy_artifacts, sweep},
+    retention::{note_access, prune_legacy_layout, sweep},
 };
 use tempfile::tempdir;
 
@@ -41,9 +41,9 @@ fn removes_expired_metadata_and_keeps_fresh_files() {
     let directory = tempdir().expect("temporary directory");
     let data_dir = directory.path();
     let now = SystemTime::now();
-    let expired_index = data_dir.join("cargo/metadata/group/index/left-pad");
-    let expired_query = data_dir.join("vscode/metadata/group/marketplace/abc.json");
-    let fresh_index = data_dir.join("cargo/metadata/group/index/serde");
+    let expired_index = data_dir.join("stores/cargo/metadata/group/index/left-pad");
+    let expired_query = data_dir.join("stores/vscode/metadata/group/marketplace/abc.json");
+    let fresh_index = data_dir.join("stores/cargo/metadata/group/index/serde");
     write_file_with_mtime(&expired_index, "old", now - Duration::from_secs(8 * DAY));
     write_file_with_mtime(&expired_query, "old", now - Duration::from_secs(8 * DAY));
     write_file_with_mtime(&fresh_index, "new", now - Duration::from_secs(60));
@@ -68,10 +68,11 @@ fn evicts_idle_artifacts_and_keeps_recent_ones() {
     let data_dir = directory.path();
     let now = SystemTime::now();
     let old = now - Duration::from_secs(60 * DAY);
-    let idle_rustup = data_dir.join("rustup/artifacts/group/objects/2026-08-20/rust-std.tar.xz");
-    let idle_crate = data_dir.join("cargo/artifacts/group/objects/crates/serde/1.0.0.crate");
-    let fresh_blob = data_dir.join("docker/artifacts/official/library/alpine/blob");
-    let snapshot = data_dir.join("rustup/snapshots/group/stable/revision/manifest.toml");
+    let idle_rustup =
+        data_dir.join("stores/rustup/artifacts/group/objects/2026-08-20/rust-std.tar.xz");
+    let idle_crate = data_dir.join("stores/cargo/artifacts/group/objects/crates/serde/1.0.0.crate");
+    let fresh_blob = data_dir.join("stores/docker/artifacts/official/library/alpine/blob");
+    let snapshot = data_dir.join("stores/rustup/snapshots/group/stable/revision/manifest.toml");
     write_file_with_mtime(&idle_rustup, "artifact", old);
     write_file_with_mtime(&idle_crate, "crate", old);
     write_file_with_mtime(&fresh_blob, "blob", now - Duration::from_secs(60));
@@ -98,7 +99,8 @@ fn keeps_an_idle_artifact_that_was_accessed() {
     let directory = tempdir().expect("temporary directory");
     let data_dir = directory.path();
     let now = SystemTime::now();
-    let artifact = data_dir.join("npm/artifacts/npmjs/objects/group/is-odd/3.0.1/tarball/sha256");
+    let artifact =
+        data_dir.join("stores/npm/artifacts/npmjs/objects/group/is-odd/3.0.1/tarball/sha256");
     write_file_with_mtime(&artifact, "tarball", now - Duration::from_secs(60 * DAY));
 
     note_access(&artifact).expect("access time update");
@@ -174,7 +176,7 @@ fn records_metadata_cleanup_in_the_audit_log() {
     let directory = tempdir().expect("temporary directory");
     let data_dir = directory.path();
     let now = SystemTime::now();
-    let expired = data_dir.join("npm/metadata/group/left-pad/1.0.0-metadata.json");
+    let expired = data_dir.join("stores/npm/metadata/group/left-pad/1.0.0-metadata.json");
     write_file_with_mtime(&expired, "old", now - Duration::from_secs(8 * DAY));
 
     sweep(
@@ -228,7 +230,7 @@ fn keeps_recent_rustup_snapshot_revisions() {
     let directory = tempdir().expect("temporary directory");
     let data_dir = directory.path();
     let now = SystemTime::now();
-    let channel_dir = data_dir.join("rustup/snapshots/group/stable");
+    let channel_dir = data_dir.join("stores/rustup/snapshots/group/stable");
     let revisions: Vec<String> = ["a", "b", "c", "d"]
         .iter()
         .map(|label| label.repeat(64))
@@ -262,7 +264,7 @@ fn keeps_the_current_snapshot_revision_beyond_the_keep_window() {
     let directory = tempdir().expect("temporary directory");
     let data_dir = directory.path();
     let now = SystemTime::now();
-    let channel_dir = data_dir.join("rustup/snapshots/group/stable");
+    let channel_dir = data_dir.join("stores/rustup/snapshots/group/stable");
     let revisions: Vec<String> = ["a", "b", "c", "d"]
         .iter()
         .map(|label| label.repeat(64))
@@ -295,7 +297,7 @@ fn skips_snapshot_cleanup_when_the_current_pointer_is_unreadable() {
     let directory = tempdir().expect("temporary directory");
     let data_dir = directory.path();
     let now = SystemTime::now();
-    let channel_dir = data_dir.join("rustup/snapshots/group/stable");
+    let channel_dir = data_dir.join("stores/rustup/snapshots/group/stable");
     let revisions: Vec<String> = ["a", "b", "c", "d"]
         .iter()
         .map(|label| label.repeat(64))
@@ -323,13 +325,13 @@ fn skips_snapshot_cleanup_when_the_current_pointer_is_unreadable() {
 }
 
 #[test]
-fn reports_legacy_artifact_entries_without_removing_them_on_dry_run() {
+fn reports_legacy_layout_entries_without_removing_them_on_dry_run() {
     let directory = tempdir().expect("temporary directory");
     let data_dir = directory.path();
     let legacy_crate = data_dir.join("cargo/artifacts/group/crates/serde/1.0.0.crate");
     write_file_with_mtime(&legacy_crate, "legacy", SystemTime::now());
 
-    let report = prune_legacy_artifacts(data_dir, true, &AuditSink::new(data_dir));
+    let report = prune_legacy_layout(data_dir, true, &AuditSink::new(data_dir));
 
     assert_eq!(report.removed_entries, 1);
     assert_eq!(report.removed_bytes, 6);
@@ -338,28 +340,39 @@ fn reports_legacy_artifact_entries_without_removing_them_on_dry_run() {
 }
 
 #[test]
-fn removes_legacy_artifact_entries_and_keeps_object_caches() {
+fn removes_legacy_layout_trees_and_keeps_stores_and_audit() {
     let directory = tempdir().expect("temporary directory");
     let data_dir = directory.path();
     let now = SystemTime::now();
-    let legacy_crate = data_dir.join("cargo/artifacts/group/crates/serde/1.0.0.crate");
-    let legacy_rustup = data_dir.join("rustup/artifacts/aliyun/stable/manifest.toml");
-    let current_crate = data_dir.join("cargo/artifacts/official/objects/crates/serde/1.0.0.crate");
-    let docker_blob = data_dir.join("docker/artifacts/official/library/alpine/blob.json");
-    write_file_with_mtime(&legacy_crate, "legacy", now);
-    write_file_with_mtime(&legacy_rustup, "legacy", now);
+    let legacy_flat = data_dir.join("cargo/artifacts/group/crates/serde/1.0.0.crate");
+    let legacy_snapshots = data_dir.join("rustup/snapshots/group/stable/revision/manifest.toml");
+    let legacy_docker = data_dir.join("stores/docker/artifacts/official/library/alpine/blob.json");
+    let current_crate =
+        data_dir.join("stores/cargo/artifacts/official/objects/crates/serde/1.0.0.crate");
+    let current_metadata = data_dir.join("stores/vscode/metadata/group/marketplace/abc.json");
+    let audit = data_dir.join("audit/events.jsonl");
+    write_file_with_mtime(&legacy_flat, "legacy", now);
+    write_file_with_mtime(&legacy_snapshots, "legacy", now);
+    write_file_with_mtime(&legacy_docker, "docker", now);
     write_file_with_mtime(&current_crate, "current", now);
-    write_file_with_mtime(&docker_blob, "docker", now);
+    write_file_with_mtime(&current_metadata, "metadata", now);
+    write_file_with_mtime(&audit, "{}\n", now);
 
-    let report = prune_legacy_artifacts(data_dir, false, &AuditSink::new(data_dir));
+    let report = prune_legacy_layout(data_dir, false, &AuditSink::new(data_dir));
 
-    assert_eq!(report.removed_entries, 2);
+    assert_eq!(report.removed_entries, 3);
     assert_eq!(report.failed_entries, 0);
-    assert!(!data_dir.join("cargo/artifacts/group").exists());
-    assert!(!data_dir.join("rustup/artifacts/aliyun").exists());
+    assert!(!data_dir.join("cargo").exists());
+    assert!(!data_dir.join("rustup").exists());
+    assert!(
+        !data_dir
+            .join("stores/docker/artifacts/official/library")
+            .exists()
+    );
     assert!(current_crate.exists());
-    assert!(docker_blob.exists());
+    assert!(current_metadata.exists());
+    assert!(audit.exists());
     let events = fs::read_to_string(data_dir.join("audit/events.jsonl")).expect("audit events");
-    assert!(events.contains("legacy_artifact_cleanup"));
-    assert!(events.contains("\"count\":2"));
+    assert!(events.contains("legacy_layout_cleanup"));
+    assert!(events.contains("\"count\":3"));
 }
