@@ -9,6 +9,7 @@ use crate::{
     audit::{AuditDetails, AuditSink},
     config::RetentionConfig,
     layout, logging,
+    logging::LogFile,
     storage::SnapshotStore,
     timeformat,
 };
@@ -16,8 +17,6 @@ use crate::{
 const AUDIT_FILE: &str = "events.jsonl";
 const AUDIT_ROTATED_PREFIX: &str = "events.";
 const AUDIT_ROTATED_SUFFIX: &str = ".jsonl";
-const LOG_ROTATED_PREFIX: &str = "stacktory.";
-const LOG_ROTATED_SUFFIX: &str = ".log";
 const SECS_PER_DAY: u64 = 86_400;
 /// 平铺布局时期的生态目录特征：至少包含其中一种子目录。
 const ECOSYSTEM_TREE_MARKERS: [&str; 3] = [
@@ -51,13 +50,13 @@ pub struct LegacyLayoutReport {
 }
 
 /// 启动后台清理任务：首次执行立即开始，之后按配置间隔重复。
-pub fn spawn(data_dir: PathBuf, log_dir: PathBuf, config: RetentionConfig) {
+pub fn spawn(data_dir: PathBuf, log_file: std::sync::Arc<LogFile>, config: RetentionConfig) {
     tokio::spawn(async move {
         let audit = AuditSink::new(data_dir.clone());
         let mut ticker = tokio::time::interval(Duration::from_secs(config.cleanup_interval_secs));
         loop {
             ticker.tick().await;
-            sweep(&data_dir, &log_dir, &config, SystemTime::now(), &audit);
+            sweep(&data_dir, &log_file, &config, SystemTime::now(), &audit);
         }
     });
 }
@@ -69,32 +68,22 @@ pub fn spawn(data_dir: PathBuf, log_dir: PathBuf, config: RetentionConfig) {
 /// `audit_retention_days` 天，运行日志按天轮转并保留 `log_retention_days` 天。
 pub fn sweep(
     data_dir: &Path,
-    log_dir: &Path,
+    log_file: &LogFile,
     config: &RetentionConfig,
     now: SystemTime,
     audit: &AuditSink,
 ) -> SweepReport {
     let mut report = SweepReport::default();
-    rotate_and_prune(
+    rotate_and_prune_audit(
         &layout::audit_root(data_dir),
-        AUDIT_FILE,
-        AUDIT_ROTATED_PREFIX,
-        AUDIT_ROTATED_SUFFIX,
         config.audit_retention_days,
         now,
-        "audit",
         &mut report,
     );
-    rotate_and_prune(
-        log_dir,
-        logging::LOG_FILE,
-        LOG_ROTATED_PREFIX,
-        LOG_ROTATED_SUFFIX,
-        config.log_retention_days,
-        now,
-        "log",
-        &mut report,
-    );
+    let log_outcome = log_file.maintain(now, config.log_retention_days);
+    report.rotated_log_file = log_outcome.rotated;
+    report.pruned_log_files = log_outcome.pruned;
+    report.log_failed = log_outcome.failed;
     clean_metadata(data_dir, config, now, &mut report);
     evict_idle_artifacts(data_dir, config, now, &mut report);
     prune_rustup_snapshots(data_dir, config.rustup_snapshot_revisions, &mut report);
@@ -389,39 +378,30 @@ fn remove_expired_files(
 }
 
 /// 跨天后把当前文件轮转为 `<前缀><日期><后缀>`，并删除超过保留期的轮转文件。
-#[allow(clippy::too_many_arguments)]
-fn rotate_and_prune(
-    dir: &Path,
-    file_name: &str,
-    rotated_prefix: &str,
-    rotated_suffix: &str,
+fn rotate_and_prune_audit(
+    audit_dir: &Path,
     retention_days: u64,
     now: SystemTime,
-    kind: &str,
     report: &mut SweepReport,
 ) {
-    let (rotated, failed) = rotate_file(dir, file_name, rotated_prefix, rotated_suffix, now, kind);
-    let pruned = prune_rotated_files(
-        dir,
-        rotated_prefix,
-        rotated_suffix,
+    let (rotated, failed) = rotate_file(
+        audit_dir,
+        AUDIT_FILE,
+        AUDIT_ROTATED_PREFIX,
+        AUDIT_ROTATED_SUFFIX,
+        now,
+        "audit",
+    );
+    report.pruned_audit_files = prune_rotated_files(
+        audit_dir,
+        AUDIT_ROTATED_PREFIX,
+        AUDIT_ROTATED_SUFFIX,
         retention_days,
         now,
-        kind,
+        "audit",
     );
-    let rotated_failed = rotated.is_none() && failed;
-    match kind {
-        "audit" => {
-            report.rotated_audit_file = rotated;
-            report.pruned_audit_files = pruned;
-            report.audit_failed = rotated_failed;
-        }
-        _ => {
-            report.rotated_log_file = rotated;
-            report.pruned_log_files = pruned;
-            report.log_failed = rotated_failed;
-        }
-    }
+    report.rotated_audit_file = rotated;
+    report.audit_failed = failed;
 }
 
 fn rotate_file(

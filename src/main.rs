@@ -33,22 +33,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = Config::from_toml(&fs::read_to_string("config.toml")?)?;
-    let log_path = logging::init(config.log_dir.clone())?;
+    let (log_file, rotated_log) =
+        logging::init(config.log_dir.clone(), std::time::SystemTime::now())?;
     let mut docker_listeners = Vec::new();
     let registry = configured_registry(&mut config, &mut docker_listeners)?;
     let listener = TcpListener::bind((config.listen_address, config.listen_port)).await?;
-    retention::spawn(
-        config.data_dir.clone(),
-        config.log_dir.clone(),
-        config.retention,
-    );
+    retention::spawn(config.data_dir.clone(), log_file.clone(), config.retention);
+    if let Some(rotated) = rotated_log {
+        logging::info(format!("rotated stale log file to {rotated}"));
+    }
     logging::info(format!(
         "listening on {}:{}; data_dir={}; log_dir={}; log_file={}",
         config.listen_address,
         config.listen_port,
         config.data_dir.display(),
         config.log_dir.display(),
-        log_path.display()
+        log_file.path().display()
     ));
     let service = Arc::new(RustupService::new(config)?);
     for docker_listener in docker_listeners {

@@ -7,11 +7,16 @@ use std::{
 use stacktory::{
     RetentionConfig,
     audit::AuditSink,
+    logging::LogFile,
     retention::{note_access, prune_legacy_layout, sweep},
 };
 use tempfile::tempdir;
 
 const DAY: u64 = 86_400;
+
+fn log_file(data_dir: &Path) -> LogFile {
+    LogFile::open(data_dir.join("logs")).expect("log file")
+}
 
 fn retention_config() -> RetentionConfig {
     RetentionConfig {
@@ -51,7 +56,7 @@ fn removes_expired_metadata_and_keeps_fresh_files() {
 
     let report = sweep(
         data_dir,
-        &data_dir.join("logs"),
+        &log_file(data_dir),
         &retention_config(),
         now,
         &AuditSink::new(data_dir),
@@ -82,7 +87,7 @@ fn evicts_idle_artifacts_and_keeps_recent_ones() {
 
     let report = sweep(
         data_dir,
-        &data_dir.join("logs"),
+        &log_file(data_dir),
         &retention_config(),
         now,
         &AuditSink::new(data_dir),
@@ -109,7 +114,7 @@ fn keeps_an_idle_artifact_that_was_accessed() {
     note_access(&artifact).expect("access time update");
     let report = sweep(
         data_dir,
-        &data_dir.join("logs"),
+        &log_file(data_dir),
         &retention_config(),
         now,
         &AuditSink::new(data_dir),
@@ -134,7 +139,7 @@ fn rotates_the_current_audit_file_and_prunes_retired_files() {
 
     let report = sweep(
         data_dir,
-        &data_dir.join("logs"),
+        &log_file(data_dir),
         &retention_config(),
         now,
         &AuditSink::new(data_dir),
@@ -172,7 +177,7 @@ fn rotates_the_log_file_and_prunes_retired_logs() {
 
     let report = sweep(
         data_dir,
-        &log_dir,
+        &log_file(data_dir),
         &retention_config(),
         now,
         &AuditSink::new(data_dir),
@@ -201,7 +206,7 @@ fn keeps_the_audit_file_written_today() {
 
     let report = sweep(
         data_dir,
-        &data_dir.join("logs"),
+        &log_file(data_dir),
         &retention_config(),
         now,
         &AuditSink::new(data_dir),
@@ -221,7 +226,7 @@ fn records_metadata_cleanup_in_the_audit_log() {
 
     sweep(
         data_dir,
-        &data_dir.join("logs"),
+        &log_file(data_dir),
         &retention_config(),
         now,
         &AuditSink::new(data_dir),
@@ -239,7 +244,7 @@ fn tolerates_a_missing_data_directory() {
 
     let report = sweep(
         &data_dir,
-        &data_dir.join("logs"),
+        &log_file(&data_dir),
         &retention_config(),
         SystemTime::now(),
         &AuditSink::new(&data_dir),
@@ -288,7 +293,7 @@ fn keeps_recent_rustup_snapshot_revisions() {
 
     let report = sweep(
         data_dir,
-        &data_dir.join("logs"),
+        &log_file(data_dir),
         &retention_config(),
         now,
         &AuditSink::new(data_dir),
@@ -323,7 +328,7 @@ fn keeps_the_current_snapshot_revision_beyond_the_keep_window() {
 
     let report = sweep(
         data_dir,
-        &data_dir.join("logs"),
+        &log_file(data_dir),
         &retention_config(),
         now,
         &AuditSink::new(data_dir),
@@ -357,7 +362,7 @@ fn skips_snapshot_cleanup_when_the_current_pointer_is_unreadable() {
 
     let report = sweep(
         data_dir,
-        &data_dir.join("logs"),
+        &log_file(data_dir),
         &retention_config(),
         now,
         &AuditSink::new(data_dir),
