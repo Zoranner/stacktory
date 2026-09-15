@@ -27,3 +27,14 @@ Stacktory 为公司内网开发机提供统一的工具链和软件包下载入�
 - 公司提供的专用 VS Code 产品版本。
 
 用户不要自行猜测入口名称或修改上游地址；NuGet 仅支持 restore 所需的只读接口。
+
+## 本地运行
+
+复制 `deploy/app/config.example.toml` 为仓库根目录的 `config.toml`（该文件已被忽略，不会提交），
+按本机情况修改监听地址、`root_url`、数据目录和日志目录，然后在仓库根目录启动服务：
+
+```text
+cargo run
+```
+
+`config.toml` 只从当前工作目录读取；容器部署请使用 `deploy/app/config.example.toml`。

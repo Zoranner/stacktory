@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn serve() -> Result<(), Box<dyn std::error::Error>> {
-    let mut config = Config::from_toml(&fs::read_to_string("config.toml")?)?;
+    let mut config = read_config()?;
     let (log_file, rotated_log) =
         logging::init(config.log_dir.clone(), std::time::SystemTime::now())?;
     let mut docker_listeners = Vec::new();
@@ -64,6 +64,16 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn read_config() -> Result<Config, Box<dyn std::error::Error>> {
+    let source = fs::read_to_string("config.toml").map_err(|error| {
+        format!(
+            "cannot read config.toml from the current directory: {error}. \
+             Copy deploy/app/config.example.toml to config.toml and adjust it."
+        )
+    })?;
+    Ok(Config::from_toml(&source)?)
+}
+
 fn prune_legacy_layout(
     arguments: impl Iterator<Item = String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -78,7 +88,7 @@ fn prune_legacy_layout(
             }
         }
     }
-    let config = Config::from_toml(&fs::read_to_string("config.toml")?)?;
+    let config = read_config()?;
     let report = retention::prune_legacy_layout(
         &config.data_dir,
         dry_run,
