@@ -6,6 +6,10 @@ services:
     ports:
       - 18761:18761
     volumes:
+      - ./app/data:/app/data
+      - ./app/logs:/app/logs
       - ./app/config.toml:/app/config.toml:ro
-      - ./data:/app/data
-      - ./logs:/app/logs
+networks:
+  default:
+    external: true
+    name: stacktory
