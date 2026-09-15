@@ -1,7 +1,10 @@
 .git/
 target/
+data/
+logs/
 deploy/.env
 deploy/data/
+deploy/logs/
 .env
 .env.*
 !.env.example
