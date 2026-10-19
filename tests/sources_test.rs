@@ -57,7 +57,10 @@ async fn upstream_requests_identify_stacktory() {
         .await
         .expect("source response");
 
-    assert_eq!(response.body, b"Stacktory/0.1.0");
+    assert_eq!(
+        response.body,
+        format!("Stacktory/{}", env!("CARGO_PKG_VERSION")).into_bytes()
+    );
 }
 
 #[tokio::test]
