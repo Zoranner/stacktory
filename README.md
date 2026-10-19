@@ -38,3 +38,23 @@ cargo run
 ```
 
 `config.toml` 只从当前工作目录读取；容器部署请使用 `deploy/app/config.example.toml`。
+
+## 容器部署
+
+在仓库根目录执行：
+
+```text
+docker network create stacktory
+mkdir -p deploy/app/data deploy/app/logs
+cp deploy/app/config.example.toml deploy/app/config.toml
+chown -R 1000:1000 deploy/app/data deploy/app/logs
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+`chown` 在 Linux 宿主机上可能需要 `sudo`；容器以 UID 1000 运行，`deploy/app/data` 和
+`deploy/app/logs` 必须对该用户可写。`deploy/app/config.toml` 中的 `data_dir`、
+`log_dir` 应分别保持为 `/app/data`、`/app/logs`。
+
+compose 默认发布主服务端口 `18761` 和 Docker `group` 入口的 `19000`。如果需要为其他
+Docker source 开放标准 CLI 端口，在 `deploy/app/config.toml` 中设置对应
+`listen_port`，并在 `deploy/docker-compose.yml` 中增加相同的端口映射。

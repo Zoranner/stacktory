@@ -50,6 +50,8 @@ docker.example.com:19000/v2/...
 
 可以由外部 DNS、端口映射或反向代理将域名绑定到该端口。未配置
 `listen_port` 的 source 仍只能通过 `/mirror/docker/{name}/v2/...` 访问。
+仓库的 `deploy/app/config.example.toml` 已为 `group` 显式配置 `19000`，
+`deploy/docker-compose.yml` 也映射了该端口；其他 source 需要按同样方式自行增加。
 
 真实 Docker/OCI 客户端的路径前缀兼容性和 pull 联调需要在管理员提供客户端及
 运行环境后单独验收；本工作区未安装 `docker`、`oras`、`nerdctl` 或 `skopeo`。

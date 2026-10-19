@@ -116,8 +116,8 @@ members = [
   "xuanyuan",
   "unstructured",
 ]
-# Optional group listener for standard Docker CLI use.
-# listen_port = 19000
+# Standard Docker CLI listener for the group entry.
+listen_port = 19000
 
 [npm]
 
@@ -157,29 +157,6 @@ base_url = "https://api.nuget.org/v3/index.json"
 name = "group"
 type = "group"
 members = ["official"]
-
-# PyPI adapter is not registered yet; this section does not create any route.
-[pypi]
-
-[[pypi.sources]]
-name = "official"
-type = "proxy"
-base_url = "https://pypi.org"
-
-[[pypi.sources]]
-name = "tsinghua"
-type = "proxy"
-base_url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web"
-
-[[pypi.sources]]
-name = "ustc"
-type = "proxy"
-base_url = "https://mirrors.ustc.edu.cn/pypi"
-
-[[pypi.sources]]
-name = "group"
-type = "group"
-members = ["official", "tsinghua", "ustc"]
 
 [upm]
 
