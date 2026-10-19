@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs, io,
-    path::{Path, PathBuf},
+    path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::fsutil::atomic_write;
 use crate::rustup::{ArtifactSource, DistPath, RewrittenManifest};
 
 #[derive(Debug)]
@@ -120,10 +121,10 @@ impl SnapshotStore {
             source_name: upstream_source.to_owned(),
             published_at_unix_secs: unix_timestamp()?,
         })?;
-        atomic_write(
+        Ok(atomic_write(
             &self.snapshot_root(entry_name, channel).join("current.toml"),
             pointer.as_bytes(),
-        )
+        )?)
     }
 
     pub fn current(&self, entry_name: &str, channel: &str) -> Result<StoredSnapshot, StorageError> {
@@ -281,7 +282,10 @@ impl ArtifactCache {
             return Err(StorageError::ArtifactHashMismatch(path.to_string()));
         }
 
-        atomic_write(&self.artifact_path(source_name, path), contents)
+        Ok(atomic_write(
+            &self.artifact_path(source_name, path),
+            contents,
+        )?)
     }
 
     pub fn get_verified(
@@ -316,6 +320,8 @@ impl ArtifactCache {
 
 fn validate_source_name(source_name: &str) -> Result<(), StorageError> {
     if !source_name.is_empty()
+        && source_name != "."
+        && source_name != ".."
         && source_name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
@@ -328,6 +334,8 @@ fn validate_source_name(source_name: &str) -> Result<(), StorageError> {
 
 fn validate_channel(channel: &str) -> Result<(), StorageError> {
     if channel.is_empty()
+        || channel == "."
+        || channel == ".."
         || !channel
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
@@ -349,28 +357,17 @@ fn checksum(contents: &[u8]) -> String {
     format!("{:x}", Sha256::digest(contents))
 }
 
-fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), StorageError> {
-    let parent = path.parent().ok_or_else(|| {
-        StorageError::Io(io::Error::other("storage target has no parent directory"))
-    })?;
-    fs::create_dir_all(parent)?;
+#[cfg(test)]
+mod validation_tests {
+    use super::{validate_channel, validate_source_name};
 
-    let file_name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| StorageError::Io(io::Error::other("storage target has no file name")))?;
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| StorageError::Io(io::Error::other(error)))?
-        .as_nanos();
-    let temporary_path = parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), nonce));
-
-    fs::write(&temporary_path, contents)?;
-    match fs::rename(&temporary_path, path) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            let _ = fs::remove_file(temporary_path);
-            Err(StorageError::Io(error))
-        }
+    #[test]
+    fn rejects_dot_path_segments() {
+        assert!(validate_source_name(".").is_err());
+        assert!(validate_source_name("..").is_err());
+        assert!(validate_channel(".").is_err());
+        assert!(validate_channel("..").is_err());
+        assert!(validate_source_name("official").is_ok());
+        assert!(validate_channel("stable").is_ok());
     }
 }

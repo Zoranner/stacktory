@@ -35,6 +35,9 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = read_config()?;
     let (log_file, rotated_log) =
         logging::init(config.log_dir.clone(), std::time::SystemTime::now())?;
+    if config.pypi.is_some() {
+        logging::warn("pypi is configured but the PyPI adapter is not registered");
+    }
     let mut docker_listeners = Vec::new();
     let registry = configured_registry(&mut config, &mut docker_listeners)?;
     let listener = TcpListener::bind((config.listen_address, config.listen_port)).await?;
@@ -60,8 +63,39 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
     }
-    axum::serve(listener, router_with_rustup_and_registry(service, registry)).await?;
+    axum::serve(listener, router_with_rustup_and_registry(service, registry))
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            logging::error(format!("failed to listen for Ctrl+C: {error}"));
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                logging::error(format!("failed to listen for SIGTERM: {error}"));
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+    logging::info("shutdown signal received");
 }
 
 fn read_config() -> Result<Config, Box<dyn std::error::Error>> {

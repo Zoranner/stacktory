@@ -52,11 +52,19 @@ pub struct LegacyLayoutReport {
 /// 启动后台清理任务：首次执行立即开始，之后按配置间隔重复。
 pub fn spawn(data_dir: PathBuf, log_file: std::sync::Arc<LogFile>, config: RetentionConfig) {
     tokio::spawn(async move {
-        let audit = AuditSink::new(data_dir.clone());
         let mut ticker = tokio::time::interval(Duration::from_secs(config.cleanup_interval_secs));
         loop {
             ticker.tick().await;
-            sweep(&data_dir, &log_file, &config, SystemTime::now(), &audit);
+            let data_dir = data_dir.clone();
+            let log_file = log_file.clone();
+            if let Err(error) = tokio::task::spawn_blocking(move || {
+                let audit = AuditSink::new(data_dir.clone());
+                sweep(&data_dir, &log_file, &config, SystemTime::now(), &audit);
+            })
+            .await
+            {
+                logging::error(format!("retention task failed: {error}"));
+            }
         }
     });
 }

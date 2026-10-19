@@ -2,6 +2,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+use std::time::Duration;
 
 use axum::{
     Router,
@@ -45,6 +46,7 @@ async fn verified_manifest_and_blob_content_are_reused_from_cache() {
         layer_digest: layer_digest.clone(),
         manifest_hits: manifest_hits.clone(),
         blob_hits: blob_hits.clone(),
+        delay: None,
     })
     .await;
     let data_dir = tempdir().expect("data directory");
@@ -117,6 +119,7 @@ async fn invalid_blob_range_returns_registry_range_metadata() {
         layer_digest: digest(&[]),
         manifest_hits: Arc::new(AtomicUsize::new(0)),
         blob_hits: Arc::new(AtomicUsize::new(0)),
+        delay: None,
     })
     .await;
     let data_dir = tempdir().expect("data directory");
@@ -178,6 +181,7 @@ async fn wrong_blob_digest_is_not_returned_or_cached() {
         layer_digest: digest(&[]),
         manifest_hits: Arc::new(AtomicUsize::new(0)),
         blob_hits: Arc::new(AtomicUsize::new(0)),
+        delay: None,
     })
     .await;
     let data_dir = tempdir().expect("data directory");
@@ -208,6 +212,52 @@ async fn wrong_blob_digest_is_not_returned_or_cached() {
             ))
             .exists()
     );
+}
+
+#[tokio::test]
+async fn concurrent_blob_requests_share_one_upstream_fetch() {
+    let config = b"shared config".to_vec();
+    let config_digest = digest(&config);
+    let layer = b"shared large layer".to_vec();
+    let layer_digest = digest(&layer);
+    let manifest = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{config_digest}","size":{config_size}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"{layer_digest}","size":{layer_size}}}]}}"#,
+        config_size = config.len(),
+        layer_size = layer.len(),
+    )
+    .into_bytes();
+    let blob_hits = Arc::new(AtomicUsize::new(0));
+    let upstream = start_blob_server(BlobServerData {
+        manifest_digest: digest(&manifest),
+        manifest,
+        config,
+        config_digest,
+        layer,
+        layer_digest: layer_digest.clone(),
+        manifest_hits: Arc::new(AtomicUsize::new(0)),
+        blob_hits: blob_hits.clone(),
+        delay: Some(Duration::from_millis(100)),
+    })
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = docker_router(upstream, data_dir.path());
+    let manifest_response = router
+        .clone()
+        .oneshot(get_request(
+            "/mirror/docker/official/v2/library/demo/manifests/latest",
+        ))
+        .await
+        .expect("manifest response");
+    assert_eq!(manifest_response.status(), StatusCode::OK);
+
+    let blob_path = format!("/mirror/docker/official/v2/library/demo/blobs/{layer_digest}");
+    let (first, second) = tokio::join!(
+        router.clone().oneshot(get_request(&blob_path)),
+        router.clone().oneshot(get_request(&blob_path)),
+    );
+    assert_eq!(first.expect("first blob").status(), StatusCode::OK);
+    assert_eq!(second.expect("second blob").status(), StatusCode::OK);
+    assert_eq!(blob_hits.load(Ordering::SeqCst), 1);
 }
 
 fn docker_router(upstream: Url, data_dir: &std::path::Path) -> axum::Router {
@@ -250,6 +300,7 @@ struct BlobServerData {
     layer_digest: String,
     manifest_hits: Arc<AtomicUsize>,
     blob_hits: Arc<AtomicUsize>,
+    delay: Option<Duration>,
 }
 
 async fn start_blob_server(data: BlobServerData) -> Url {
@@ -268,6 +319,7 @@ async fn start_blob_server(data: BlobServerData) -> Url {
                 layer_digest: data.layer_digest.clone(),
                 manifest_hits: data.manifest_hits.clone(),
                 blob_hits: data.blob_hits.clone(),
+                delay: data.delay,
             };
             async move {
                 let BlobServerData {
@@ -279,7 +331,11 @@ async fn start_blob_server(data: BlobServerData) -> Url {
                     layer_digest,
                     manifest_hits,
                     blob_hits,
+                    delay,
                 } = data;
+                if let Some(delay) = delay {
+                    tokio::time::sleep(delay).await;
+                }
                 let (body, content_type, digest) = match path.as_str() {
                     "/v2/library/demo/manifests/latest" => {
                         manifest_hits.fetch_add(1, Ordering::SeqCst);

@@ -1,4 +1,5 @@
 pub(crate) mod fetcher;
+mod policy;
 pub mod pool;
 pub mod registry;
 

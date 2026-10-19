@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256, Sha512};
 use url::Url;
 
 use crate::{
+    fsutil::atomic_write,
     nuget::{
         registration::{PackageBinding, binding_for_source, binding_path, persist_binding},
         service_index::{NugetAuditDetails, NugetError, NugetService},
@@ -745,30 +746,6 @@ fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>, io::Error> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
-}
-
-fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), NugetError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::other("NuGet package metadata has no parent"))?;
-    fs::create_dir_all(parent)?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| io::Error::other("NuGet package metadata has no file name"))?;
-    let temporary = parent.join(format!(
-        ".{file_name}.{}.{}.tmp",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(io::Error::other)?
-            .as_nanos()
-    ));
-    fs::write(&temporary, contents)?;
-    fs::rename(&temporary, path).map_err(|error| {
-        let _ = fs::remove_file(&temporary);
-        NugetError::Storage(error)
-    })
 }
 
 fn response(status: StatusCode, content_type: &str, body: Vec<u8>) -> Response {

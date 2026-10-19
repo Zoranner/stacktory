@@ -25,6 +25,7 @@ pub struct RustupService {
     cache: ArtifactCache,
     audit: AuditSink,
     refresh_locks: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
+    artifact_locks: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
 }
 
 #[derive(Debug, Error)]
@@ -53,6 +54,7 @@ impl RustupService {
             cache: ArtifactCache::new(config.data_dir.clone()),
             audit: AuditSink::new(config.data_dir),
             refresh_locks: Mutex::new(BTreeMap::new()),
+            artifact_locks: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -125,6 +127,14 @@ impl RustupService {
             .clone()
     }
 
+    async fn artifact_lock(&self, source_name: &str, path: &DistPath) -> Arc<Mutex<()>> {
+        let mut locks = self.artifact_locks.lock().await;
+        locks
+            .entry(format!("{source_name}\0{}", path.as_str()))
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
     fn is_snapshot_stale(&self, snapshot: &StoredSnapshot) -> bool {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -143,6 +153,14 @@ impl RustupService {
     ) -> Result<Vec<u8>, ServiceError> {
         self.ensure_entry(entry_name)?;
         self.ensure_channel(channel)?;
+        let snapshot = self.snapshots.current(entry_name, channel)?;
+        let artifact_source = snapshot
+            .artifact_sources
+            .get(path)
+            .cloned()
+            .ok_or_else(|| ServiceError::UnknownArtifact(path.clone()))?;
+        let artifact_lock = self.artifact_lock(&artifact_source.source_name, path).await;
+        let _artifact_guard = artifact_lock.lock().await;
         let snapshot = self.snapshots.current(entry_name, channel)?;
         let artifact_source = snapshot
             .artifact_sources
@@ -240,7 +258,7 @@ impl RustupService {
                 .await
             {
                 Ok(response) => response.body,
-                Err(error) if is_retryable_source_error(&error) => {
+                Err(error) if should_try_next_source(&error) => {
                     failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
@@ -252,7 +270,7 @@ impl RustupService {
                 .await
             {
                 Ok(response) => response.body,
-                Err(error) if is_retryable_source_error(&error) => {
+                Err(error) if should_try_next_source(&error) => {
                     failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
@@ -310,8 +328,12 @@ impl RustupService {
     }
 }
 
-fn is_retryable_source_error(error: &SourcePoolError) -> bool {
+fn should_try_next_source(error: &SourcePoolError) -> bool {
     matches!(error, SourcePoolError::AllSourcesFailed { .. })
+        || matches!(
+            error,
+            SourcePoolError::TerminalSourceError { status: 404, .. }
+        )
 }
 
 fn parse_checksum_file<'a>(contents: &'a str, expected_file_name: &str) -> Option<&'a str> {

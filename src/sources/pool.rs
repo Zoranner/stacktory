@@ -1,21 +1,27 @@
-use std::{
-    net::{IpAddr, SocketAddr},
-    sync::Arc,
-    time::Duration,
-};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use axum::http::{HeaderMap, Method};
 use thiserror::Error;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use url::Url;
 
-use crate::{SourceConfig, SourceGraph, sources::fetcher::HttpFetcher};
+use crate::{
+    SourceConfig, SourceGraph,
+    sources::{
+        fetcher::{FetchedFile, HttpFetcher},
+        policy::{is_public_host, same_origin},
+    },
+};
 
 #[derive(Debug)]
 pub struct SourcePool {
     ecosystem: String,
     graph: SourceGraph,
     fetcher: Arc<HttpFetcher>,
+    artifact_limit: Arc<Semaphore>,
 }
+
+const MAX_CONCURRENT_ARTIFACTS: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FetchOperation {
@@ -108,7 +114,21 @@ impl SourcePool {
             fetcher: Arc::new(
                 fetcher.map_err(|error| SourcePoolError::FetcherBuild(error.to_string()))?,
             ),
+            artifact_limit: Arc::new(Semaphore::new(MAX_CONCURRENT_ARTIFACTS)),
         })
+    }
+
+    async fn artifact_permit(&self, operation: FetchOperation) -> Option<OwnedSemaphorePermit> {
+        if operation != FetchOperation::Artifact {
+            return None;
+        }
+        Some(
+            self.artifact_limit
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("artifact semaphore must remain open"),
+        )
     }
 
     pub fn ecosystem(&self) -> &str {
@@ -158,6 +178,7 @@ impl SourcePool {
         headers: HeaderMap,
         operation: FetchOperation,
     ) -> Result<SourceResponse, SourcePoolError> {
+        let _artifact_permit = self.artifact_permit(operation).await;
         let source = self
             .graph
             .get(source_name)
@@ -220,6 +241,7 @@ impl SourcePool {
         headers: HeaderMap,
         operation: FetchOperation,
     ) -> Result<SourceResponse, SourcePoolError> {
+        let _artifact_permit = self.artifact_permit(operation).await;
         let source = self
             .graph
             .get(source_name)
@@ -237,7 +259,13 @@ impl SourcePool {
         }
         match self
             .fetcher
-            .fetch_registry(method, url, headers, operation.timeout())
+            .fetch_registry(
+                method,
+                url,
+                headers,
+                source.require_https,
+                operation.timeout(),
+            )
             .await
         {
             Ok(response) => Ok(SourceResponse {
@@ -275,6 +303,52 @@ impl SourcePool {
         .await
     }
 
+    pub(crate) async fn fetch_proxy_registry_path_to_file(
+        &self,
+        source_name: &str,
+        request_key: &str,
+        method: Method,
+        headers: HeaderMap,
+        operation: FetchOperation,
+        path: PathBuf,
+    ) -> Result<FetchedFile, SourcePoolError> {
+        let _artifact_permit = self.artifact_permit(operation).await;
+        let source = self
+            .graph
+            .get(source_name)
+            .ok_or_else(|| SourcePoolError::UnknownEntry(source_name.to_owned()))?;
+        if source.source_type != crate::SourceType::Proxy {
+            return Err(SourcePoolError::UnknownEntry(source_name.to_owned()));
+        }
+        let request_key = normalize_proxy_path(request_key)?;
+        let url = source_url_raw(source, &request_key)?;
+        match self
+            .fetcher
+            .fetch_registry_to_file(
+                method,
+                url,
+                headers,
+                source.require_https,
+                operation.timeout(),
+                path,
+            )
+            .await
+        {
+            Ok(file) => Ok(file),
+            Err(error) if error.is_retryable() => Err(SourcePoolError::AllSourcesFailed {
+                entry_name: source_name.to_owned(),
+                request_key,
+                failures: error.to_string(),
+                status: error.status_code(),
+            }),
+            Err(error) => Err(SourcePoolError::TerminalSourceError {
+                source_name: source_name.to_owned(),
+                status: error.status_code().unwrap_or_default(),
+                error: error.to_string(),
+            }),
+        }
+    }
+
     async fn fetch_request(
         &self,
         entry_name: &str,
@@ -282,6 +356,7 @@ impl SourcePool {
         operation: FetchOperation,
         request: SourceRequest<'_>,
     ) -> Result<SourceResponse, SourcePoolError> {
+        let _artifact_permit = self.artifact_permit(operation).await;
         let members = self
             .proxy_members(entry_name)
             .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
@@ -348,6 +423,7 @@ impl SourcePool {
         url: Url,
         operation: FetchOperation,
     ) -> Result<SourceResponse, SourcePoolError> {
+        let _artifact_permit = self.artifact_permit(operation).await;
         let source = self
             .graph
             .get(source_name)
@@ -356,7 +432,18 @@ impl SourcePool {
             return Err(SourcePoolError::InvalidConfiguredUrl(url.to_string()));
         }
 
-        match self.fetcher.fetch(url.clone(), operation.timeout()).await {
+        let allow_private = source
+            .base_url
+            .as_ref()
+            .is_some_and(|base_url| same_origin(base_url, &url));
+        let result = if allow_private {
+            self.fetcher.fetch(url.clone(), operation.timeout()).await
+        } else {
+            self.fetcher
+                .fetch_public(url.clone(), operation.timeout())
+                .await
+        };
+        match result {
             Ok(response) => Ok(SourceResponse {
                 source_name: source_name.to_owned(),
                 body: response.body,
@@ -390,8 +477,18 @@ impl SourcePool {
         if source.source_type != crate::SourceType::Proxy || !valid_configured_url(source, &url) {
             return Err(SourcePoolError::InvalidConfiguredUrl(url.to_string()));
         }
-        self.fetch_safe_redirects(source_name, url, source.require_https, operation)
-            .await
+        let allow_private = source
+            .base_url
+            .as_ref()
+            .is_some_and(|base_url| same_origin(base_url, &url));
+        self.fetch_safe_redirects(
+            source_name,
+            url,
+            source.require_https,
+            allow_private,
+            operation,
+        )
+        .await
     }
 
     pub async fn fetch_discovered_url(
@@ -400,6 +497,7 @@ impl SourcePool {
         url: Url,
         operation: FetchOperation,
     ) -> Result<SourceResponse, SourcePoolError> {
+        let _artifact_permit = self.artifact_permit(operation).await;
         let source = self
             .graph
             .get(source_name)
@@ -408,7 +506,18 @@ impl SourcePool {
             return Err(SourcePoolError::InvalidConfiguredUrl(url.to_string()));
         }
 
-        match self.fetcher.fetch(url.clone(), operation.timeout()).await {
+        let allow_private = source
+            .base_url
+            .as_ref()
+            .is_some_and(|base_url| same_origin(base_url, &url));
+        let result = if allow_private {
+            self.fetcher.fetch(url.clone(), operation.timeout()).await
+        } else {
+            self.fetcher
+                .fetch_public(url.clone(), operation.timeout())
+                .await
+        };
+        match result {
             Ok(response) => Ok(SourceResponse {
                 source_name: source_name.to_owned(),
                 body: response.body,
@@ -442,8 +551,18 @@ impl SourcePool {
         if source.source_type != crate::SourceType::Proxy || !valid_discovered_url(source, &url) {
             return Err(SourcePoolError::InvalidConfiguredUrl(url.to_string()));
         }
-        self.fetch_safe_redirects(source_name, url, source.require_https, operation)
-            .await
+        let allow_private = source
+            .base_url
+            .as_ref()
+            .is_some_and(|base_url| same_origin(base_url, &url));
+        self.fetch_safe_redirects(
+            source_name,
+            url,
+            source.require_https,
+            allow_private,
+            operation,
+        )
+        .await
     }
 
     pub async fn fetch_discovered_url_with_query_following_safe_redirects(
@@ -461,8 +580,18 @@ impl SourcePool {
         {
             return Err(SourcePoolError::InvalidConfiguredUrl(url.to_string()));
         }
-        self.fetch_safe_redirects(source_name, url, source.require_https, operation)
-            .await
+        let allow_private = source
+            .base_url
+            .as_ref()
+            .is_some_and(|base_url| same_origin(base_url, &url));
+        self.fetch_safe_redirects(
+            source_name,
+            url,
+            source.require_https,
+            allow_private,
+            operation,
+        )
+        .await
     }
 
     async fn fetch_safe_redirects(
@@ -470,11 +599,18 @@ impl SourcePool {
         source_name: &str,
         url: Url,
         require_https: bool,
+        allow_private_initial: bool,
         operation: FetchOperation,
     ) -> Result<SourceResponse, SourcePoolError> {
+        let _artifact_permit = self.artifact_permit(operation).await;
         match self
             .fetcher
-            .fetch_safe_redirects(url.clone(), require_https, operation.timeout())
+            .fetch_safe_redirects(
+                url.clone(),
+                require_https,
+                allow_private_initial,
+                operation.timeout(),
+            )
             .await
         {
             Ok(response) => Ok(SourceResponse {
@@ -671,60 +807,9 @@ pub(crate) fn is_safe_configured_url_for_source(
     is_public_host(url.host_str().unwrap_or_default())
 }
 
-fn same_origin(left: &Url, right: &Url) -> bool {
-    left.scheme() == right.scheme()
-        && left.host_str() == right.host_str()
-        && left.port_or_known_default() == right.port_or_known_default()
-}
-
 fn path_is_within(base_path: &str, candidate_path: &str) -> bool {
     let base_path = base_path.trim_end_matches('/');
     base_path.is_empty()
         || candidate_path == base_path
         || candidate_path.starts_with(&format!("{base_path}/"))
-}
-
-fn is_public_host(host: &str) -> bool {
-    let host = host
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .trim_end_matches('.')
-        .to_ascii_lowercase();
-    if host == "localhost"
-        || host.ends_with(".localhost")
-        || host.ends_with(".local")
-        || host.ends_with(".internal")
-        || host.ends_with(".lan")
-        || host.ends_with(".home.arpa")
-    {
-        return false;
-    }
-    host.parse::<IpAddr>()
-        .map(|address| !is_private_or_local_address(address))
-        .unwrap_or(true)
-}
-
-fn is_private_or_local_address(address: IpAddr) -> bool {
-    match address {
-        IpAddr::V4(address) => {
-            let [first, second, ..] = address.octets();
-            first == 0
-                || first == 10
-                || first == 127
-                || (first == 169 && second == 254)
-                || (first == 172 && (16..=31).contains(&second))
-                || (first == 192 && second == 168)
-                || (first == 100 && (64..=127).contains(&second))
-                || (first == 198 && (18..=19).contains(&second))
-        }
-        IpAddr::V6(address) => {
-            address.is_loopback()
-                || address.is_unspecified()
-                || (address.segments()[0] & 0xfe00) == 0xfc00
-                || (address.segments()[0] & 0xffc0) == 0xfe80
-                || address
-                    .to_ipv4_mapped()
-                    .is_some_and(|mapped| is_private_or_local_address(IpAddr::V4(mapped)))
-        }
-    }
 }

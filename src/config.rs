@@ -31,6 +31,7 @@ pub const DEFAULT_LOG_RETENTION_DAYS: u64 = 30;
 pub const DEFAULT_LOG_DIR: &str = "logs";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
 #[serde(default)]
 pub struct RetentionConfig {
     pub metadata_ttl_secs: u64,
@@ -281,6 +282,7 @@ pub enum ConfigError {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawConfig {
     listen_address: IpAddr,
     listen_port: u16,
@@ -301,6 +303,7 @@ struct RawConfig {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawRustupConfig {
     refresh_interval_secs: u64,
     channels: Vec<String>,
@@ -308,11 +311,13 @@ struct RawRustupConfig {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawEcosystemConfig {
     sources: Vec<RawSourceConfig>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawDockerConfig {
     sources: Vec<RawDockerSourceConfig>,
 }
@@ -495,6 +500,8 @@ fn default_log_dir() -> PathBuf {
 
 fn is_valid_channel(channel: &str) -> bool {
     !channel.is_empty()
+        && channel != "."
+        && channel != ".."
         && channel
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
@@ -502,6 +509,8 @@ fn is_valid_channel(channel: &str) -> bool {
 
 fn is_valid_source_name(name: &str) -> bool {
     !name.is_empty()
+        && name != "."
+        && name != ".."
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))

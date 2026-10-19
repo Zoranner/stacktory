@@ -1,14 +1,12 @@
-use std::{
-    fs, io,
-    path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{fs, io, path::PathBuf};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+
+use crate::fsutil::atomic_write;
 
 use super::{metadata::NpmArtifactDescriptor, path::validate_package_name};
 
@@ -161,12 +159,12 @@ impl NpmStorage {
             })
             .map_err(|error| StorageError::Io(io::Error::other(error)))?,
         )?;
-        atomic_write(
+        Ok(atomic_write(
             &self.metadata_pointer_path(&key.entry, &key.package),
             &toml::to_string(&MetadataPointer { key: key.clone() })
                 .map_err(|error| StorageError::Io(io::Error::other(error)))?
                 .into_bytes(),
-        )
+        )?)
     }
 
     pub fn read_metadata(
@@ -371,28 +369,4 @@ fn safe_component(value: &str) -> String {
 
 fn sha256(contents: &[u8]) -> String {
     format!("{:x}", Sha256::digest(contents))
-}
-
-fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), StorageError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| StorageError::Io(io::Error::other("npm cache has no parent")))?;
-    fs::create_dir_all(parent)?;
-    let file_name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| StorageError::Io(io::Error::other("npm cache has no file name")))?;
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(io::Error::other)?
-        .as_nanos();
-    let temporary = parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), nonce));
-    fs::write(&temporary, contents)?;
-    match fs::rename(&temporary, path) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            let _ = fs::remove_file(temporary);
-            Err(StorageError::Io(error))
-        }
-    }
 }

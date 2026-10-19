@@ -3,7 +3,6 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -20,6 +19,7 @@ use url::Url;
 use crate::{
     SourcePool,
     audit::{AuditDetails, AuditSink},
+    fsutil::atomic_write,
     sources::{
         FetchOperation, SourcePoolError,
         pool::is_safe_configured_url,
@@ -1000,30 +1000,6 @@ fn is_stale_compressed_cache(bytes: &[u8], content_type: Option<&str>) -> bool {
     };
     let media_type = content_type.split(';').next().unwrap_or_default().trim();
     !matches!(media_type, "application/gzip" | "application/x-gzip")
-}
-
-fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), io::Error> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::other("VS Code storage path has no parent"))?;
-    fs::create_dir_all(parent)?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| io::Error::other("VS Code storage path has no file name"))?;
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(io::Error::other)?
-        .as_nanos();
-    let temporary = parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), nonce));
-    fs::write(&temporary, contents)?;
-    match fs::rename(&temporary, path) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            let _ = fs::remove_file(temporary);
-            Err(error)
-        }
-    }
 }
 
 fn sha256(contents: &[u8]) -> String {

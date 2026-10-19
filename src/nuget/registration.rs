@@ -14,6 +14,7 @@ use serde_json::Value;
 use url::Url;
 
 use crate::{
+    fsutil::atomic_write,
     nuget::service_index::NugetAuditDetails,
     nuget::service_index::{NugetError, NugetService},
     sources::{FetchOperation, SourcePool, SourcePoolError},
@@ -703,33 +704,6 @@ fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>, io::Error> {
         Ok(contents) => Ok(Some(contents)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
-    }
-}
-
-fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), io::Error> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::other("NuGet registration path has no parent"))?;
-    fs::create_dir_all(parent)?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| io::Error::other("NuGet registration path has no file name"))?;
-    let temporary = parent.join(format!(
-        ".{file_name}.{}.{}.tmp",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(io::Error::other)?
-            .as_nanos()
-    ));
-    fs::write(&temporary, contents)?;
-    match fs::rename(&temporary, path) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            let _ = fs::remove_file(temporary);
-            Err(error)
-        }
     }
 }
 

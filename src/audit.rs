@@ -9,10 +9,15 @@ use std::{
 use serde::Serialize;
 use thiserror::Error;
 
+/// 同一进程内的所有审计 sink 共用一把写锁。
+///
+/// 审计文件是全局事实，不能因为不同适配器各自持有 sink 而并发写入。
+/// 当前部署是单进程；如果未来多进程共享 `data_dir`，还需要额外的文件锁。
+static AUDIT_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
 #[derive(Debug)]
 pub struct AuditSink {
     path: PathBuf,
-    write_lock: Mutex<()>,
 }
 
 #[derive(Debug, Error)]
@@ -63,7 +68,6 @@ impl AuditSink {
     pub fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
             path: crate::layout::audit_root(&data_dir.into()).join("events.jsonl"),
-            write_lock: Mutex::new(()),
         }
     }
 
@@ -78,8 +82,7 @@ impl AuditSink {
         outcome: &str,
         details: AuditDetails<'_>,
     ) -> Result<(), AuditError> {
-        let _guard = self
-            .write_lock
+        let _guard = AUDIT_WRITE_LOCK
             .lock()
             .expect("audit write lock must not be poisoned");
         let parent = self
@@ -91,24 +94,22 @@ impl AuditSink {
             .append(true)
             .create(true)
             .open(&self.path)?;
-        serde_json::to_writer(
-            &mut file,
-            &AuditEvent {
-                timestamp_unix_secs: unix_timestamp()?,
-                event,
-                target,
-                outcome,
-                ecosystem: details.ecosystem,
-                entry_name: details.entry_name,
-                object_key: details.object_key,
-                selected_proxy: details.selected_proxy,
-                object_type: details.object_type,
-                cache_status: details.cache_status,
-                failure_category: details.failure_category,
-                count: details.count,
-            },
-        )?;
-        file.write_all(b"\n")?;
+        let mut line = serde_json::to_vec(&AuditEvent {
+            timestamp_unix_secs: unix_timestamp()?,
+            event,
+            target,
+            outcome,
+            ecosystem: details.ecosystem,
+            entry_name: details.entry_name,
+            object_key: details.object_key,
+            selected_proxy: details.selected_proxy,
+            object_type: details.object_type,
+            cache_status: details.cache_status,
+            failure_category: details.failure_category,
+            count: details.count,
+        })?;
+        line.push(b'\n');
+        file.write_all(&line)?;
         file.flush()?;
         Ok(())
     }
@@ -119,4 +120,39 @@ fn unix_timestamp() -> Result<u64, AuditError> {
         .duration_since(UNIX_EPOCH)
         .map_err(|error| AuditError::Io(io::Error::other(error)))
         .map(|duration| duration.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AuditSink;
+    use std::{fs, thread};
+
+    #[test]
+    fn concurrent_sinks_write_complete_json_lines() {
+        let directory = tempfile::tempdir().expect("audit directory");
+        let data_dir = directory.path().to_path_buf();
+        let mut writers = Vec::new();
+
+        for writer in 0..4 {
+            let sink = AuditSink::new(&data_dir);
+            writers.push(thread::spawn(move || {
+                for event in 0..25 {
+                    sink.record("test_event", &format!("{writer}-{event}"), "success")
+                        .expect("audit event");
+                }
+            }));
+        }
+
+        for writer in writers {
+            writer.join().expect("audit writer");
+        }
+
+        let contents = fs::read_to_string(data_dir.join("audit/events.jsonl")).expect("audit file");
+        let lines = contents.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 100);
+        for line in lines {
+            let value: serde_json::Value = serde_json::from_str(line).expect("valid JSON line");
+            assert_eq!(value["event"], "test_event");
+        }
+    }
 }

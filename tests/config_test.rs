@@ -199,11 +199,40 @@ fn rejects_empty_rustup_channel_set() {
 }
 
 #[test]
+fn rejects_dot_rustup_channels() {
+    for channel in [".", ".."] {
+        let configuration = LOCAL_DEVELOPMENT.replace(
+            "channels = [\"stable\", \"beta\"]",
+            &format!("channels = [\"{channel}\"]"),
+        );
+        let error = Config::from_toml(&configuration).expect_err("dot channel must fail");
+        assert!(error.to_string().contains("channel"));
+    }
+}
+
+#[test]
+fn rejects_unknown_configuration_fields() {
+    let top_level = format!("unknown_key = 1\n{LOCAL_DEVELOPMENT}");
+    let retention = format!("{LOCAL_DEVELOPMENT}\n[retention]\nmetadata_ttl_sec = 1\n");
+
+    assert!(Config::from_toml(&top_level).is_err());
+    assert!(Config::from_toml(&retention).is_err());
+}
+
+#[test]
 fn deployment_config_matches_the_runtime_schema() {
     let config = Config::from_toml(DEPLOYMENT_CONFIG).expect("deployment config");
 
     assert_eq!(config.data_dir, std::path::PathBuf::from("/app/data"));
     assert_eq!(config.listen_port, 18761);
+    assert_eq!(
+        config
+            .docker
+            .as_ref()
+            .expect("docker configuration")
+            .listen_ports["group"],
+        19000
+    );
     assert_eq!(
         config
             .cargo
@@ -264,10 +293,7 @@ fn deployment_config_retains_all_configured_ecosystem_source_graphs() {
         &config.nuget.expect("nuget configuration").sources,
         &["group", "official"],
     );
-    assert_source_names(
-        &config.pypi.expect("pypi configuration").sources,
-        &["group", "official", "tsinghua", "ustc"],
-    );
+    assert!(config.pypi.is_none());
     assert_source_names(
         &config.upm.expect("upm configuration").sources,
         &["cesium", "group", "openupm", "unity"],

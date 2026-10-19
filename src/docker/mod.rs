@@ -1,10 +1,14 @@
 pub mod path;
 
 use std::{
+    collections::HashMap,
     fs, io,
+    io::{Read, SeekFrom},
     path::{Path, PathBuf},
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use axum::{
@@ -16,16 +20,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use tokio::{
+    io::{AsyncReadExt, AsyncSeekExt},
+    sync::Mutex,
+};
+use tokio_util::io::ReaderStream;
 use url::Url;
 
 use crate::{
     DockerConfig, SourcePool,
     audit::{AuditDetails, AuditSink},
+    fsutil::atomic_write,
     sources::registry::{Adapter, AdapterFuture, AdapterRegistry, AdapterRequest, RegistryError},
     sources::{FetchOperation, SourcePoolError},
 };
 
 use self::path::{DockerRequest, ManifestReference, parse_request};
+
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
 pub struct DockerAdapter {
@@ -37,6 +49,7 @@ pub struct DockerService {
     _root_url: Url,
     data_dir: PathBuf,
     audit: AuditSink,
+    blob_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 #[derive(Debug, Error)]
@@ -68,7 +81,7 @@ pub enum DockerError {
     #[error("Docker search query is invalid")]
     InvalidSearchQuery,
     #[error("Docker Range header is invalid for an object of {0} bytes")]
-    InvalidRange(usize),
+    InvalidRange(u64),
     #[error("Docker metadata storage failed: {0}")]
     Storage(#[from] io::Error),
     #[error("Docker metadata serialization failed: {0}")]
@@ -157,10 +170,20 @@ pub fn register_adapter(
 impl DockerService {
     pub fn new(root_url: Url, data_dir: impl Into<PathBuf>) -> Self {
         let data_dir = data_dir.into();
+        let temporary_root = data_dir.join("tmp");
+        let _ = fs::create_dir_all(&temporary_root);
+        if let Ok(entries) = fs::read_dir(&temporary_root) {
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy().ends_with(".part") {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
         Self {
             _root_url: root_url,
             audit: AuditSink::new(data_dir.clone()),
             data_dir,
+            blob_locks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -797,6 +820,8 @@ impl DockerService {
         pool: &SourcePool,
         head: bool,
     ) -> Result<Response, DockerError> {
+        let blob_lock = self.blob_lock(repository, digest).await;
+        let _blob_guard = blob_lock.lock().await;
         let entry_metadata = read_blob_metadata(&self.data_dir, entry_name, repository, digest)?;
         let candidates = candidate_sources(
             pool,
@@ -823,14 +848,18 @@ impl DockerService {
             write_blob_metadata(&self.data_dir, entry_name, repository, &metadata)?;
             metadata
         };
-        if source_is_member(pool, entry_name, &metadata.selected_proxy)
-            && let Some(body) = read_verified_artifact(
+        let cached = if source_is_member(pool, entry_name, &metadata.selected_proxy) {
+            read_verified_artifact_path(
                 &self.data_dir,
                 &metadata.selected_proxy,
                 &metadata.object_type,
                 digest,
-            )?
-        {
+            )
+            .await?
+        } else {
+            None
+        };
+        if let Some((path, length)) = cached {
             self.record(
                 "docker_blob_read",
                 DockerAuditDetails {
@@ -842,15 +871,17 @@ impl DockerService {
                     failure_category: None,
                 },
             );
-            return blob_response(
-                body,
+            return blob_file_response(
+                &path,
+                length,
                 &metadata.content_type,
                 digest,
                 request_headers
                     .get(header::RANGE)
                     .and_then(|value| value.to_str().ok()),
                 head,
-            );
+            )
+            .await;
         }
         let headers = HeaderMap::new();
         let requested_range = request_headers
@@ -860,23 +891,25 @@ impl DockerService {
         let mut failures = Vec::new();
         let mut all_not_found = true;
         for source_name in candidates {
+            let temporary_path = self.temporary_blob_path();
             match pool
-                .fetch_proxy_registry_path(
+                .fetch_proxy_registry_path_to_file(
                     &source_name,
                     &request_key,
                     Method::GET,
                     headers.clone(),
                     FetchOperation::Artifact,
+                    temporary_path,
                 )
                 .await
             {
                 Ok(upstream) => {
-                    let actual_digest = sha256_digest(&upstream.body);
-                    if actual_digest != digest {
+                    if upstream.sha256 != digest {
                         let error = DockerError::DigestMismatch {
                             expected: digest.to_owned(),
-                            actual: actual_digest,
+                            actual: upstream.sha256,
                         };
+                        let _ = fs::remove_file(&upstream.path);
                         if pool.is_group(entry_name) {
                             self.record(
                                 "docker_blob_fetch_failed",
@@ -906,6 +939,14 @@ impl DockerService {
                         );
                         return Err(error);
                     }
+                    let path = publish_verified_file(
+                        &self.data_dir,
+                        &source_name,
+                        &metadata.object_type,
+                        digest,
+                        &upstream.path,
+                    )
+                    .await?;
                     let mut selected_metadata = metadata.clone();
                     selected_metadata.selected_proxy = source_name.clone();
                     write_blob_metadata(
@@ -913,13 +954,6 @@ impl DockerService {
                         entry_name,
                         repository,
                         &selected_metadata,
-                    )?;
-                    write_verified_artifact(
-                        &self.data_dir,
-                        &source_name,
-                        &metadata.object_type,
-                        digest,
-                        &upstream.body,
                     )?;
                     self.record(
                         "docker_blob_read",
@@ -932,13 +966,15 @@ impl DockerService {
                             failure_category: None,
                         },
                     );
-                    return blob_response(
-                        upstream.body,
+                    return blob_file_response(
+                        &path,
+                        upstream.length,
                         &metadata.content_type,
                         digest,
                         requested_range,
                         head,
-                    );
+                    )
+                    .await;
                 }
                 Err(error) if pool.is_group(entry_name) && is_fallback_source_error(&error) => {
                     if !is_not_found_source_error(&error) {
@@ -987,6 +1023,21 @@ impl DockerService {
             failures: failures.join("; "),
             status: (all_not_found && !failures.is_empty()).then_some(404),
         }))
+    }
+
+    async fn blob_lock(&self, repository: &str, digest: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.blob_locks.lock().await;
+        locks
+            .entry(format!("{repository}\0{digest}"))
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    fn temporary_blob_path(&self) -> PathBuf {
+        let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        self.data_dir
+            .join("tmp")
+            .join(format!("docker-{}-{counter}.part", std::process::id()))
     }
 }
 
@@ -1539,6 +1590,8 @@ fn artifact_path(
         .join(metadata_file_key(digest))
 }
 
+// Manifest and query objects are small enough to keep in memory; blob objects
+// use the file-based helpers below.
 fn read_verified_artifact(
     data_dir: &Path,
     selected_proxy: &str,
@@ -1577,6 +1630,70 @@ fn write_verified_artifact(
         contents,
     )
     .map_err(DockerError::Storage)
+}
+
+async fn read_verified_artifact_path(
+    data_dir: &Path,
+    selected_proxy: &str,
+    object_type: &str,
+    digest: &str,
+) -> Result<Option<(PathBuf, u64)>, DockerError> {
+    let path = artifact_path(data_dir, selected_proxy, object_type, digest);
+    let digest = digest.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let metadata = match fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(DockerError::Storage(error)),
+        };
+        let mut file = fs::File::open(&path)?;
+        let mut hasher = Sha256::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+        if format!("sha256:{:x}", hasher.finalize()) == digest {
+            let _ = crate::retention::note_access(&path);
+            Ok(Some((path, metadata.len())))
+        } else {
+            fs::remove_file(&path)?;
+            Ok(None)
+        }
+    })
+    .await
+    .map_err(|error| DockerError::Storage(io::Error::other(error)))?
+}
+
+async fn publish_verified_file(
+    data_dir: &Path,
+    selected_proxy: &str,
+    object_type: &str,
+    digest: &str,
+    temporary: &Path,
+) -> Result<PathBuf, DockerError> {
+    let destination = artifact_path(data_dir, selected_proxy, object_type, digest);
+    let temporary = temporary.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let result = (|| -> Result<(), io::Error> {
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::rename(&temporary, &destination)
+        })();
+        match result {
+            Ok(()) => Ok(destination),
+            Err(error) => {
+                let _ = fs::remove_file(&temporary);
+                Err(DockerError::Storage(error))
+            }
+        }
+    })
+    .await
+    .map_err(|error| DockerError::Storage(io::Error::other(error)))?
 }
 
 fn source_is_member(pool: &SourcePool, entry_name: &str, source_name: &str) -> bool {
@@ -1693,28 +1810,43 @@ fn manifest_response(
     response
 }
 
-fn blob_response(
-    body: Vec<u8>,
+async fn blob_file_response(
+    path: &Path,
+    full_length: u64,
     content_type: &str,
     digest: &str,
     requested_range: Option<&str>,
     head: bool,
 ) -> Result<Response, DockerError> {
-    let full_length = body.len();
-    let (status, response_body, content_range) = if let Some(range) = requested_range {
+    let (status, start, response_length, content_range) = if let Some(range) = requested_range {
         let (start, end) =
             parse_range(range, full_length).ok_or(DockerError::InvalidRange(full_length))?;
         (
             StatusCode::PARTIAL_CONTENT,
-            body[start..=end].to_vec(),
+            Some(start),
+            end - start + 1,
             Some(format!("bytes {start}-{end}/{full_length}")),
         )
     } else {
-        (StatusCode::OK, body, None)
+        (StatusCode::OK, None, full_length, None)
     };
-    let response_length = response_body.len();
-    let response_body = if head { Vec::new() } else { response_body };
-    let mut response = (status, Body::from(response_body)).into_response();
+    let body = if head {
+        Body::empty()
+    } else {
+        let file = tokio::fs::File::open(path)
+            .await
+            .map_err(DockerError::Storage)?;
+        if let Some(start) = start {
+            let mut file = file;
+            file.seek(SeekFrom::Start(start))
+                .await
+                .map_err(DockerError::Storage)?;
+            Body::from_stream(ReaderStream::new(file.take(response_length)))
+        } else {
+            Body::from_stream(ReaderStream::new(file))
+        }
+    };
+    let mut response = (status, body).into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         header::HeaderValue::from_str(content_type)
@@ -1742,50 +1874,26 @@ fn blob_response(
     Ok(response)
 }
 
-fn parse_range(value: &str, length: usize) -> Option<(usize, usize)> {
+fn parse_range(value: &str, length: u64) -> Option<(u64, u64)> {
     if length == 0 || !value.starts_with("bytes=") || value[6..].contains(',') {
         return None;
     }
     let (start, end) = value[6..].split_once('-')?;
     if start.is_empty() {
-        let suffix = end.parse::<usize>().ok()?;
+        let suffix = end.parse::<u64>().ok()?;
         if suffix == 0 {
             return None;
         }
         return Some((length.saturating_sub(suffix), length - 1));
     }
-    let start = start.parse::<usize>().ok()?;
+    let start = start.parse::<u64>().ok()?;
     if start >= length {
         return None;
     }
     let end = if end.is_empty() {
         length - 1
     } else {
-        end.parse::<usize>().ok()?.min(length - 1)
+        end.parse::<u64>().ok()?.min(length - 1)
     };
     (start <= end).then_some((start, end))
-}
-
-fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), io::Error> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::other("Docker metadata path has no parent"))?;
-    fs::create_dir_all(parent)?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| io::Error::other("Docker metadata path has no file name"))?;
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(io::Error::other)?
-        .as_nanos();
-    let temporary = parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), nonce));
-    fs::write(&temporary, contents)?;
-    match fs::rename(&temporary, path) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            let _ = fs::remove_file(temporary);
-            Err(error)
-        }
-    }
 }

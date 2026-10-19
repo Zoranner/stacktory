@@ -2,7 +2,6 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -18,6 +17,7 @@ use url::Url;
 use crate::{
     SourcePool,
     audit::{AuditDetails, AuditSink},
+    fsutil::atomic_write,
     sources::registry::{Adapter, AdapterFuture, AdapterRequest},
     sources::{FetchOperation, SourcePoolError},
 };
@@ -706,29 +706,5 @@ fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>, io::Error> {
         Ok(contents) => Ok(Some(contents)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
-    }
-}
-
-fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), io::Error> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::other("cache path has no parent"))?;
-    fs::create_dir_all(parent)?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| io::Error::other("cache path has no file name"))?;
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(io::Error::other)?
-        .as_nanos();
-    let temporary = parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), nonce));
-    fs::write(&temporary, contents)?;
-    match fs::rename(&temporary, path) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            let _ = fs::remove_file(&temporary);
-            Err(error)
-        }
     }
 }

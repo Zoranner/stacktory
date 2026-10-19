@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use axum::{Router, response::IntoResponse, routing::get};
+use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
 use sha2::{Digest, Sha256};
 use stacktory::{
     Config, RetentionConfig, RustupConfig, SourceConfig, SourceGraph, SourceType, rustup::DistPath,
@@ -97,6 +97,52 @@ async fn refresh_publishes_a_rewritten_manifest_snapshot() {
 }
 
 #[tokio::test]
+async fn group_manifest_refresh_falls_back_after_member_404() {
+    let first = start_not_found_upstream().await;
+    let (second, _) = start_refresh_upstream(Arc::new(AtomicUsize::new(0))).await;
+    let data_dir = tempdir().expect("temporary directory");
+    let service = service_with_sources(
+        vec![
+            source("first", first.as_str()),
+            source("second", second.as_str()),
+            group("group", &["first", "second"]),
+        ],
+        data_dir.path().to_path_buf(),
+    );
+
+    service
+        .refresh("group", "stable")
+        .await
+        .expect("group refresh");
+    let snapshot = service.manifest("group", "stable").expect("snapshot");
+
+    assert_eq!(snapshot.source_name, "second");
+}
+
+#[tokio::test]
+async fn group_manifest_refresh_falls_back_when_member_checksum_is_missing() {
+    let first = start_manifest_without_checksum().await;
+    let (second, _) = start_refresh_upstream(Arc::new(AtomicUsize::new(0))).await;
+    let data_dir = tempdir().expect("temporary directory");
+    let service = service_with_sources(
+        vec![
+            source("first", first.as_str()),
+            source("second", second.as_str()),
+            group("group", &["first", "second"]),
+        ],
+        data_dir.path().to_path_buf(),
+    );
+
+    service
+        .refresh("group", "stable")
+        .await
+        .expect("group refresh");
+    let snapshot = service.manifest("group", "stable").expect("snapshot");
+
+    assert_eq!(snapshot.source_name, "second");
+}
+
+#[tokio::test]
 async fn artifact_request_fetches_a_published_artifact_and_reuses_the_verified_cache() {
     let artifact = b"verified artifact";
     let expected_hash = format!("{:x}", Sha256::digest(artifact));
@@ -123,6 +169,27 @@ async fn artifact_request_fetches_a_published_artifact_and_reuses_the_verified_c
         std::fs::read_to_string(data_dir.path().join("audit/events.jsonl")).expect("audit log");
     assert!(audit.contains("artifact_cached"));
     assert!(audit.contains("artifact_cache_hit"));
+}
+
+#[tokio::test]
+async fn concurrent_artifact_requests_share_one_upstream_fetch() {
+    let artifact = b"shared verified artifact";
+    let expected_hash = format!("{:x}", Sha256::digest(artifact));
+    let requests = Arc::new(AtomicUsize::new(0));
+    let (upstream, path) =
+        start_artifact_upstream(artifact.to_vec(), expected_hash, requests.clone()).await;
+    let data_dir = tempdir().expect("temporary directory");
+    let service = service_for(upstream, data_dir.path().to_path_buf());
+
+    service.refresh("test", "stable").await.expect("refresh");
+    let (first, second) = tokio::join!(
+        service.artifact_for_request("test", "stable", &path),
+        service.artifact_for_request("test", "stable", &path),
+    );
+
+    assert_eq!(first.expect("first artifact request"), artifact);
+    assert_eq!(second.expect("second artifact request"), artifact);
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -748,6 +815,7 @@ async fn start_artifact_upstream(
                 let artifact = artifact.clone();
                 let requests = requests.clone();
                 async move {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
                     requests.fetch_add(1, Ordering::SeqCst);
                     artifact
                 }
@@ -817,6 +885,48 @@ async fn start_refresh_upstream(refreshes: Arc<AtomicUsize>) -> (Url, Arc<Atomic
     )
 }
 
+async fn start_not_found_upstream() -> Url {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let router = Router::new()
+        .route(
+            "/dist/channel-rust-stable.toml",
+            get(|| async { StatusCode::NOT_FOUND }),
+        )
+        .route(
+            "/dist/channel-rust-stable.toml.sha256",
+            get(|| async { StatusCode::NOT_FOUND }),
+        );
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.expect("server");
+    });
+
+    Url::parse(&format!("http://{address}")).expect("upstream URL")
+}
+
+async fn start_manifest_without_checksum() -> Url {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let manifest = SOURCE_MANIFEST.replace("PORT", &address.port().to_string());
+    let router = Router::new()
+        .route(
+            "/dist/channel-rust-stable.toml",
+            get(move || {
+                let manifest = manifest.clone();
+                async move { manifest }
+            }),
+        )
+        .route(
+            "/dist/channel-rust-stable.toml.sha256",
+            get(|| async { StatusCode::NOT_FOUND }),
+        );
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.expect("server");
+    });
+
+    Url::parse(&format!("http://{address}")).expect("upstream URL")
+}
+
 fn expire_current_snapshot(data_dir: &std::path::Path, channel: &str, service: &RustupService) {
     let snapshot = service.manifest("test", channel).expect("snapshot");
     std::fs::write(
@@ -834,6 +944,10 @@ fn expire_current_snapshot(data_dir: &std::path::Path, channel: &str, service: &
 }
 
 fn service_for(upstream: Url, data_dir: PathBuf) -> RustupService {
+    service_with_sources(vec![source("test", upstream.to_string())], data_dir)
+}
+
+fn service_with_sources(sources: Vec<SourceConfig>, data_dir: PathBuf) -> RustupService {
     RustupService::new(Config {
         listen_address: "127.0.0.1".parse().expect("address"),
         listen_port: 18761,
@@ -844,14 +958,7 @@ fn service_for(upstream: Url, data_dir: PathBuf) -> RustupService {
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
             channels: vec!["stable".to_owned()],
-            sources: SourceGraph::new(vec![SourceConfig {
-                name: "test".to_owned(),
-                source_type: SourceType::Proxy,
-                base_url: Some(upstream.clone()),
-                require_https: false,
-                members: vec![],
-            }])
-            .expect("source graph"),
+            sources: SourceGraph::new(sources).expect("source graph"),
         },
         cargo: None,
         vscode: None,

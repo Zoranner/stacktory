@@ -152,3 +152,13 @@ fn rejects_invalid_source_name() {
 
     assert!(error.to_string().contains("source name"));
 }
+
+#[test]
+fn rejects_dot_source_names() {
+    for name in [".", ".."] {
+        let configuration =
+            CONFIGURATION.replace("name = \"company-nexus\"", &format!("name = \"{name}\""));
+        let error = Config::from_toml(&configuration).expect_err("dot source name must fail");
+        assert!(error.to_string().contains("source name"));
+    }
+}

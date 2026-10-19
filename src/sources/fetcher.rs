@@ -1,13 +1,18 @@
-use std::{net::SocketAddr, time::Duration};
+use std::{io, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::redirect::Policy;
 use reqwest::{
     Method,
     header::{HeaderMap, WWW_AUTHENTICATE},
 };
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
+use tokio::{fs::File, io::AsyncWriteExt};
 use url::Url;
+
+use super::policy::{is_private_or_local_address, is_public_host, same_origin};
 
 const USER_AGENT: &str = concat!("Stacktory/", env!("CARGO_PKG_VERSION"));
 const MARKETPLACE_ACCEPT: &str = "application/json;api-version=3.0-preview.1";
@@ -20,8 +25,40 @@ pub(crate) struct FetchResponse {
 }
 
 #[derive(Debug)]
+pub(crate) struct FetchedFile {
+    pub(crate) path: PathBuf,
+    pub(crate) length: u64,
+    pub(crate) sha256: String,
+}
+
+#[derive(Debug)]
 pub(crate) struct HttpFetcher {
     client: reqwest::Client,
+    public_client: reqwest::Client,
+}
+
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+struct PublicResolver;
+
+impl Resolve for PublicResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let host = name.as_str().to_owned();
+        Box::pin(async move {
+            let addresses = tokio::net::lookup_host((host.as_str(), 0))
+                .await
+                .map_err(|error| -> BoxError { Box::new(error) })?;
+            let allowed = addresses
+                .filter(|address| !is_private_or_local_address(address.ip()))
+                .collect::<Vec<_>>();
+            if allowed.is_empty() {
+                return Err(Box::new(std::io::Error::other(
+                    "host resolved only to private or local addresses",
+                )) as BoxError);
+            }
+            Ok(Box::new(allowed.into_iter()) as Addrs)
+        })
+    }
 }
 
 #[derive(Debug, Error)]
@@ -34,6 +71,8 @@ pub(crate) enum FetchError {
     HttpStatus(Url, reqwest::StatusCode),
     #[error("response from `{0}` could not be read: {1}")]
     ResponseBody(Url, reqwest::Error),
+    #[error("temporary file write failed: {0}")]
+    TempFile(io::Error),
     #[error("upstream Registry authentication challenge from `{0}` is invalid")]
     InvalidRegistryChallenge(Url),
     #[error("upstream Registry token response from `{0}` is invalid")]
@@ -46,7 +85,7 @@ pub(crate) enum FetchError {
 
 impl HttpFetcher {
     pub(crate) fn new() -> Result<Self, FetchError> {
-        Self::build_client(reqwest::Client::builder())
+        Self::build_clients(&[])
     }
 
     pub(crate) fn new_with_resolver(host: &str, address: SocketAddr) -> Result<Self, FetchError> {
@@ -54,20 +93,40 @@ impl HttpFetcher {
     }
 
     pub(crate) fn new_with_resolvers(resolvers: &[(&str, SocketAddr)]) -> Result<Self, FetchError> {
+        Self::build_clients(resolvers)
+    }
+
+    fn build_clients(resolvers: &[(&str, SocketAddr)]) -> Result<Self, FetchError> {
+        Ok(Self {
+            client: Self::build_client(resolvers, false)?,
+            public_client: Self::build_client(resolvers, true)?,
+        })
+    }
+
+    fn build_client(
+        resolvers: &[(&str, SocketAddr)],
+        public: bool,
+    ) -> Result<reqwest::Client, FetchError> {
         let mut builder = reqwest::Client::builder();
         for (host, address) in resolvers {
             builder = builder.resolve(host, *address);
         }
-        Self::build_client(builder)
-    }
-
-    fn build_client(builder: reqwest::ClientBuilder) -> Result<Self, FetchError> {
-        let client = builder
+        if public {
+            builder = builder.dns_resolver(Arc::new(PublicResolver));
+        }
+        Ok(builder
             .redirect(Policy::none())
             .connect_timeout(Duration::from_secs(30))
             .user_agent(USER_AGENT)
-            .build()?;
-        Ok(Self { client })
+            .build()?)
+    }
+
+    fn client_for(&self, allow_private: bool) -> &reqwest::Client {
+        if allow_private {
+            &self.client
+        } else {
+            &self.public_client
+        }
     }
 
     pub(crate) async fn fetch(
@@ -75,7 +134,16 @@ impl HttpFetcher {
         url: Url,
         timeout: Duration,
     ) -> Result<FetchResponse, FetchError> {
-        self.fetch_with_headers(url, HeaderMap::new(), timeout)
+        self.fetch_with_policy(url, HeaderMap::new(), true, timeout)
+            .await
+    }
+
+    pub(crate) async fn fetch_public(
+        &self,
+        url: Url,
+        timeout: Duration,
+    ) -> Result<FetchResponse, FetchError> {
+        self.fetch_with_policy(url, HeaderMap::new(), false, timeout)
             .await
     }
 
@@ -85,8 +153,18 @@ impl HttpFetcher {
         headers: HeaderMap,
         timeout: Duration,
     ) -> Result<FetchResponse, FetchError> {
+        self.fetch_with_policy(url, headers, true, timeout).await
+    }
+
+    async fn fetch_with_policy(
+        &self,
+        url: Url,
+        headers: HeaderMap,
+        allow_private: bool,
+        timeout: Duration,
+    ) -> Result<FetchResponse, FetchError> {
         let response = self
-            .client
+            .client_for(allow_private)
             .get(url.clone())
             .headers(headers)
             .timeout(timeout)
@@ -99,13 +177,15 @@ impl HttpFetcher {
         &self,
         url: Url,
         require_https: bool,
+        allow_private_initial: bool,
         timeout: Duration,
     ) -> Result<FetchResponse, FetchError> {
         let original_url = url.clone();
         let mut current_url = url;
         for _ in 0..=3 {
+            let allow_private = allow_private_initial && same_origin(&original_url, &current_url);
             let response = self
-                .client
+                .client_for(allow_private)
                 .get(current_url.clone())
                 .timeout(timeout)
                 .send()
@@ -136,15 +216,51 @@ impl HttpFetcher {
         method: Method,
         url: Url,
         headers: HeaderMap,
+        require_https: bool,
         timeout: Duration,
     ) -> Result<FetchResponse, FetchError> {
+        let (url, response) = self
+            .registry_response(method, url, headers, require_https, timeout)
+            .await?;
+        self.response_bytes(url, Ok(response)).await
+    }
+
+    pub(crate) async fn fetch_registry_to_file(
+        &self,
+        method: Method,
+        url: Url,
+        headers: HeaderMap,
+        require_https: bool,
+        timeout: Duration,
+        path: PathBuf,
+    ) -> Result<FetchedFile, FetchError> {
+        let (url, response) = self
+            .registry_response(method, url, headers, require_https, timeout)
+            .await?;
+        let cleanup_path = path.clone();
+        let result = self.response_file(url, response, path).await;
+        if result.is_err() {
+            let _ = tokio::fs::remove_file(&cleanup_path).await;
+        }
+        result
+    }
+
+    async fn registry_response(
+        &self,
+        method: Method,
+        url: Url,
+        headers: HeaderMap,
+        require_https: bool,
+        timeout: Duration,
+    ) -> Result<(Url, reqwest::Response), FetchError> {
         let original_url = url.clone();
         let mut current_url = url;
         let mut authorization = None;
 
         for _ in 0..=3 {
+            let allow_private = same_origin(&original_url, &current_url);
             let mut request = self
-                .client
+                .client_for(allow_private)
                 .request(method.clone(), current_url.clone())
                 .headers(headers.clone())
                 .timeout(timeout);
@@ -164,7 +280,12 @@ impl HttpFetcher {
                     .and_then(parse_bearer_challenge)
                     .ok_or_else(|| FetchError::InvalidRegistryChallenge(current_url.clone()))?;
                 let token = self
-                    .fetch_anonymous_registry_token(&original_url, challenge, timeout)
+                    .fetch_anonymous_registry_token(
+                        &original_url,
+                        challenge,
+                        require_https,
+                        timeout,
+                    )
                     .await?;
                 authorization = Some(format!("Bearer {token}"));
                 continue;
@@ -179,7 +300,7 @@ impl HttpFetcher {
                 let next_url = current_url
                     .join(location)
                     .map_err(|_| FetchError::UnsafeRegistryRedirect(current_url.clone()))?;
-                if !is_safe_registry_redirect(&original_url, &next_url) {
+                if !is_safe_registry_redirect(&original_url, &next_url, require_https) {
                     return Err(FetchError::UnsafeRegistryRedirect(next_url));
                 }
                 if !same_origin(&current_url, &next_url) {
@@ -189,7 +310,7 @@ impl HttpFetcher {
                 continue;
             }
 
-            return self.response_bytes(current_url, Ok(response)).await;
+            return Ok((current_url, response));
         }
 
         Err(FetchError::RegistryRedirectLimit(current_url))
@@ -240,15 +361,47 @@ impl HttpFetcher {
             .map_err(|error| FetchError::ResponseBody(url, error))
     }
 
+    async fn response_file(
+        &self,
+        url: Url,
+        response: reqwest::Response,
+        path: PathBuf,
+    ) -> Result<FetchedFile, FetchError> {
+        if !response.status().is_success() {
+            return Err(FetchError::HttpStatus(url, response.status()));
+        }
+        let mut response = response;
+        let mut file = File::create(&path).await.map_err(FetchError::TempFile)?;
+        let mut hasher = Sha256::new();
+        let mut length = 0_u64;
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|error| FetchError::ResponseBody(url.clone(), error))?
+        {
+            hasher.update(&chunk);
+            file.write_all(&chunk).await.map_err(FetchError::TempFile)?;
+            length += chunk.len() as u64;
+        }
+        file.flush().await.map_err(FetchError::TempFile)?;
+        Ok(FetchedFile {
+            path,
+            length,
+            sha256: format!("sha256:{:x}", hasher.finalize()),
+        })
+    }
+
     async fn fetch_anonymous_registry_token(
         &self,
         source_url: &Url,
         challenge: BearerChallenge,
+        require_https: bool,
         timeout: Duration,
     ) -> Result<String, FetchError> {
-        if !is_safe_registry_token_url(source_url, &challenge.realm) {
+        if !is_safe_registry_token_url(source_url, &challenge.realm, require_https) {
             return Err(FetchError::InvalidRegistryChallenge(source_url.clone()));
         }
+        let allow_private = same_origin(source_url, &challenge.realm);
         let mut token_url = challenge.realm;
         {
             let mut query = token_url.query_pairs_mut();
@@ -260,7 +413,7 @@ impl HttpFetcher {
             }
         }
         let response = self
-            .client
+            .client_for(allow_private)
             .get(token_url.clone())
             .timeout(timeout)
             .send()
@@ -318,17 +471,20 @@ fn parse_bearer_challenge(value: &str) -> Option<BearerChallenge> {
     })
 }
 
-fn is_safe_registry_token_url(source_url: &Url, token_url: &Url) -> bool {
+fn is_safe_registry_token_url(source_url: &Url, token_url: &Url, require_https: bool) -> bool {
     matches!(token_url.scheme(), "http" | "https")
+        && (!require_https || token_url.scheme() == "https")
         && token_url.host_str().is_some()
         && token_url.username().is_empty()
         && token_url.password().is_none()
         && token_url.fragment().is_none()
-        && (same_origin(source_url, token_url) || is_public_host(token_url.host_str().unwrap()))
+        && (same_origin(source_url, token_url)
+            || is_public_host(token_url.host_str().unwrap_or_default()))
 }
 
-fn is_safe_registry_redirect(source_url: &Url, redirect_url: &Url) -> bool {
+fn is_safe_registry_redirect(source_url: &Url, redirect_url: &Url, require_https: bool) -> bool {
     matches!(redirect_url.scheme(), "http" | "https")
+        && (!require_https || redirect_url.scheme() == "https")
         && redirect_url.host_str().is_some()
         && redirect_url.username().is_empty()
         && redirect_url.password().is_none()
@@ -338,7 +494,7 @@ fn is_safe_registry_redirect(source_url: &Url, redirect_url: &Url) -> bool {
             .split('/')
             .any(|segment| matches!(segment, "." | ".."))
         && (same_origin(source_url, redirect_url)
-            || is_public_host(redirect_url.host_str().unwrap()))
+            || is_public_host(redirect_url.host_str().unwrap_or_default()))
 }
 
 fn is_safe_http_redirect(source_url: &Url, redirect_url: &Url, require_https: bool) -> bool {
@@ -360,48 +516,6 @@ fn is_safe_http_redirect(source_url: &Url, redirect_url: &Url, require_https: bo
             || is_public_host(redirect_url.host_str().unwrap_or_default()))
 }
 
-fn same_origin(left: &Url, right: &Url) -> bool {
-    left.scheme() == right.scheme()
-        && left.host_str() == right.host_str()
-        && left.port_or_known_default() == right.port_or_known_default()
-}
-
-fn is_public_host(host: &str) -> bool {
-    let host = host
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .trim_end_matches('.')
-        .to_ascii_lowercase();
-    if host == "localhost"
-        || host.ends_with(".localhost")
-        || host.ends_with(".local")
-        || host.ends_with(".internal")
-        || host.ends_with(".lan")
-        || host.ends_with(".home.arpa")
-    {
-        return false;
-    }
-    host.parse::<std::net::IpAddr>()
-        .map(|address| match address {
-            std::net::IpAddr::V4(address) => {
-                let [first, second, ..] = address.octets();
-                first == 0
-                    || first == 10
-                    || first == 127
-                    || (first == 169 && second == 254)
-                    || (first == 172 && (16..=31).contains(&second))
-                    || (first == 192 && second == 168)
-            }
-            std::net::IpAddr::V6(address) => {
-                address.is_loopback()
-                    || address.is_unspecified()
-                    || (address.segments()[0] & 0xfe00) == 0xfc00
-                    || (address.segments()[0] & 0xffc0) == 0xfe80
-            }
-        })
-        .map_or(true, |private| !private)
-}
-
 impl FetchError {
     pub(crate) fn status_code(&self) -> Option<u16> {
         match self {
@@ -420,6 +534,57 @@ impl FetchError {
             | Self::UnsafeRegistryRedirect(_)
             | Self::RegistryRedirectLimit(_) => true,
             Self::HttpStatus(_, status) => status.is_redirection() || status.is_server_error(),
+            Self::TempFile(_) => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PublicResolver, is_safe_registry_redirect, is_safe_registry_token_url};
+    use reqwest::dns::Resolve;
+    use url::Url;
+
+    #[test]
+    fn registry_redirect_rejects_https_downgrade() {
+        let source = Url::parse("https://registry.example/").expect("source");
+        let target = Url::parse("http://registry.example/v2/library/image/blobs/sha256:abc")
+            .expect("target");
+
+        assert!(!is_safe_registry_redirect(&source, &target, true));
+        assert!(is_safe_registry_redirect(&source, &target, false));
+    }
+
+    #[test]
+    fn registry_token_url_rejects_https_downgrade() {
+        let source = Url::parse("https://registry.example/").expect("source");
+        let target = Url::parse("http://auth.example/token").expect("target");
+
+        assert!(!is_safe_registry_token_url(&source, &target, true));
+        assert!(is_safe_registry_token_url(&source, &target, false));
+    }
+
+    #[test]
+    fn registry_redirect_allows_public_https_target() {
+        let source = Url::parse("https://registry.example/").expect("source");
+        let target = Url::parse("https://cdn.example/blob").expect("target");
+
+        assert!(is_safe_registry_redirect(&source, &target, true));
+    }
+
+    #[test]
+    fn registry_redirect_rejects_private_literal_target() {
+        let source = Url::parse("https://registry.example/").expect("source");
+        let target = Url::parse("https://127.0.0.1/blob").expect("target");
+
+        assert!(!is_safe_registry_redirect(&source, &target, true));
+    }
+
+    #[tokio::test]
+    async fn public_resolver_rejects_loopback_hostname() {
+        let name = "localhost".parse().expect("DNS name");
+        let result = PublicResolver.resolve(name).await;
+
+        assert!(result.is_err());
     }
 }
