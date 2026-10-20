@@ -108,7 +108,6 @@ jobs:
           image_id="$(docker image inspect --format '{{.Id}}' "$IMAGE@$DIGEST")"
           docker image tag "$image_id" "$IMAGE:$VERSION"
           docker image save --output "$archive" "$IMAGE:$VERSION"
-          sha256sum "$archive" > "$archive.sha256"
           mkdir -p digests
           touch "digests/${DIGEST#sha256:}"
 
@@ -118,7 +117,6 @@ jobs:
           name: stacktory-${{ matrix.archive_suffix }}
           path: |
             stacktory-${{ needs.prepare.outputs.version }}-${{ matrix.archive_suffix }}.tar
-            stacktory-${{ needs.prepare.outputs.version }}-${{ matrix.archive_suffix }}.tar.sha256
             digests/*
           if-no-files-found: error
 
@@ -166,9 +164,8 @@ jobs:
           body: |
             Image: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.version }}
             Offline images: stacktory-${{ needs.prepare.outputs.version }}-linux-amd64.tar, stacktory-${{ needs.prepare.outputs.version }}-linux-arm64.tar
-            Each offline image has a same-name .sha256 file for integrity verification.
+            GitHub shows each offline image's SHA-256 digest in the release asset metadata.
           files: |
             artifacts/*.tar
-            artifacts/*.tar.sha256
           fail_on_unmatched_files: true
           overwrite_files: true
