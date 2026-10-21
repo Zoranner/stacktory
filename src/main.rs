@@ -62,18 +62,27 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         log_file.path().display()
     ));
     let service = Arc::new(RustupService::new(config)?);
+    let mut docker_tasks = Vec::new();
     for docker_listener in docker_listeners {
         let listener = TcpListener::bind((docker_listener.address, docker_listener.port)).await?;
         let router = router_with_docker_entry(registry.clone(), docker_listener.entry_name);
-        tokio::spawn(async move {
-            if let Err(error) = axum::serve(listener, router).await {
+        docker_tasks.push(tokio::spawn(async move {
+            if let Err(error) = axum::serve(listener, router)
+                .with_graceful_shutdown(shutdown_signal())
+                .await
+            {
                 logging::error(format!("docker listener failed: {error}"));
             }
-        });
+        }));
     }
     axum::serve(listener, router_with_rustup_and_registry(service, registry))
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+    for task in docker_tasks {
+        if let Err(error) = task.await {
+            logging::error(format!("docker listener task failed: {error}"));
+        }
+    }
     Ok(())
 }
 

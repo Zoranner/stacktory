@@ -360,6 +360,8 @@ Docker 客户端返回上游 Registry host。
 对应 source；未配置端口的 source 不增加根 Registry 入口。多个 source 的端口
 必须唯一且不能占用主服务 `listen_port`。域名绑定由外部 DNS、端口映射或反向
 代理完成。
+Docker listener 与主监听共享关闭信号；主监听退出后，服务会等待 Docker listener
+完成在途请求再结束进程。
 
 manifest、image config 和 layer blob 分别记录 object type。group 只按声明顺序
 选择一个通过协议和完整性校验的 proxy，成功后记录 `selected_proxy`，不合并

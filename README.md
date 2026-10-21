@@ -72,6 +72,7 @@ docker compose -f deploy/docker-compose.yml up -d
 compose 默认发布主服务端口 `18761` 和 Docker `group` 入口的 `19000`。如果需要为其他
 Docker source 开放标准 CLI 端口，在 `deploy/app/config.toml` 中设置对应
 `listen_port`，并在 `deploy/docker-compose.yml` 中增加相同的端口映射。
+compose 会通过容器内 `127.0.0.1:18761` 的 TCP 连接检查服务是否在监听。
 
 ## 缓存失效
 

@@ -10,6 +10,12 @@ services:
       - ./app/data:/app/data
       - ./app/logs:/app/logs
       - ./app/config.toml:/app/config.toml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/18761'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 networks:
   default:
     external: true
