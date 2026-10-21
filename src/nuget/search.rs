@@ -9,7 +9,7 @@ use url::Url;
 use crate::{
     nuget::service_index::{NugetAuditDetails, NugetError, NugetService},
     nuget::{group_fallback_error, group_fallback_source},
-    sources::{FetchOperation, SourcePool, SourcePoolError},
+    sources::{FetchOperation, GroupRun, SourcePool, SourcePoolError},
 };
 
 pub(crate) async fn serve(
@@ -37,17 +37,10 @@ async fn search(
     }
     let initial = service.service_index(entry_name, pool).await?;
     let preferred = initial.selected_proxy.clone();
-    let mut members = pool
-        .proxy_members(entry_name)
-        .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
-    if let Some(position) = members.iter().position(|member| member.name == preferred) {
-        let selected = members.remove(position);
-        members.insert(0, selected);
-    }
-    let is_group = pool.is_group(entry_name);
-    let mut failures = Vec::new();
+    let mut run = GroupRun::new(pool, entry_name, Some(&preferred))?;
+    let is_group = run.is_group();
 
-    for member in members {
+    while let Some(member) = run.next_member() {
         let snapshot = if member.name == preferred {
             if initial.search_url.is_some() {
                 initial.clone()
@@ -62,7 +55,7 @@ async fn search(
                             && (is_retryable(&error)
                                 || group_fallback_error(&error, pool, entry_name)) =>
                     {
-                        failures.push(format!("{}: {error}", member.name));
+                        run.record_failure(&member.name, &error.to_string(), false);
                         continue;
                     }
                     Err(error) => return Err(error),
@@ -79,14 +72,14 @@ async fn search(
                         && (is_retryable(&error)
                             || group_fallback_error(&error, pool, entry_name)) =>
                 {
-                    failures.push(format!("{}: {error}", member.name));
+                    run.record_failure(&member.name, &error.to_string(), false);
                     continue;
                 }
                 Err(error) => return Err(error),
             }
         };
         let Some(search_base) = snapshot.search_url.clone() else {
-            failures.push(format!("{}: search resource is missing", member.name));
+            run.record_failure(&member.name, "search resource is missing", false);
             continue;
         };
         let mut search_url = search_base;
@@ -101,7 +94,7 @@ async fn search(
         {
             Ok(response) => response,
             Err(error) if group_fallback_source(&error, pool, entry_name) => {
-                failures.push(format!("{}: {error}", member.name));
+                run.record_failure(&member.name, &error.to_string(), false);
                 continue;
             }
             Err(error) => return Err(error.into()),
@@ -109,7 +102,11 @@ async fn search(
         let mut body: Value = match serde_json::from_slice(&upstream.body) {
             Ok(body) => body,
             Err(error) => {
-                failures.push(format!("{}: invalid search JSON: {error}", member.name));
+                run.record_failure(
+                    &member.name,
+                    &format!("invalid search JSON: {error}"),
+                    false,
+                );
                 continue;
             }
         };
@@ -117,7 +114,7 @@ async fn search(
             rewrite_registration_links(&mut body, &snapshot.registration_urls, service, entry_name)
         {
             if is_group {
-                failures.push(format!("{}: {error}", member.name));
+                run.record_failure(&member.name, &error.to_string(), false);
                 continue;
             }
             return Err(error);
@@ -151,7 +148,7 @@ async fn search(
     Err(SourcePoolError::AllSourcesFailed {
         entry_name: entry_name.to_owned(),
         request_key: "search/query".to_owned(),
-        failures: failures.join("; "),
+        failures: run.failure_summary(),
         status: None,
     }
     .into())

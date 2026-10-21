@@ -19,7 +19,7 @@ use crate::{
     audit::{AuditDetails, AuditError, AuditSink},
     fsutil::atomic_write,
     sources::{
-        FetchOperation, SourcePoolError,
+        FetchOperation, GroupRun, SourcePoolError,
         registry::{Adapter, AdapterFuture, AdapterRequest},
     },
 };
@@ -286,29 +286,16 @@ impl NugetService {
         preferred_source: Option<&str>,
         revalidating: bool,
     ) -> Result<ServiceIndexSnapshot, NugetError> {
-        let mut members = pool
-            .proxy_members(entry_name)
-            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
-        if let Some(preferred_source) = preferred_source
-            && let Some(position) = members
-                .iter()
-                .position(|member| member.name == preferred_source)
-        {
-            let preferred = members.remove(position);
-            members.insert(0, preferred);
-        }
+        let mut run = GroupRun::new(pool, entry_name, preferred_source)?;
         let cache_path = self.service_index_path(entry_name);
         let descriptor_path = self.service_index_descriptor_path(entry_name);
-        let mut failures = Vec::new();
-        let mut all_not_found = true;
-        for member in members {
+        while let Some(member) = run.next_member() {
             let base_url = member
                 .base_url
                 .as_ref()
                 .expect("validated NuGet proxy must have a base URL");
             if !validate_service_index_url(base_url, member.require_https) {
-                failures.push(format!("{}: invalid service index URL", member.name));
-                all_not_found = false;
+                run.record_failure(&member.name, "invalid service index URL", false);
                 continue;
             }
             let upstream = match pool
@@ -321,10 +308,11 @@ impl NugetService {
             {
                 Ok(response) => response,
                 Err(error) if group_fallback_source(&error, pool, entry_name) => {
-                    if !is_group_not_found(pool, entry_name, &error) {
-                        all_not_found = false;
-                    }
-                    failures.push(format!("{}: {error}", member.name));
+                    run.record_failure(
+                        &member.name,
+                        &error.to_string(),
+                        is_group_not_found(pool, entry_name, &error),
+                    );
                     continue;
                 }
                 Err(error) => return Err(error.into()),
@@ -381,8 +369,7 @@ impl NugetService {
                     });
                 }
                 Err(error) => {
-                    failures.push(format!("{}: {error}", member.name));
-                    all_not_found = false;
+                    run.record_failure(&member.name, &error.to_string(), false);
                 }
             }
         }
@@ -392,19 +379,13 @@ impl NugetService {
             entry_name,
             "",
             "failed",
-            Some(if all_not_found {
+            Some(if run.all_not_found() {
                 "not_found"
             } else {
                 "source_failed"
             }),
         )?;
-        Err(SourcePoolError::AllSourcesFailed {
-            entry_name: entry_name.to_owned(),
-            request_key: "v3/index.json".to_owned(),
-            failures: failures.join("; "),
-            status: (pool.is_group(entry_name) && all_not_found).then_some(404),
-        }
-        .into())
+        Err(run.all_sources_failed("v3/index.json").into())
     }
 
     pub(crate) async fn service_index_from_source(

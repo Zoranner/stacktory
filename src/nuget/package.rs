@@ -24,7 +24,7 @@ use crate::{
         service_index::{NugetAuditDetails, NugetError, NugetService, ServiceIndexSnapshot},
         {metadata_is_stale, now_unix_secs},
     },
-    sources::{FetchOperation, SourcePool, SourcePoolError},
+    sources::{FetchOperation, GroupRun, SourcePool, SourcePoolError},
 };
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -169,20 +169,12 @@ async fn fetch_package_index(
     revalidating: bool,
 ) -> Result<Vec<u8>, NugetError> {
     let preferred = initial_snapshot.selected_proxy.clone();
-    let mut members = pool
-        .proxy_members(entry_name)
-        .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
-    if let Some(position) = members.iter().position(|member| member.name == preferred) {
-        let selected = members.remove(position);
-        members.insert(0, selected);
-    }
-    let is_group = pool.is_group(entry_name);
-    let mut failures = Vec::new();
-    let mut all_not_found = true;
+    let mut run = GroupRun::new(pool, entry_name, Some(&preferred))?;
+    let is_group = run.is_group();
     let cache_path = package_index_path(&service.data_dir, entry_name, package_id);
     let descriptor_path = package_index_descriptor_path(&service.data_dir, entry_name, package_id);
 
-    for member in members {
+    while let Some(member) = run.next_member() {
         let snapshot = if member.name == preferred {
             initial_snapshot.clone()
         } else {
@@ -196,18 +188,14 @@ async fn fetch_package_index(
                         && (is_retryable(&error)
                             || group_fallback_error(&error, pool, entry_name)) =>
                 {
-                    if !is_not_found(&error) {
-                        all_not_found = false;
-                    }
-                    failures.push(format!("{}: {error}", member.name));
+                    run.record_failure(&member.name, &error.to_string(), is_not_found(&error));
                     continue;
                 }
                 Err(error) => return Err(error),
             }
         };
         let Some(package_base) = snapshot.package_base_url.clone() else {
-            all_not_found = false;
-            failures.push(format!("{}: package resource is missing", member.name));
+            run.record_failure(&member.name, "package resource is missing", false);
             continue;
         };
         let upstream_url = append_path(&package_base, &format!("{package_id}/index.json"));
@@ -221,17 +209,17 @@ async fn fetch_package_index(
         {
             Ok(response) => response,
             Err(error) if group_fallback_source(&error, pool, entry_name) => {
-                if !is_source_not_found(&error) {
-                    all_not_found = false;
-                }
-                failures.push(format!("{}: {error}", member.name));
+                run.record_failure(
+                    &member.name,
+                    &error.to_string(),
+                    is_source_not_found(&error),
+                );
                 continue;
             }
             Err(error) => return Err(error.into()),
         };
         if !valid_package_index(&upstream.body) {
-            all_not_found = false;
-            failures.push(format!("{}: invalid package version index", member.name));
+            run.record_failure(&member.name, "invalid package version index", false);
             continue;
         }
         atomic_write(&cache_path, &upstream.body)?;
@@ -287,20 +275,16 @@ async fn fetch_package_index(
             selected_proxy: "",
             object_type: "package-index",
             cache_status: "failed",
-            failure_category: Some(if all_not_found {
+            failure_category: Some(if run.all_not_found() {
                 "not_found"
             } else {
                 "source_failed"
             }),
         },
     )?;
-    Err(SourcePoolError::AllSourcesFailed {
-        entry_name: entry_name.to_owned(),
-        request_key: format!("package/{package_id}/index.json"),
-        failures: failures.join("; "),
-        status: (is_group && all_not_found).then_some(404),
-    }
-    .into())
+    Err(run
+        .all_sources_failed(format!("package/{package_id}/index.json"))
+        .into())
 }
 
 async fn serve_package(
@@ -326,22 +310,13 @@ async fn serve_package(
             .is_some_and(|fingerprint| fingerprint == binding.source_fingerprint)
             && !metadata_is_stale(binding.validated_at_unix_secs)
     });
-    let mut members = pool
-        .proxy_members(entry_name)
-        .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
     let preferred = stored_binding
         .as_ref()
         .map(|binding| binding.selected_proxy.clone())
         .unwrap_or_else(|| initial_snapshot.selected_proxy.clone());
-    if let Some(position) = members.iter().position(|member| member.name == preferred) {
-        let selected = members.remove(position);
-        members.insert(0, selected);
-    }
-
-    let is_group = pool.is_group(entry_name);
-    let mut failures = Vec::new();
-    let mut all_not_found = true;
-    for member in members {
+    let mut run = GroupRun::new(pool, entry_name, Some(&preferred))?;
+    let is_group = run.is_group();
+    while let Some(member) = run.next_member() {
         let use_stored_binding = binding_is_current
             && stored_binding
                 .as_ref()
@@ -365,10 +340,7 @@ async fn serve_package(
                             && (is_retryable(&error)
                                 || group_fallback_error(&error, pool, entry_name)) =>
                     {
-                        if !is_not_found(&error) {
-                            all_not_found = false;
-                        }
-                        failures.push(format!("{}: {error}", member.name));
+                        run.record_failure(&member.name, &error.to_string(), is_not_found(&error));
                         continue;
                     }
                     Err(error) => return Err(error),
@@ -402,10 +374,11 @@ async fn serve_package(
                                 && (is_retryable(&error)
                                     || group_fallback_error(&error, pool, entry_name)) =>
                         {
-                            if !is_not_found(&error) {
-                                all_not_found = false;
-                            }
-                            failures.push(format!("{}: {error}", member.name));
+                            run.record_failure(
+                                &member.name,
+                                &error.to_string(),
+                                is_not_found(&error),
+                            );
                             continue;
                         }
                         Err(error) => return Err(error),
@@ -428,10 +401,7 @@ async fn serve_package(
                             && (is_retryable(&error)
                                 || group_fallback_error(&error, pool, entry_name)) =>
                     {
-                        if !is_not_found(&error) {
-                            all_not_found = false;
-                        }
-                        failures.push(format!("{}: {error}", member.name));
+                        run.record_failure(&member.name, &error.to_string(), is_not_found(&error));
                         continue;
                     }
                     Err(error) => return Err(error),
@@ -478,10 +448,11 @@ async fn serve_package(
         {
             Ok(file) => file,
             Err(error) if group_fallback_source(&error, pool, entry_name) => {
-                if !is_source_not_found(&error) {
-                    all_not_found = false;
-                }
-                failures.push(format!("{}: {error}", member.name));
+                run.record_failure(
+                    &member.name,
+                    &error.to_string(),
+                    is_source_not_found(&error),
+                );
                 service.record_object(
                     "nuget_package_fallback",
                     NugetAuditDetails {
@@ -505,8 +476,7 @@ async fn serve_package(
             Ok(verified) => verified,
             Err(error @ NugetError::PackageIntegrityFailure(_)) if is_group => {
                 let _ = fs::remove_file(&upstream.path);
-                all_not_found = false;
-                failures.push(format!("{}: {error}", member.name));
+                run.record_failure(&member.name, &error.to_string(), false);
                 service.record_object(
                     "nuget_package_fallback",
                     NugetAuditDetails {
@@ -551,20 +521,16 @@ async fn serve_package(
             selected_proxy: "",
             object_type: "package-content",
             cache_status: "failed",
-            failure_category: Some(if all_not_found {
+            failure_category: Some(if run.all_not_found() {
                 "not_found"
             } else {
                 "source_failed"
             }),
         },
     )?;
-    Err(SourcePoolError::AllSourcesFailed {
-        entry_name: entry_name.to_owned(),
-        request_key: format!("package/{package_id}/{version}"),
-        failures: failures.join("; "),
-        status: (is_group && all_not_found).then_some(404),
-    }
-    .into())
+    Err(run
+        .all_sources_failed(format!("package/{package_id}/{version}"))
+        .into())
 }
 
 fn parse_package_path(path: &str) -> Result<(String, String), NugetError> {

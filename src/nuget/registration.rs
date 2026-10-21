@@ -17,7 +17,7 @@ use crate::{
     fsutil::atomic_write,
     nuget::service_index::NugetAuditDetails,
     nuget::service_index::{NugetError, NugetService},
-    sources::{FetchOperation, SourcePool, SourcePoolError},
+    sources::{FetchOperation, GroupRun, SourcePool, SourcePoolError},
 };
 
 use super::{
@@ -171,21 +171,12 @@ async fn fetch_registration(
     revalidating: bool,
 ) -> Result<Vec<u8>, NugetError> {
     let preferred = snapshot.selected_proxy.clone();
-    let mut members = pool
-        .proxy_members(entry_name)
-        .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
-    if let Some(position) = members.iter().position(|member| member.name == preferred) {
-        let selected = members.remove(position);
-        members.insert(0, selected);
-    }
-    let is_group = pool.is_group(entry_name);
-    let mut failures = Vec::new();
-    let mut all_not_found = true;
+    let mut run = GroupRun::new(pool, entry_name, Some(&preferred))?;
     let cache_path = registration_path(&service.data_dir, entry_name, &request.relative);
     let descriptor_path =
         registration_descriptor_path(&service.data_dir, entry_name, &request.relative);
 
-    for member in members {
+    while let Some(member) = run.next_member() {
         let source_snapshot = if member.name == preferred {
             snapshot.clone()
         } else {
@@ -197,18 +188,14 @@ async fn fetch_registration(
                 Err(error)
                     if is_retryable(&error) || group_fallback_error(&error, pool, entry_name) =>
                 {
-                    if !is_not_found(&error) {
-                        all_not_found = false;
-                    }
-                    failures.push(format!("{}: {error}", member.name));
+                    run.record_failure(&member.name, &error.to_string(), is_not_found(&error));
                     continue;
                 }
                 Err(error) => return Err(error),
             }
         };
         let Some(registration_base) = source_snapshot.registration_url.clone() else {
-            all_not_found = false;
-            failures.push(format!("{}: no registration resource", member.name));
+            run.record_failure(&member.name, "no registration resource", false);
             continue;
         };
         let upstream_url = append_relative_path(&registration_base, &request.relative)?;
@@ -222,10 +209,11 @@ async fn fetch_registration(
         {
             Ok(response) => response,
             Err(error) if group_fallback_source(&error, pool, entry_name) => {
-                if !is_source_not_found(&error) {
-                    all_not_found = false;
-                }
-                failures.push(format!("{}: {error}", member.name));
+                run.record_failure(
+                    &member.name,
+                    &error.to_string(),
+                    is_source_not_found(&error),
+                );
                 continue;
             }
             Err(error) => return Err(error.into()),
@@ -233,8 +221,7 @@ async fn fetch_registration(
         let mut body: Value = match serde_json::from_slice(&upstream.body) {
             Ok(body) => body,
             Err(error) => {
-                all_not_found = false;
-                failures.push(format!("{}: invalid JSON: {error}", member.name));
+                run.record_failure(&member.name, &format!("invalid JSON: {error}"), false);
                 continue;
             }
         };
@@ -248,8 +235,7 @@ async fn fetch_registration(
             &registration_base,
             &mut bindings,
         ) {
-            all_not_found = false;
-            failures.push(format!("{}: {error}", member.name));
+            run.record_failure(&member.name, &error.to_string(), false);
             continue;
         }
         let body = serde_json::to_vec(&body)?;
@@ -312,20 +298,14 @@ async fn fetch_registration(
             selected_proxy: "",
             object_type: "registration",
             cache_status: "failed",
-            failure_category: Some(if all_not_found {
+            failure_category: Some(if run.all_not_found() {
                 "not_found"
             } else {
                 "source_failed"
             }),
         },
     )?;
-    Err(SourcePoolError::AllSourcesFailed {
-        entry_name: entry_name.to_owned(),
-        request_key: request.relative.clone(),
-        failures: failures.join("; "),
-        status: (is_group && all_not_found).then_some(404),
-    }
-    .into())
+    Err(run.all_sources_failed(request.relative.clone()).into())
 }
 
 pub(crate) async fn binding_for_source(
