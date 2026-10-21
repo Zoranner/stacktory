@@ -80,3 +80,12 @@ npm/UPM metadata、Rustup manifest 和 NuGet JSON metadata 会在读取时按当
 地址重新渲染或重写；缺少公开地址标记的旧缓存按未命中重建。
 
 Cargo 索引命中超过 15 分钟后会从上游重新验证；上游删除 crate 时会清理本地索引。
+
+如果 NuGet 上游删除并重新发布了同一个版本，可以在服务所在目录执行：
+
+```text
+stacktory invalidate-nuget-metadata --entry group
+```
+
+该命令只删除指定入口的 NuGet metadata，保留 package content；后续请求会重新
+获取 service index、registration 和 package index，并按新摘要重新校验包内容。
