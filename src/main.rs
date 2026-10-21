@@ -19,9 +19,10 @@ use tokio::net::TcpListener;
 
 const ROOT_URL_MARKER: &str = ".root-url";
 // Only ecosystems that still persist a response containing the public base
-// address need invalidation. npm/UPM, Cargo, Docker and VS Code keep
-// address-independent metadata.
-const CACHE_ECOSYSTEMS: &[&str] = &["nuget", "pypi", "rustup"];
+// address need invalidation. npm/UPM, Cargo, Docker, Rustup and VS Code keep
+// address-independent metadata; Rustup snapshots from the old format are
+// refreshed lazily as incompatible.
+const CACHE_ECOSYSTEMS: &[&str] = &["nuget", "pypi"];
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -96,7 +97,6 @@ fn invalidate_rewritten_cache_on_root_url_change(
     for ecosystem in CACHE_ECOSYSTEMS {
         remove_dir_if_exists(&stacktory::layout::metadata_root(data_dir, ecosystem))?;
     }
-    remove_dir_if_exists(&stacktory::layout::snapshots_root(data_dir, "rustup"))?;
     fs::write(marker_path, root_url)?;
     Ok(true)
 }
@@ -414,7 +414,7 @@ mod tests {
         assert!(cargo_metadata.exists());
         assert!(docker_metadata.exists());
         assert!(vscode_metadata.exists());
-        assert!(!snapshot.exists());
+        assert!(snapshot.exists());
         assert!(artifact.exists());
         assert!(audit.exists());
 

@@ -95,7 +95,26 @@ impl RustupService {
         channel: &str,
     ) -> Result<StoredSnapshot, ServiceError> {
         self.ensure_channel(channel)?;
-        Ok(self.snapshots.current(source_name, channel)?)
+        let snapshot = self.snapshots.current(source_name, channel)?;
+        self.render_snapshot(snapshot, source_name, channel)
+    }
+
+    fn render_snapshot(
+        &self,
+        mut snapshot: StoredSnapshot,
+        source_name: &str,
+        channel: &str,
+    ) -> Result<StoredSnapshot, ServiceError> {
+        let rewritten = rewrite_manifest(
+            &snapshot.canonical_manifest,
+            &self.manifest_policy(),
+            &self.entry_root_url(source_name),
+            channel,
+        )?;
+        snapshot.manifest = rewritten.manifest;
+        snapshot.checksum = rewritten.checksum;
+        snapshot.artifact_sources = rewritten.artifact_sources;
+        Ok(snapshot)
     }
 
     pub async fn manifest_for_request(
@@ -241,22 +260,7 @@ impl RustupService {
         let checksum_key = format!("{manifest_key}.sha256");
         let entry_root = self.entry_root_url(source_name);
         let file_name = format!("channel-rust-{channel}.toml");
-        let policy = ManifestPolicy::with_sources(
-            self.sources
-                .proxies()
-                .iter()
-                .map(|member| {
-                    (
-                        member.name.clone(),
-                        member
-                            .base_url
-                            .as_ref()
-                            .expect("validated proxy source must have a base URL")
-                            .clone(),
-                    )
-                })
-                .collect(),
-        );
+        let policy = self.manifest_policy();
         let mut failures = Vec::new();
 
         for member in members {
@@ -327,6 +331,25 @@ impl RustupService {
         url.set_query(None);
         url.set_fragment(None);
         url
+    }
+
+    fn manifest_policy(&self) -> ManifestPolicy {
+        ManifestPolicy::with_sources(
+            self.sources
+                .proxies()
+                .iter()
+                .map(|member| {
+                    (
+                        member.name.clone(),
+                        member
+                            .base_url
+                            .as_ref()
+                            .expect("validated proxy source must have a base URL")
+                            .clone(),
+                    )
+                })
+                .collect(),
+        )
     }
 
     fn record_audit(&self, event: &str, target: &str, outcome: &str) {

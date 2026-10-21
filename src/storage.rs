@@ -24,6 +24,8 @@ pub struct ArtifactCache {
 
 #[derive(Debug)]
 pub struct StoredSnapshot {
+    pub canonical_manifest: String,
+    pub canonical_checksum: String,
     pub manifest: String,
     pub checksum: String,
     pub source_name: String,
@@ -66,6 +68,8 @@ struct CurrentPointer {
     revision: String,
     source_name: String,
     published_at_unix_secs: u64,
+    #[serde(default)]
+    format: u8,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -90,16 +94,19 @@ impl SnapshotStore {
         validate_source_name(entry_name)?;
         validate_source_name(upstream_source)?;
         validate_channel(channel)?;
-        validate_checksum(&snapshot.checksum)?;
+        validate_checksum(&snapshot.canonical_checksum)?;
 
         let snapshot_dir = self
             .snapshot_root(entry_name, channel)
-            .join(&snapshot.checksum);
+            .join(&snapshot.canonical_checksum);
         fs::create_dir_all(&snapshot_dir)?;
-        fs::write(snapshot_dir.join("manifest.toml"), snapshot.manifest)?;
+        fs::write(
+            snapshot_dir.join("manifest.toml"),
+            snapshot.canonical_manifest,
+        )?;
         fs::write(
             snapshot_dir.join("checksum"),
-            format!("{}\n", snapshot.checksum),
+            format!("{}\n", snapshot.canonical_checksum),
         )?;
 
         let artifact_sources = snapshot
@@ -117,9 +124,10 @@ impl SnapshotStore {
         )?;
 
         let pointer = toml::to_string(&CurrentPointer {
-            revision: snapshot.checksum,
+            revision: snapshot.canonical_checksum,
             source_name: upstream_source.to_owned(),
             published_at_unix_secs: unix_timestamp()?,
+            format: 2,
         })?;
         Ok(atomic_write(
             &self.snapshot_root(entry_name, channel).join("current.toml"),
@@ -140,18 +148,21 @@ impl SnapshotStore {
             }
         })?;
         let pointer: CurrentPointer = toml::from_str(&pointer)?;
+        if pointer.format != 2 {
+            return Err(StorageError::IncompatibleSnapshot(channel.to_owned()));
+        }
         validate_checksum(&pointer.revision)?;
         validate_source_name(&pointer.source_name)?;
 
         let snapshot_dir = root.join(&pointer.revision);
-        let manifest = fs::read_to_string(snapshot_dir.join("manifest.toml"))?;
-        let checksum = fs::read_to_string(snapshot_dir.join("checksum"))?
+        let canonical_manifest = fs::read_to_string(snapshot_dir.join("manifest.toml"))?;
+        let canonical_checksum = fs::read_to_string(snapshot_dir.join("checksum"))?
             .trim()
             .to_owned();
-        if checksum != pointer.revision {
+        if canonical_checksum != pointer.revision {
             return Err(StorageError::InconsistentSnapshot(channel.to_owned()));
         }
-        validate_checksum(&checksum)?;
+        validate_checksum(&canonical_checksum)?;
 
         let artifact_index: ArtifactIndex =
             toml::from_str(&fs::read_to_string(snapshot_dir.join("artifacts.toml"))?)
@@ -171,8 +182,10 @@ impl SnapshotStore {
             .collect::<Result<BTreeMap<_, _>, StorageError>>()?;
 
         Ok(StoredSnapshot {
-            manifest,
-            checksum,
+            manifest: canonical_manifest.clone(),
+            checksum: canonical_checksum.clone(),
+            canonical_manifest,
+            canonical_checksum,
             source_name: pointer.source_name,
             published_at_unix_secs: pointer.published_at_unix_secs,
             artifact_sources,

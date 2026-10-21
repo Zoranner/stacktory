@@ -87,6 +87,8 @@ fn snapshot(manifest: &str, checksum: &str) -> RewrittenManifest {
     RewrittenManifest {
         manifest: manifest.to_owned(),
         checksum: checksum.to_owned(),
+        canonical_manifest: manifest.to_owned(),
+        canonical_checksum: checksum.to_owned(),
         artifact_sources: BTreeMap::from([(
             DistPath::parse("2026-08-20/rustc-x86_64-pc-windows-msvc.tar.xz").expect("dist path"),
             ArtifactSource {

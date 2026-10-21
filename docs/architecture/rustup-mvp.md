@@ -131,6 +131,11 @@ manifest 可以为不同制品绑定不同 proxy，不按每次 artifact 请求�
 制品目录为 `data_dir/stores/rustup/artifacts/{proxy}/objects/{dist-path}`；入口名和 channel
 属于 snapshot，不属于二进制制品缓存键。
 
+快照保存的是上游 canonical manifest 和它的 checksum，不保存已经写入公开地址的
+最终 manifest。读取时按当前 `root_url` 重新生成 manifest 和对应的 `.sha256`，
+因此修改公开地址不需要重新下载或删除快照。旧格式快照在读取时被识别为不兼容，
+由首次请求触发一次刷新；制品缓存仍然保留。
+
 direct proxy 入口只从自身获取 channel manifest；但 manifest 中的 dist URL 可以匹配
 同一 Rustup 配置图内其他已声明 proxy。这样镜像 manifest 指向官方制品时仍可安全
 发布，而未声明的 host 或路径始终被拒绝。

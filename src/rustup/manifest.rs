@@ -23,6 +23,8 @@ pub struct ArtifactSource {
 pub struct RewrittenManifest {
     pub manifest: String,
     pub checksum: String,
+    pub canonical_manifest: String,
+    pub canonical_checksum: String,
     pub artifact_sources: BTreeMap<DistPath, ArtifactSource>,
 }
 
@@ -79,6 +81,8 @@ pub fn rewrite_manifest(
     root_url: &Url,
     channel: &str,
 ) -> Result<RewrittenManifest, RustupError> {
+    let canonical_manifest = source.to_owned();
+    let canonical_checksum = format!("{:x}", Sha256::digest(canonical_manifest.as_bytes()));
     let mut manifest: Value = toml::from_str(source)?;
     let mut artifact_sources = BTreeMap::new();
     rewrite_value(
@@ -95,6 +99,8 @@ pub fn rewrite_manifest(
     Ok(RewrittenManifest {
         manifest,
         checksum,
+        canonical_manifest,
+        canonical_checksum,
         artifact_sources,
     })
 }

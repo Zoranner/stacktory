@@ -75,7 +75,8 @@ Docker source 开放标准 CLI 端口，在 `deploy/app/config.toml` 中设置�
 
 ## 缓存失效
 
-修改 `root_url` 后，服务首次启动只清理仍保存最终公开地址的 metadata 和
-Rustup 快照缓存。npm/UPM canonical metadata、Cargo 索引、Docker metadata、
-VS Code metadata、制品缓存和审计日志都会保留；npm/UPM metadata 会在读取时
-按当前 `root_url` 重新渲染。
+修改 `root_url` 后，服务首次启动只清理仍保存最终公开地址的 NuGet metadata。
+npm/UPM canonical metadata、Cargo 索引、Docker metadata、Rustup 快照、
+VS Code metadata、制品缓存和审计日志都会保留；npm/UPM metadata 和 Rustup
+manifest 会在读取时按当前 `root_url` 重新渲染，旧格式 Rustup 快照会在首次
+请求时自动刷新。

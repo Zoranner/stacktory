@@ -99,6 +99,43 @@ async fn refresh_publishes_a_rewritten_manifest_snapshot() {
 }
 
 #[tokio::test]
+async fn published_snapshot_renders_for_a_new_root_url_without_refreshing() {
+    let refreshes = Arc::new(AtomicUsize::new(0));
+    let (upstream, _) = start_refresh_upstream(refreshes.clone()).await;
+    let directory = tempdir().expect("temporary directory");
+    let sources = vec![source("test", upstream.as_str())];
+    let first = service_with_sources_and_root(
+        sources.clone(),
+        directory.path().to_path_buf(),
+        Url::parse("http://127.0.0.1:18761").expect("first root URL"),
+    );
+    first
+        .refresh("test", "stable")
+        .await
+        .expect("first refresh");
+    let first_snapshot = first.manifest("test", "stable").expect("first snapshot");
+    assert!(
+        first_snapshot
+            .manifest
+            .contains("http://127.0.0.1:18761/mirror/rustup/test/dist/stable/")
+    );
+
+    let second = service_with_sources_and_root(
+        sources,
+        directory.path().to_path_buf(),
+        Url::parse("https://pkg2.example").expect("second root URL"),
+    );
+    let second_snapshot = second.manifest("test", "stable").expect("second snapshot");
+
+    assert!(
+        second_snapshot
+            .manifest
+            .contains("https://pkg2.example/mirror/rustup/test/dist/stable/")
+    );
+    assert_eq!(refreshes.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn group_manifest_refresh_falls_back_after_member_404() {
     let first = start_not_found_upstream().await;
     let (second, _) = start_refresh_upstream(Arc::new(AtomicUsize::new(0))).await;
@@ -946,8 +983,8 @@ fn expire_current_snapshot(data_dir: &std::path::Path, channel: &str, service: &
             .join(channel)
             .join("current.toml"),
         format!(
-            "revision = \"{}\"\nsource_name = \"{}\"\npublished_at_unix_secs = 0\n",
-            snapshot.checksum, snapshot.source_name
+            "revision = \"{}\"\nsource_name = \"{}\"\npublished_at_unix_secs = 0\nformat = 2\n",
+            snapshot.canonical_checksum, snapshot.source_name
         ),
     )
     .expect("expire current snapshot");
@@ -958,12 +995,24 @@ fn service_for(upstream: Url, data_dir: PathBuf) -> RustupService {
 }
 
 fn service_with_sources(sources: Vec<SourceConfig>, data_dir: PathBuf) -> RustupService {
+    service_with_sources_and_root(
+        sources,
+        data_dir,
+        Url::parse("http://127.0.0.1:18761").expect("root URL"),
+    )
+}
+
+fn service_with_sources_and_root(
+    sources: Vec<SourceConfig>,
+    data_dir: PathBuf,
+    root_url: Url,
+) -> RustupService {
     RustupService::new(Config {
         listen_address: "127.0.0.1".parse().expect("address"),
         listen_port: 18761,
         data_dir,
         log_dir: PathBuf::from("logs"),
-        root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
+        root_url,
         proxy_url: None,
         proxy_no_proxy: None,
         retention: RetentionConfig::default(),
