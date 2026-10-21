@@ -26,6 +26,7 @@ use crate::{
 
 use super::group_fallback_source;
 use super::path::{safe_resource_url, validate_service_index_url};
+use super::{metadata_is_stale, now_unix_secs};
 
 const REGISTRATIONS_BASE_URL: &str = "RegistrationsBaseUrl";
 const PACKAGE_BASE_ADDRESS: &str = "PackageBaseAddress";
@@ -81,6 +82,8 @@ pub(crate) struct ServiceIndexDescriptor {
     pub(crate) source_fingerprint: String,
     #[serde(default)]
     pub(crate) public_base_url: String,
+    #[serde(default)]
+    pub(crate) validated_at_unix_secs: u64,
     pub(crate) registration_url: Option<String>,
     #[serde(default)]
     pub(crate) registration_urls: Vec<String>,
@@ -185,20 +188,26 @@ impl NugetService {
         entry_name: &str,
         pool: &SourcePool,
     ) -> Result<ServiceIndexSnapshot, NugetError> {
-        let members = pool
-            .proxy_members(entry_name)
-            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
         let cache_path = self.service_index_path(entry_name);
         let descriptor_path = self.service_index_descriptor_path(entry_name);
-        if let (Some(mut body), Some(mut descriptor)) = (
+        let cached = match (
             read_if_present(&cache_path)?,
             read_descriptor(&descriptor_path)?,
-        ) && !descriptor.public_base_url.is_empty()
-            && is_valid_cached_service_index(&body, &descriptor)
-            && pool
-                .source_fingerprint(entry_name, &descriptor.selected_proxy)
-                .is_some_and(|fingerprint| fingerprint == descriptor.source_fingerprint)
-        {
+        ) {
+            (Some(body), Some(descriptor))
+                if !descriptor.public_base_url.is_empty()
+                    && is_valid_cached_service_index(&body, &descriptor)
+                    && pool
+                        .source_fingerprint(entry_name, &descriptor.selected_proxy)
+                        .is_some_and(|fingerprint| {
+                            fingerprint == descriptor.source_fingerprint
+                        }) =>
+            {
+                Some((body, descriptor))
+            }
+            _ => None,
+        };
+        if let Some((mut body, mut descriptor)) = cached {
             if descriptor.public_base_url != self.root_url.as_str() {
                 if let Some(rebased) = crate::nuget::render::rebase_public_urls(
                     &body,
@@ -211,28 +220,72 @@ impl NugetService {
                 descriptor.public_base_url = self.root_url.to_string();
                 atomic_write(&descriptor_path, &serde_json::to_vec(&descriptor)?)?;
             }
-            self.record(
-                "nuget_service_index_read",
-                entry_name,
-                &descriptor.selected_proxy,
-                "hit",
-                None,
-            )?;
-            return Ok(ServiceIndexSnapshot {
-                body,
-                selected_proxy: descriptor.selected_proxy,
-                source_fingerprint: descriptor.source_fingerprint,
-                registration_url: parse_optional_url(descriptor.registration_url.clone())?,
-                registration_urls: parse_url_list(
-                    descriptor.registration_urls,
-                    descriptor.registration_url.clone(),
-                )?,
-                package_base_url: parse_optional_url(descriptor.package_base_url)?,
-                search_url: parse_optional_url(descriptor.search_url)?,
-                vulnerability_url: parse_optional_url(descriptor.vulnerability_url)?,
-            });
+            let stale = metadata_is_stale(descriptor.validated_at_unix_secs);
+            let snapshot = snapshot_from_descriptor(body, descriptor.clone())?;
+            if !stale {
+                self.record(
+                    "nuget_service_index_read",
+                    entry_name,
+                    &descriptor.selected_proxy,
+                    "hit",
+                    None,
+                )?;
+                return Ok(snapshot);
+            }
+            match self
+                .fetch_service_index(entry_name, pool, Some(&descriptor.selected_proxy), true)
+                .await
+            {
+                Ok(snapshot) => return Ok(snapshot),
+                Err(error) if is_not_found(&error) => {
+                    let _ = fs::remove_file(&cache_path);
+                    let _ = fs::remove_file(&descriptor_path);
+                    self.record(
+                        "nuget_service_index_revalidate_failed",
+                        entry_name,
+                        &descriptor.selected_proxy,
+                        "failed",
+                        Some("not_found"),
+                    )?;
+                    return Err(error);
+                }
+                Err(_) => {
+                    self.record(
+                        "nuget_service_index_stale",
+                        entry_name,
+                        &descriptor.selected_proxy,
+                        "stale",
+                        Some("source_failed"),
+                    )?;
+                    return Ok(snapshot);
+                }
+            }
         }
 
+        self.fetch_service_index(entry_name, pool, None, false)
+            .await
+    }
+
+    async fn fetch_service_index(
+        &self,
+        entry_name: &str,
+        pool: &SourcePool,
+        preferred_source: Option<&str>,
+        revalidating: bool,
+    ) -> Result<ServiceIndexSnapshot, NugetError> {
+        let mut members = pool
+            .proxy_members(entry_name)
+            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
+        if let Some(preferred_source) = preferred_source
+            && let Some(position) = members
+                .iter()
+                .position(|member| member.name == preferred_source)
+        {
+            let preferred = members.remove(position);
+            members.insert(0, preferred);
+        }
+        let cache_path = self.service_index_path(entry_name);
+        let descriptor_path = self.service_index_descriptor_path(entry_name);
         let mut failures = Vec::new();
         let mut all_not_found = true;
         for member in members {
@@ -275,6 +328,7 @@ impl NugetService {
                         selected_proxy: upstream.source_name.clone(),
                         source_fingerprint: member.fingerprint(),
                         public_base_url: self.root_url.to_string(),
+                        validated_at_unix_secs: now_unix_secs(),
                         registration_url: rewritten.registration_url.as_ref().map(Url::to_string),
                         registration_urls: rewritten
                             .registration_urls
@@ -288,10 +342,18 @@ impl NugetService {
                     atomic_write(&cache_path, &rewritten.body)?;
                     atomic_write(&descriptor_path, &serde_json::to_vec(&descriptor)?)?;
                     self.record(
-                        "nuget_service_index_published",
+                        if revalidating {
+                            "nuget_service_index_revalidated"
+                        } else {
+                            "nuget_service_index_published"
+                        },
                         entry_name,
                         &upstream.source_name,
-                        "published",
+                        if revalidating {
+                            "revalidated"
+                        } else {
+                            "published"
+                        },
                         None,
                     )?;
                     return Ok(ServiceIndexSnapshot {
@@ -390,6 +452,7 @@ impl NugetService {
             selected_proxy: snapshot.selected_proxy.clone(),
             source_fingerprint: snapshot.source_fingerprint.clone(),
             public_base_url: self.root_url.to_string(),
+            validated_at_unix_secs: now_unix_secs(),
             registration_url: snapshot.registration_url.as_ref().map(Url::to_string),
             registration_urls: snapshot
                 .registration_urls
@@ -692,6 +755,23 @@ fn read_descriptor(path: &Path) -> Result<Option<ServiceIndexDescriptor>, NugetE
         .map_err(NugetError::Serialization)
 }
 
+fn snapshot_from_descriptor(
+    body: Vec<u8>,
+    descriptor: ServiceIndexDescriptor,
+) -> Result<ServiceIndexSnapshot, NugetError> {
+    let registration_url = descriptor.registration_url.clone();
+    Ok(ServiceIndexSnapshot {
+        body,
+        selected_proxy: descriptor.selected_proxy,
+        source_fingerprint: descriptor.source_fingerprint,
+        registration_url: parse_optional_url(registration_url.clone())?,
+        registration_urls: parse_url_list(descriptor.registration_urls, registration_url)?,
+        package_base_url: parse_optional_url(descriptor.package_base_url)?,
+        search_url: parse_optional_url(descriptor.search_url)?,
+        vulnerability_url: parse_optional_url(descriptor.vulnerability_url)?,
+    })
+}
+
 fn parse_optional_url(value: Option<String>) -> Result<Option<Url>, NugetError> {
     value
         .map(|value| {
@@ -759,6 +839,17 @@ fn is_group_not_found(pool: &SourcePool, entry_name: &str, error: &SourcePoolErr
                     ..
                 }
         )
+}
+
+fn is_not_found(error: &NugetError) -> bool {
+    matches!(
+        error,
+        NugetError::Source(SourcePoolError::TerminalSourceError { status: 404, .. })
+            | NugetError::Source(SourcePoolError::AllSourcesFailed {
+                status: Some(404),
+                ..
+            })
+    )
 }
 
 fn nuget_error_response(error: &NugetError) -> Response {

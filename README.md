@@ -84,6 +84,9 @@ npm/UPM metadata、Rustup manifest 和 NuGet JSON metadata 会在读取时按当
 制品内容仍可继续复用。
 
 Cargo 索引命中超过 15 分钟后会从上游重新验证；上游删除 crate 时会清理本地索引。
+NuGet 的 service index、registration、package index 和 package binding 同样在
+命中超过 15 分钟后重新验证；上游返回 `404` 时清理对应 metadata，其他失败继续
+提供最后一次有效缓存并记录 stale 审计。
 
 如果 NuGet 上游删除并重新发布了同一个版本，可以在服务所在目录执行：
 

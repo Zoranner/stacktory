@@ -142,10 +142,17 @@ service index、registration、package binding 和漏洞索引/数据的 sidecar
 客户端可见 URL 并更新 sidecar，不访问上游，也不删除 package content。缺少来源
 指纹或公开基地址标记的旧缓存按未命中重新获取。
 
-本 MVP 不做隐式 stale-while-revalidate 或跨来源拼接。metadata 缓存只有在 JSON、
-restore 资源 sidecar、selected proxy 和来源指纹仍有效时命中；package content
-缓存每次命中仍执行已声明摘要或本地 SHA-256 校验。上游删除并重新发布同一版本时，
-可以强制重建指定入口的 NuGet metadata：
+service index、registration、package version index 和 package binding 命中超过
+15 分钟后会先从当前绑定来源重新验证；来源失败时按 group 顺序尝试其他成员。
+重新验证成功时替换 metadata、来源绑定和 `validated_at_unix_secs`；上游返回
+`404` 时删除对应 metadata 和绑定；网络、`5xx` 或其他协议失败时继续提供最后一次
+有效缓存，并记录 stale 审计。类型不同来源的 metadata 不合并。
+
+package content 缓存每次命中仍执行已声明摘要或本地 SHA-256 校验。package binding
+过期后重新解析 registration 或 package index；上游提供摘要时，重发版本的新摘要
+会使旧 content 缓存失效并重新下载。上游未提供摘要且 metadata 内容没有变化时，
+服务无法仅凭协议判断同一版本内容已被重发，需要人工清理对应 package content。
+也可以强制重建指定入口的 NuGet metadata：
 
 ```text
 stacktory invalidate-nuget-metadata --entry <name>

@@ -24,6 +24,7 @@ use super::{
     group_fallback_error, group_fallback_source,
     path::{is_safe_segment, safe_resource_url},
     service_index::ServiceIndexSnapshot,
+    {metadata_is_stale, now_unix_secs},
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -31,6 +32,8 @@ pub(crate) struct PackageBinding {
     pub(crate) selected_proxy: String,
     #[serde(default)]
     pub(crate) source_fingerprint: String,
+    #[serde(default)]
+    pub(crate) validated_at_unix_secs: u64,
     pub(crate) package_id: String,
     pub(crate) version: String,
     pub(crate) upstream_url: String,
@@ -46,6 +49,8 @@ struct RegistrationDescriptor {
     upstream_url: String,
     #[serde(default)]
     public_base_url: String,
+    #[serde(default)]
+    validated_at_unix_secs: u64,
 }
 
 #[derive(Debug)]
@@ -78,14 +83,20 @@ async fn serve_registration(
     let cache_path = registration_path(&service.data_dir, entry_name, &request.relative);
     let descriptor_path =
         registration_descriptor_path(&service.data_dir, entry_name, &request.relative);
-
-    if let (Some(mut body), Some(mut descriptor)) = (
+    let cached = match (
         read_if_present(&cache_path)?,
         read_descriptor(&descriptor_path)?,
-    ) && !descriptor.public_base_url.is_empty()
-        && descriptor.selected_proxy == snapshot.selected_proxy
-        && descriptor.source_fingerprint == snapshot.source_fingerprint
-    {
+    ) {
+        (Some(body), Some(descriptor))
+            if !descriptor.public_base_url.is_empty()
+                && descriptor.selected_proxy == snapshot.selected_proxy
+                && descriptor.source_fingerprint == snapshot.source_fingerprint =>
+        {
+            Some((body, descriptor))
+        }
+        _ => None,
+    };
+    if let Some((mut body, mut descriptor)) = cached {
         if descriptor.public_base_url != service.root_url.as_str() {
             if let Some(rebased) = crate::nuget::render::rebase_public_urls(
                 &body,
@@ -98,20 +109,67 @@ async fn serve_registration(
             descriptor.public_base_url = service.root_url.to_string();
             atomic_write(&descriptor_path, &serde_json::to_vec(&descriptor)?)?;
         }
-        service.record_object(
-            "nuget_registration_read",
-            NugetAuditDetails {
-                object_key: &request.relative,
-                entry_name,
-                selected_proxy: &descriptor.selected_proxy,
-                object_type: "registration",
-                cache_status: "hit",
-                failure_category: None,
-            },
-        )?;
-        return Ok(body);
+        let stale = metadata_is_stale(descriptor.validated_at_unix_secs);
+        if !stale {
+            service.record_object(
+                "nuget_registration_read",
+                NugetAuditDetails {
+                    object_key: &request.relative,
+                    entry_name,
+                    selected_proxy: &descriptor.selected_proxy,
+                    object_type: "registration",
+                    cache_status: "hit",
+                    failure_category: None,
+                },
+            )?;
+            return Ok(body);
+        }
+        match fetch_registration(service, entry_name, &request, &snapshot, pool, true).await {
+            Ok(body) => return Ok(body),
+            Err(error) if is_not_found(&error) => {
+                let _ = fs::remove_file(&cache_path);
+                let _ = fs::remove_file(&descriptor_path);
+                service.record_object(
+                    "nuget_registration_revalidate_failed",
+                    NugetAuditDetails {
+                        object_key: &request.relative,
+                        entry_name,
+                        selected_proxy: &descriptor.selected_proxy,
+                        object_type: "registration",
+                        cache_status: "failed",
+                        failure_category: Some("not_found"),
+                    },
+                )?;
+                return Err(error);
+            }
+            Err(_) => {
+                service.record_object(
+                    "nuget_registration_stale",
+                    NugetAuditDetails {
+                        object_key: &request.relative,
+                        entry_name,
+                        selected_proxy: &descriptor.selected_proxy,
+                        object_type: "registration",
+                        cache_status: "stale",
+                        failure_category: Some("source_failed"),
+                    },
+                )?;
+                return Ok(body);
+            }
+        }
     }
 
+    fetch_registration(service, entry_name, &request, &snapshot, pool, false).await
+}
+
+async fn fetch_registration(
+    service: &NugetService,
+    entry_name: &str,
+    request: &RegistrationPath,
+    snapshot: &ServiceIndexSnapshot,
+    pool: &SourcePool,
+    revalidating: bool,
+) -> Result<Vec<u8>, NugetError> {
     let preferred = snapshot.selected_proxy.clone();
     let mut members = pool
         .proxy_members(entry_name)
@@ -123,6 +181,9 @@ async fn serve_registration(
     let is_group = pool.is_group(entry_name);
     let mut failures = Vec::new();
     let mut all_not_found = true;
+    let cache_path = registration_path(&service.data_dir, entry_name, &request.relative);
+    let descriptor_path =
+        registration_descriptor_path(&service.data_dir, entry_name, &request.relative);
 
     for member in members {
         let source_snapshot = if member.name == preferred {
@@ -180,7 +241,7 @@ async fn serve_registration(
         let mut bindings = BTreeMap::new();
         if let Err(error) = rewrite_registration(
             &mut body,
-            &request,
+            request,
             &source_snapshot,
             service,
             entry_name,
@@ -201,6 +262,7 @@ async fn serve_registration(
                 source_fingerprint: source_snapshot.source_fingerprint.clone(),
                 upstream_url: upstream_url.to_string(),
                 public_base_url: service.root_url.to_string(),
+                validated_at_unix_secs: now_unix_secs(),
             })?,
         )?;
         for binding in bindings.values() {
@@ -221,13 +283,21 @@ async fn serve_registration(
             )?;
         }
         service.record_object(
-            "nuget_registration_published",
+            if revalidating {
+                "nuget_registration_revalidated"
+            } else {
+                "nuget_registration_published"
+            },
             NugetAuditDetails {
                 object_key: &request.relative,
                 entry_name,
                 selected_proxy: &source_snapshot.selected_proxy,
                 object_type: "registration",
-                cache_status: "published",
+                cache_status: if revalidating {
+                    "revalidated"
+                } else {
+                    "published"
+                },
                 failure_category: None,
             },
         )?;
@@ -251,7 +321,7 @@ async fn serve_registration(
     )?;
     Err(SourcePoolError::AllSourcesFailed {
         entry_name: entry_name.to_owned(),
-        request_key: request.relative,
+        request_key: request.relative.clone(),
         failures: failures.join("; "),
         status: (is_group && all_not_found).then_some(404),
     }
@@ -473,6 +543,7 @@ fn rewrite_object(
         let binding = PackageBinding {
             selected_proxy: snapshot.selected_proxy.clone(),
             source_fingerprint: snapshot.source_fingerprint.clone(),
+            validated_at_unix_secs: now_unix_secs(),
             package_id: package_id.to_owned(),
             version: version.to_owned(),
             upstream_url: upstream_url.to_string(),

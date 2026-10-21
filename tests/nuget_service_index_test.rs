@@ -262,6 +262,135 @@ async fn service_index_refetches_when_the_source_target_changes() {
 }
 
 #[tokio::test]
+async fn stale_service_index_is_revalidated_and_keeps_the_last_good_body_on_failure() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let upstream = start_sequence_service_index_server(
+        hits.clone(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        StatusCode::OK,
+        |port| {
+            format!(
+                r#"{{"version":"3.0.0","resources":[
+                    {{"@id":"http://127.0.0.1:{port}/first/registration/","@type":"RegistrationsBaseUrl/3.6.0"}},
+                    {{"@id":"http://127.0.0.1:{port}/first/packages/","@type":"PackageBaseAddress/3.0.0"}}
+                ]}}"#
+            )
+        },
+        |port| {
+            format!(
+                r#"{{"version":"3.0.0","resources":[
+                    {{"@id":"http://127.0.0.1:{port}/second/registration/","@type":"RegistrationsBaseUrl/3.6.0"}},
+                    {{"@id":"http://127.0.0.1:{port}/second/packages/","@type":"PackageBaseAddress/3.0.0"}}
+                ]}}"#
+            )
+        },
+    )
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = nuget_router(upstream, data_dir.path());
+    let request = || get_request("/mirror/nuget/official/v3/index.json");
+    let descriptor_path = data_dir
+        .path()
+        .join("stores/nuget/metadata/official/service-index.source");
+
+    let first = router
+        .clone()
+        .oneshot(request())
+        .await
+        .expect("first service index response");
+    assert_eq!(first.status(), StatusCode::OK);
+
+    expire_metadata(&descriptor_path);
+    let second = router
+        .clone()
+        .oneshot(request())
+        .await
+        .expect("revalidated service index response");
+    assert_eq!(second.status(), StatusCode::OK);
+    let second_body = axum::body::to_bytes(second.into_body(), usize::MAX)
+        .await
+        .expect("revalidated service index body");
+    let descriptor: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&descriptor_path).expect("service index descriptor"))
+            .expect("service index descriptor JSON");
+    assert!(
+        descriptor["registration_url"]
+            .as_str()
+            .is_some_and(|url| url.ends_with("/second/registration/"))
+    );
+
+    expire_metadata(&descriptor_path);
+    let stale = router
+        .oneshot(request())
+        .await
+        .expect("stale service index response");
+    assert_eq!(stale.status(), StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(stale.into_body(), usize::MAX)
+            .await
+            .expect("stale service index body"),
+        second_body
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 3);
+
+    let audit =
+        std::fs::read_to_string(data_dir.path().join("audit/events.jsonl")).expect("audit log");
+    assert!(audit.contains(r#""event":"nuget_service_index_revalidated""#));
+    assert!(audit.contains(r#""event":"nuget_service_index_stale""#));
+}
+
+#[tokio::test]
+async fn stale_service_index_is_removed_when_upstream_returns_not_found() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let upstream = start_sequence_service_index_server(
+        hits,
+        StatusCode::NOT_FOUND,
+        StatusCode::NOT_FOUND,
+        |port| {
+            format!(
+                r#"{{"version":"3.0.0","resources":[
+                    {{"@id":"http://127.0.0.1:{port}/v3/registration/","@type":"RegistrationsBaseUrl/3.6.0"}},
+                    {{"@id":"http://127.0.0.1:{port}/v3-flatcontainer/","@type":"PackageBaseAddress/3.0.0"}}
+                ]}}"#
+            )
+        },
+        |port| {
+            format!(
+                r#"{{"version":"3.0.0","resources":[
+                    {{"@id":"http://127.0.0.1:{port}/v3/registration/","@type":"RegistrationsBaseUrl/3.6.0"}},
+                    {{"@id":"http://127.0.0.1:{port}/v3-flatcontainer/","@type":"PackageBaseAddress/3.0.0"}}
+                ]}}"#
+            )
+        },
+    )
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = nuget_router(upstream, data_dir.path());
+    let cache_path = data_dir
+        .path()
+        .join("stores/nuget/metadata/official/service-index.json");
+    let descriptor_path = data_dir
+        .path()
+        .join("stores/nuget/metadata/official/service-index.source");
+
+    let first = router
+        .clone()
+        .oneshot(get_request("/mirror/nuget/official/v3/index.json"))
+        .await
+        .expect("first service index response");
+    assert_eq!(first.status(), StatusCode::OK);
+    expire_metadata(&descriptor_path);
+
+    let response = router
+        .oneshot(get_request("/mirror/nuget/official/v3/index.json"))
+        .await
+        .expect("deleted service index response");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert!(!cache_path.exists());
+    assert!(!descriptor_path.exists());
+}
+
+#[tokio::test]
 async fn service_index_rejects_unknown_resource_relationships() {
     let upstream = start_server(Router::new().route(
         "/v3/index.json",
@@ -331,7 +460,7 @@ async fn service_index_returns_internal_error_when_audit_storage_fails() {
     .expect("service index cache");
     std::fs::write(
         metadata_dir.join("service-index.source"),
-        br#"{"selected_proxy":"official","source_fingerprint":"official|http://127.0.0.1:9/v3/index.json|false","public_base_url":"http://127.0.0.1:18761","registration_url":"http://127.0.0.1:9/v3/registration/","package_base_url":"http://127.0.0.1:9/v3-flatcontainer/"}"#,
+        br#"{"selected_proxy":"official","source_fingerprint":"official|http://127.0.0.1:9/v3/index.json|false","public_base_url":"http://127.0.0.1:18761","validated_at_unix_secs":9999999999,"registration_url":"http://127.0.0.1:9/v3/registration/","package_base_url":"http://127.0.0.1:9/v3-flatcontainer/"}"#,
     )
     .expect("service index sidecar");
     std::fs::write(data_dir.path().join("audit"), b"not a directory").expect("audit blocker");
@@ -534,6 +663,18 @@ fn get_request(path: &str) -> Request<Body> {
     Request::get(path).body(Body::empty()).expect("request")
 }
 
+fn expire_metadata(path: &Path) {
+    let mut descriptor: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path).expect("metadata descriptor"))
+            .expect("metadata descriptor JSON");
+    descriptor["validated_at_unix_secs"] = serde_json::json!(0);
+    std::fs::write(
+        path,
+        serde_json::to_vec(&descriptor).expect("descriptor JSON"),
+    )
+    .expect("expired descriptor");
+}
+
 fn proxy(name: &str, base_url: &str) -> SourceConfig {
     SourceConfig {
         name: name.to_owned(),
@@ -642,6 +783,42 @@ where
         get(move || {
             let body = body.clone();
             async move { body }
+        }),
+    );
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.expect("server");
+    });
+    Url::parse(&format!("http://{address}/v3/index.json")).expect("service index URL")
+}
+
+async fn start_sequence_service_index_server<F, G>(
+    hits: Arc<AtomicUsize>,
+    failure_status: StatusCode,
+    second_status: StatusCode,
+    first_body: F,
+    second_body: G,
+) -> Url
+where
+    F: FnOnce(u16) -> String,
+    G: FnOnce(u16) -> String,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let first_body = first_body(address.port());
+    let second_body = second_body(address.port());
+    let router = Router::new().route(
+        "/v3/index.json",
+        get(move || {
+            let hits = hits.clone();
+            let first_body = first_body.clone();
+            let second_body = second_body.clone();
+            async move {
+                match hits.fetch_add(1, Ordering::SeqCst) {
+                    0 => (StatusCode::OK, first_body).into_response(),
+                    1 => (second_status, second_body).into_response(),
+                    _ => failure_status.into_response(),
+                }
+            }
         }),
     );
     tokio::spawn(async move {

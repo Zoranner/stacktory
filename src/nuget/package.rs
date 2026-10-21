@@ -19,7 +19,8 @@ use crate::{
     nuget::{
         group_fallback_error, group_fallback_source,
         registration::{PackageBinding, binding_for_source, binding_path, persist_binding},
-        service_index::{NugetAuditDetails, NugetError, NugetService},
+        service_index::{NugetAuditDetails, NugetError, NugetService, ServiceIndexSnapshot},
+        {metadata_is_stale, now_unix_secs},
     },
     sources::{FetchOperation, SourcePool, SourcePoolError},
 };
@@ -30,6 +31,15 @@ struct PackageCacheMetadata {
     upstream_verified: bool,
     #[serde(default)]
     source_fingerprint: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct PackageIndexDescriptor {
+    selected_proxy: String,
+    #[serde(default)]
+    source_fingerprint: String,
+    #[serde(default)]
+    validated_at_unix_secs: u64,
 }
 
 pub(crate) async fn serve(
@@ -60,6 +70,97 @@ async fn serve_package_index(
     let initial_snapshot = service.service_index(entry_name, pool).await?;
     let cache_path = package_index_path(&service.data_dir, entry_name, &package_id);
     let descriptor_path = package_index_descriptor_path(&service.data_dir, entry_name, &package_id);
+    let cached = match (
+        read_if_present(&cache_path)?,
+        read_package_index_descriptor(&descriptor_path)?,
+    ) {
+        (Some(body), Some(descriptor))
+            if descriptor.selected_proxy == initial_snapshot.selected_proxy
+                && descriptor.source_fingerprint == initial_snapshot.source_fingerprint
+                && valid_package_index(&body) =>
+        {
+            Some((body, descriptor))
+        }
+        _ => None,
+    };
+    if let Some((body, descriptor)) = cached {
+        if !metadata_is_stale(descriptor.validated_at_unix_secs) {
+            service.record_object(
+                "nuget_package_index_read",
+                NugetAuditDetails {
+                    object_key: &format!("package/{package_id}/index.json"),
+                    entry_name,
+                    selected_proxy: &descriptor.selected_proxy,
+                    object_type: "package-index",
+                    cache_status: "hit",
+                    failure_category: None,
+                },
+            )?;
+            return Ok(body);
+        }
+        match fetch_package_index(
+            service,
+            entry_name,
+            &package_id,
+            &initial_snapshot,
+            pool,
+            true,
+        )
+        .await
+        {
+            Ok(body) => return Ok(body),
+            Err(error) if is_not_found(&error) => {
+                let _ = fs::remove_file(&cache_path);
+                let _ = fs::remove_file(&descriptor_path);
+                service.record_object(
+                    "nuget_package_index_revalidate_failed",
+                    NugetAuditDetails {
+                        object_key: &format!("package/{package_id}/index.json"),
+                        entry_name,
+                        selected_proxy: &descriptor.selected_proxy,
+                        object_type: "package-index",
+                        cache_status: "failed",
+                        failure_category: Some("not_found"),
+                    },
+                )?;
+                return Err(error);
+            }
+            Err(_) => {
+                service.record_object(
+                    "nuget_package_index_stale",
+                    NugetAuditDetails {
+                        object_key: &format!("package/{package_id}/index.json"),
+                        entry_name,
+                        selected_proxy: &descriptor.selected_proxy,
+                        object_type: "package-index",
+                        cache_status: "stale",
+                        failure_category: Some("source_failed"),
+                    },
+                )?;
+                return Ok(body);
+            }
+        }
+    }
+
+    fetch_package_index(
+        service,
+        entry_name,
+        &package_id,
+        &initial_snapshot,
+        pool,
+        false,
+    )
+    .await
+}
+
+async fn fetch_package_index(
+    service: &NugetService,
+    entry_name: &str,
+    package_id: &str,
+    initial_snapshot: &ServiceIndexSnapshot,
+    pool: &SourcePool,
+    revalidating: bool,
+) -> Result<Vec<u8>, NugetError> {
     let preferred = initial_snapshot.selected_proxy.clone();
     let mut members = pool
         .proxy_members(entry_name)
@@ -71,6 +172,8 @@ async fn serve_package_index(
     let is_group = pool.is_group(entry_name);
     let mut failures = Vec::new();
     let mut all_not_found = true;
+    let cache_path = package_index_path(&service.data_dir, entry_name, package_id);
+    let descriptor_path = package_index_descriptor_path(&service.data_dir, entry_name, package_id);
 
     for member in members {
         let snapshot = if member.name == preferred {
@@ -100,25 +203,6 @@ async fn serve_package_index(
             failures.push(format!("{}: package resource is missing", member.name));
             continue;
         };
-        if let (Some(body), Some(selected_proxy)) = (
-            read_if_present(&cache_path)?,
-            read_selected_proxy(&descriptor_path)?,
-        ) && selected_proxy == snapshot.selected_proxy
-            && valid_package_index(&body)
-        {
-            service.record_object(
-                "nuget_package_index_read",
-                NugetAuditDetails {
-                    object_key: &format!("package/{package_id}/index.json"),
-                    entry_name,
-                    selected_proxy: &selected_proxy,
-                    object_type: "package-index",
-                    cache_status: "hit",
-                    failure_category: None,
-                },
-            )?;
-            return Ok(body);
-        }
         let upstream_url = append_path(&package_base, &format!("{package_id}/index.json"));
         let upstream = match pool
             .fetch_discovered_url_following_safe_redirects(
@@ -146,7 +230,11 @@ async fn serve_package_index(
         atomic_write(&cache_path, &upstream.body)?;
         atomic_write(
             &descriptor_path,
-            format!("{}\n", snapshot.selected_proxy).as_bytes(),
+            &serde_json::to_vec(&PackageIndexDescriptor {
+                selected_proxy: snapshot.selected_proxy.clone(),
+                source_fingerprint: snapshot.source_fingerprint.clone(),
+                validated_at_unix_secs: now_unix_secs(),
+            })?,
         )?;
         if snapshot.selected_proxy != preferred {
             service.publish_service_index(entry_name, &snapshot)?;
@@ -163,13 +251,21 @@ async fn serve_package_index(
             )?;
         }
         service.record_object(
-            "nuget_package_index_published",
+            if revalidating {
+                "nuget_package_index_revalidated"
+            } else {
+                "nuget_package_index_published"
+            },
             NugetAuditDetails {
                 object_key: &format!("package/{package_id}/index.json"),
                 entry_name,
                 selected_proxy: &snapshot.selected_proxy,
                 object_type: "package-index",
-                cache_status: "published",
+                cache_status: if revalidating {
+                    "revalidated"
+                } else {
+                    "published"
+                },
                 failure_category: None,
             },
         )?;
@@ -209,11 +305,7 @@ async fn serve_package(
     let (package_id, version) = parse_package_path(path)?;
     let binding_path = binding_path(&service.data_dir, entry_name, &package_id, &version);
     let initial_snapshot = service.service_index(entry_name, pool).await?;
-    let stored_binding: Option<PackageBinding> =
-        read_json(&binding_path)?.filter(|binding: &PackageBinding| {
-            pool.source_fingerprint(entry_name, &binding.selected_proxy)
-                .is_some_and(|fingerprint| fingerprint == binding.source_fingerprint)
-        });
+    let stored_binding: Option<PackageBinding> = read_json(&binding_path)?;
     if let Some(binding) = &stored_binding
         && (!binding.package_id.eq_ignore_ascii_case(&package_id)
             || !binding.version.eq_ignore_ascii_case(&version))
@@ -222,6 +314,11 @@ async fn serve_package(
             "stored package binding does not match the request".to_owned(),
         ));
     }
+    let binding_is_current = stored_binding.as_ref().is_some_and(|binding| {
+        pool.source_fingerprint(entry_name, &binding.selected_proxy)
+            .is_some_and(|fingerprint| fingerprint == binding.source_fingerprint)
+            && !metadata_is_stale(binding.validated_at_unix_secs)
+    });
     let mut members = pool
         .proxy_members(entry_name)
         .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
@@ -238,10 +335,11 @@ async fn serve_package(
     let mut failures = Vec::new();
     let mut all_not_found = true;
     for member in members {
-        let (binding, fallback_snapshot) = if stored_binding
-            .as_ref()
-            .is_some_and(|binding| member.name == binding.selected_proxy)
-        {
+        let use_stored_binding = binding_is_current
+            && stored_binding
+                .as_ref()
+                .is_some_and(|binding| member.name == binding.selected_proxy);
+        let (binding, fallback_snapshot) = if use_stored_binding {
             (
                 stored_binding.clone().expect("checked stored binding"),
                 None,
@@ -545,6 +643,7 @@ async fn binding_for_package_index(
     Ok(PackageBinding {
         selected_proxy: snapshot.selected_proxy.clone(),
         source_fingerprint: snapshot.source_fingerprint.clone(),
+        validated_at_unix_secs: now_unix_secs(),
         package_id,
         version,
         upstream_url: upstream_url.to_string(),
@@ -725,11 +824,13 @@ fn package_index_descriptor_path(data_dir: &Path, entry_name: &str, package_id: 
         .with_file_name(format!("{package_id}.source"))
 }
 
-fn read_selected_proxy(path: &Path) -> Result<Option<String>, NugetError> {
-    Ok(read_if_present(path)?
-        .and_then(|contents| String::from_utf8(contents).ok())
-        .map(|contents| contents.trim().to_owned())
-        .filter(|proxy| !proxy.is_empty()))
+fn read_package_index_descriptor(
+    path: &Path,
+) -> Result<Option<PackageIndexDescriptor>, NugetError> {
+    let Some(contents) = read_if_present(path)? else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_slice(&contents).ok())
 }
 
 fn package_cache_metadata_path(path: &Path) -> PathBuf {
