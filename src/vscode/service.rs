@@ -27,10 +27,10 @@ use crate::{
     audit::{AuditDetails, AuditSink},
     fsutil::atomic_write,
     sources::{
-        FetchOperation, SourcePoolError,
+        FetchOperation, GroupRun, SourcePoolError,
         pool::is_safe_configured_url,
         registry::{Adapter, AdapterFuture, AdapterRequest},
-        source_error_is_group_fallback,
+        source_error_is_group_fallback, source_error_is_not_found,
     },
 };
 
@@ -182,24 +182,21 @@ impl VscodeService {
         pool: &SourcePool,
     ) -> Result<Vec<u8>, VscodeError> {
         serde_json::from_slice::<Value>(request_body)?;
-        let members = pool
-            .proxy_members(entry_name)
-            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
-        let is_group = pool.is_group(entry_name);
-        let mut failures = Vec::new();
-        let mut all_not_found = true;
+        let mut run = GroupRun::new(pool, entry_name, None)?;
+        let is_group = run.is_group();
 
-        for member in members {
+        while let Some(member) = run.next_member() {
             let response = match pool
                 .post_json_to_source(&member.name, "extensionquery", request_body)
                 .await
             {
                 Ok(response) => response,
                 Err(error) if is_group && source_error_is_group_fallback(&error) => {
-                    if !is_not_found_source_error(&error) {
-                        all_not_found = false;
-                    }
-                    failures.push(format!("{}: {error}", member.name));
+                    run.record_failure(
+                        &member.name,
+                        &error.to_string(),
+                        source_error_is_not_found(&error),
+                    );
                     continue;
                 }
                 Err(error) => return Err(error.into()),
@@ -212,8 +209,7 @@ impl VscodeService {
             ) {
                 Ok(rewritten) => rewritten,
                 Err(error @ VscodeError::InvalidGalleryResponse(_)) if is_group => {
-                    all_not_found = false;
-                    failures.push(format!("{}: {error}", member.name));
+                    run.record_failure(&member.name, &error.to_string(), false);
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -262,8 +258,8 @@ impl VscodeService {
         Err(VscodeError::Source(SourcePoolError::AllSourcesFailed {
             entry_name: entry_name.to_owned(),
             request_key: "extensionquery".to_owned(),
-            failures: failures.join("; "),
-            status: (is_group && all_not_found && !failures.is_empty()).then_some(404),
+            failures: run.failure_summary(),
+            status: (run.has_failures() && run.all_not_found()).then_some(404),
         }))
     }
 
@@ -1027,17 +1023,6 @@ fn append_asset_type(base_url: &str, asset_type: &str) -> Result<Url, VscodeErro
     let base_path = url.path().trim_end_matches('/');
     url.set_path(&format!("{base_path}/{asset_type}"));
     Ok(url)
-}
-
-fn is_not_found_source_error(error: &SourcePoolError) -> bool {
-    matches!(
-        error,
-        SourcePoolError::TerminalSourceError { status: 404, .. }
-            | SourcePoolError::AllSourcesFailed {
-                status: Some(404),
-                ..
-            }
-    )
 }
 
 fn vscode_error_response(error: &VscodeError) -> Response {
