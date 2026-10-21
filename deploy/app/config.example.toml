@@ -110,14 +110,16 @@ base_url = "https://downloads.unstructured.io"
 [[docker.sources]]
 name = "group"
 type = "group"
+# Prefer the Docker Hub mirror first; some deployments cannot reach the
+# official registry directly, so keep it as a last-resort member.
 members = [
-  "official",
+  "xuanyuan",
   "microsoft",
   "ghcr",
   "quay",
   "aliyun",
-  "xuanyuan",
   "unstructured",
+  "official",
 ]
 # Standard Docker CLI listener for the group entry.
 listen_port = 19000

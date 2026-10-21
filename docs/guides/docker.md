@@ -38,7 +38,7 @@ Stacktory 不向 Docker 客户端返回上游 Registry host。上游协议请求
 [[docker.sources]]
 name = "group"
 type = "group"
-members = ["official", "microsoft", "ghcr", "quay", "aliyun", "xuanyuan", "unstructured"]
+members = ["xuanyuan", "microsoft", "ghcr", "quay", "aliyun", "unstructured", "official"]
 listen_port = 19000
 ```
 
@@ -47,6 +47,9 @@ listen_port = 19000
 ```text
 docker.example.com:19000/v2/...
 ```
+
+如果部署网络无法直连 Docker Hub，而 `xuanyuan` 等镜像源可用，应把该镜像源放在
+`members` 前面，并把 `official` 放到最后，避免每次请求先等待官方源超时。
 
 可以由外部 DNS、端口映射或反向代理将域名绑定到该端口。未配置
 `listen_port` 的 source 仍只能通过 `/mirror/docker/{name}/v2/...` 访问。
