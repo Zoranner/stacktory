@@ -156,6 +156,104 @@ async fn cargo_group_uses_first_proxy_config_and_dl_template() {
 }
 
 #[tokio::test]
+async fn cargo_group_falls_back_when_bound_artifact_source_is_forbidden() {
+    let expected_body = b"crate from second source".to_vec();
+    let expected_hash = format!("{:x}", Sha256::digest(&expected_body));
+    let index_body = valid_index_body(std::str::from_utf8(&expected_body).expect("crate UTF-8"));
+
+    let first_listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let first_address = first_listener.local_addr().expect("address");
+    let download_path = format!("/download/se/rd/serde/1.0.0/{expected_hash}");
+    let first_dl = format!(
+        "http://download-first.example:{}/download/{{lowerprefix}}/{{crate}}/{{version}}/{{sha256-checksum}}",
+        first_address.port()
+    );
+    let first_router = Router::new()
+        .route(
+            "/config.json",
+            get({
+                let first_dl = first_dl.clone();
+                move || {
+                    let first_dl = first_dl.clone();
+                    async move { format!(r#"{{"dl":"{first_dl}"}}"#) }
+                }
+            }),
+        )
+        .route(
+            "/se/rd/serde",
+            get({
+                let index_body = index_body.clone();
+                move || {
+                    let index_body = index_body.clone();
+                    async move { index_body }
+                }
+            }),
+        )
+        .route(&download_path, get(|| async { StatusCode::FORBIDDEN }));
+    tokio::spawn(async move {
+        axum::serve(first_listener, first_router)
+            .await
+            .expect("server");
+    });
+    let first = Url::parse(&format!("http://{first_address}")).expect("server URL");
+    let (second, second_address) = start_configured_server_with_host(
+        index_body,
+        expected_body.clone(),
+        &expected_hash,
+        "download-second.example",
+    )
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let registry = AdapterRegistry::new()
+        .with_adapter(
+            "cargo",
+            Arc::new(
+                SourcePool::new_with_resolvers(
+                    "cargo",
+                    SourceGraph::new(vec![
+                        proxy("first", first.as_str()),
+                        proxy("second", second.as_str()),
+                        group("group", &["first", "second"]),
+                    ])
+                    .expect("source graph"),
+                    &[
+                        ("download-first.example", first_address),
+                        ("download-second.example", second_address),
+                    ],
+                )
+                .expect("source pool"),
+            ),
+            Arc::new(CargoAdapter::new(
+                Url::parse("http://127.0.0.1:18761").expect("root URL"),
+                data_dir.path(),
+            )),
+        )
+        .expect("registry");
+
+    let response = router_with_registry(registry)
+        .oneshot(get_request("/mirror/cargo/group/crates/serde/1.0.0.crate"))
+        .await
+        .expect("artifact fallback response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("crate body"),
+        expected_body
+    );
+    assert_eq!(
+        std::fs::read_to_string(
+            data_dir
+                .path()
+                .join("stores/cargo/metadata/group/index/se/rd/serde.source")
+        )
+        .expect("selected proxy sidecar"),
+        "second\n"
+    );
+}
+
+#[tokio::test]
 async fn cargo_artifact_cache_is_shared_by_group_and_its_proxy() {
     let crate_body = b"shared crate".to_vec();
     let crate_hash = format!("{:x}", Sha256::digest(&crate_body));

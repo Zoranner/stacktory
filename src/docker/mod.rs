@@ -32,7 +32,7 @@ use crate::{
     audit::{AuditDetails, AuditSink},
     fsutil::atomic_write,
     sources::registry::{Adapter, AdapterFuture, AdapterRegistry, AdapterRequest, RegistryError},
-    sources::{FetchOperation, SourcePoolError},
+    sources::{FetchOperation, SourcePoolError, source_error_is_group_fallback},
 };
 
 use self::path::{DockerRequest, ManifestReference, parse_request};
@@ -1740,11 +1740,7 @@ fn candidate_sources(
 }
 
 fn is_fallback_source_error(error: &SourcePoolError) -> bool {
-    matches!(
-        error,
-        SourcePoolError::AllSourcesFailed { .. }
-            | SourcePoolError::TerminalSourceError { status: 404, .. }
-    )
+    source_error_is_group_fallback(error)
 }
 
 fn is_fallback_search_error(error: &DockerError) -> bool {

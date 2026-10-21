@@ -16,6 +16,7 @@ use crate::{
         FetchOperation, SourcePoolError,
         pool::is_safe_configured_url_for_source,
         registry::{Adapter, AdapterFuture, AdapterRequest},
+        source_error_is_group_fallback,
     },
 };
 
@@ -272,10 +273,9 @@ impl NpmService {
                     );
                     return Ok(response.body);
                 }
-                Err(error) if is_retryable_source(&error) => {
-                    failures.push(format!("{}: {error}", member.name));
-                }
-                Err(error) if is_not_found(&error) && pool.is_group(entry_name) => {
+                Err(error)
+                    if pool.is_group(entry_name) && source_error_is_group_fallback(&error) =>
+                {
                     failures.push(format!("{}: {error}", member.name));
                 }
                 Err(error) => return Err(error.into()),
@@ -312,11 +312,9 @@ impl NpmService {
                 .await
             {
                 Ok(response) => response,
-                Err(error) if is_retryable_source(&error) => {
-                    failures.push(format!("{}: {error}", member.name));
-                    continue;
-                }
-                Err(error) if is_not_found(&error) && pool.is_group(entry_name) => {
+                Err(error)
+                    if pool.is_group(entry_name) && source_error_is_group_fallback(&error) =>
+                {
                     failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
@@ -382,12 +380,12 @@ impl NpmService {
                 .await
             {
                 Ok(response) => response,
-                Err(error) if is_retryable_source(&error) => {
-                    all_not_found = false;
-                    failures.push(format!("{}: {error}", member.name));
-                    continue;
-                }
-                Err(error) if is_not_found(&error) && pool.is_group(entry_name) => {
+                Err(error)
+                    if pool.is_group(entry_name) && source_error_is_group_fallback(&error) =>
+                {
+                    if !is_not_found(&error) {
+                        all_not_found = false;
+                    }
                     failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
@@ -564,11 +562,9 @@ impl NpmService {
                 .await
             {
                 Ok(response) => response,
-                Err(error) if is_retryable_source(&error) => {
-                    failures.push(format!("{}: {error}", member.name));
-                    continue;
-                }
-                Err(error) if is_not_found(&error) && pool.is_group(entry_name) => {
+                Err(error)
+                    if pool.is_group(entry_name) && source_error_is_group_fallback(&error) =>
+                {
                     failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
@@ -741,10 +737,6 @@ fn is_allowed_source(pool: &SourcePool, entry_name: &str, source_name: &str) -> 
         .is_some_and(|members| members.iter().any(|member| member.name == source_name))
 }
 
-fn is_retryable_source(error: &SourcePoolError) -> bool {
-    matches!(error, SourcePoolError::AllSourcesFailed { .. })
-}
-
 fn is_not_found(error: &SourcePoolError) -> bool {
     matches!(
         error,
@@ -765,8 +757,7 @@ fn is_retryable_npm(error: &NpmError, pool: &SourcePool, entry_name: &str) -> bo
     ) || matches!(
         error,
         NpmError::Source(source_error)
-            if is_retryable_source(source_error)
-                || (pool.is_group(entry_name) && is_not_found(source_error))
+            if pool.is_group(entry_name) && source_error_is_group_fallback(source_error)
     )
 }
 

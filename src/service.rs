@@ -11,7 +11,7 @@ use crate::{
     Config,
     audit::AuditSink,
     rustup::{DistPath, ManifestPolicy, RustupError, rewrite_manifest},
-    sources::{FetchOperation, SourcePool, SourcePoolError},
+    sources::{FetchOperation, SourcePool, SourcePoolError, source_error_is_group_fallback},
     storage::{ArtifactCache, SnapshotStore, StorageError, StoredSnapshot},
 };
 
@@ -236,6 +236,7 @@ impl RustupService {
             .sources
             .proxy_members(source_name)
             .ok_or_else(|| SourcePoolError::UnknownEntry(source_name.to_owned()))?;
+        let is_group = self.sources.is_group(source_name);
         let manifest_key = format!("dist/channel-rust-{channel}.toml");
         let checksum_key = format!("{manifest_key}.sha256");
         let entry_root = self.entry_root_url(source_name);
@@ -265,7 +266,7 @@ impl RustupService {
                 .await
             {
                 Ok(response) => response.body,
-                Err(error) if should_try_next_source(&error) => {
+                Err(error) if should_try_next_source(&error, is_group) => {
                     failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
@@ -277,7 +278,7 @@ impl RustupService {
                 .await
             {
                 Ok(response) => response.body,
-                Err(error) if should_try_next_source(&error) => {
+                Err(error) if should_try_next_source(&error, is_group) => {
                     failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
@@ -335,12 +336,9 @@ impl RustupService {
     }
 }
 
-fn should_try_next_source(error: &SourcePoolError) -> bool {
+fn should_try_next_source(error: &SourcePoolError, is_group: bool) -> bool {
     matches!(error, SourcePoolError::AllSourcesFailed { .. })
-        || matches!(
-            error,
-            SourcePoolError::TerminalSourceError { status: 404, .. }
-        )
+        || (is_group && source_error_is_group_fallback(error))
 }
 
 fn parse_checksum_file<'a>(contents: &'a str, expected_file_name: &str) -> Option<&'a str> {

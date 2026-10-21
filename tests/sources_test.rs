@@ -321,7 +321,7 @@ async fn redirect_is_not_followed_and_can_fallback() {
 async fn terminal_client_error_does_not_fallback() {
     let fallback_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let first =
-        start_server(Router::new().route("/artifact", get(|| async { StatusCode::FORBIDDEN })))
+        start_server(Router::new().route("/artifact", get(|| async { StatusCode::BAD_REQUEST })))
             .await;
     let second = start_server({
         let fallback_hits = fallback_hits.clone();
@@ -360,7 +360,7 @@ async fn terminal_client_error_does_not_fallback() {
 }
 
 #[tokio::test]
-async fn unauthorized_and_forbidden_do_not_fallback() {
+async fn unauthorized_and_forbidden_fall_back() {
     let fallback_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let first = start_server(
         Router::new()
@@ -377,7 +377,7 @@ async fn unauthorized_and_forbidden_do_not_fallback() {
                 let fallback_hits = fallback_hits.clone();
                 async move {
                     fallback_hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    "must not be requested"
+                    "from fallback source"
                 }
             }),
         )
@@ -398,13 +398,12 @@ async fn unauthorized_and_forbidden_do_not_fallback() {
         let result = pool
             .fetch("fallbacks", request_key, FetchOperation::Metadata)
             .await;
-        assert!(matches!(
-            result,
-            Err(SourcePoolError::TerminalSourceError { source_name, .. })
-                if source_name == "first"
-        ));
+        assert_eq!(
+            result.expect("fallback response").body,
+            b"from fallback source"
+        );
     }
-    assert_eq!(fallback_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(fallback_hits.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
@@ -455,7 +454,7 @@ async fn group_falls_back_after_not_found_and_reports_not_found_when_all_missing
 }
 
 #[tokio::test]
-async fn request_timeout_and_rate_limit_do_not_fallback() {
+async fn request_timeout_and_rate_limit_fall_back() {
     let fallback_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let first = start_server(
         Router::new()
@@ -474,7 +473,7 @@ async fn request_timeout_and_rate_limit_do_not_fallback() {
                 let fallback_hits = fallback_hits.clone();
                 async move {
                     fallback_hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    "must not be requested"
+                    "from fallback source"
                 }
             }),
         )
@@ -495,13 +494,12 @@ async fn request_timeout_and_rate_limit_do_not_fallback() {
         let result = pool
             .fetch("fallbacks", request_key, FetchOperation::Metadata)
             .await;
-        assert!(matches!(
-            result,
-            Err(SourcePoolError::TerminalSourceError { source_name, .. })
-                if source_name == "first"
-        ));
+        assert_eq!(
+            result.expect("fallback response").body,
+            b"from fallback source"
+        );
     }
-    assert_eq!(fallback_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(fallback_hits.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
 fn proxy(name: &str, base_url: &str) -> SourceConfig {

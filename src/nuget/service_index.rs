@@ -24,6 +24,7 @@ use crate::{
     },
 };
 
+use super::group_fallback_source;
 use super::path::{safe_resource_url, validate_service_index_url};
 
 const REGISTRATIONS_BASE_URL: &str = "RegistrationsBaseUrl";
@@ -236,12 +237,10 @@ impl NugetService {
                 .await
             {
                 Ok(response) => response,
-                Err(error) if is_retryable(&error) => {
-                    failures.push(format!("{}: {error}", member.name));
-                    all_not_found = false;
-                    continue;
-                }
-                Err(error) if is_group_not_found(pool, entry_name, &error) => {
+                Err(error) if group_fallback_source(&error, pool, entry_name) => {
+                    if !is_group_not_found(pool, entry_name, &error) {
+                        all_not_found = false;
+                    }
                     failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
@@ -725,10 +724,6 @@ fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>, io::Error> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
-}
-
-fn is_retryable(error: &SourcePoolError) -> bool {
-    matches!(error, SourcePoolError::AllSourcesFailed { .. })
 }
 
 fn is_group_not_found(pool: &SourcePool, entry_name: &str, error: &SourcePoolError) -> bool {

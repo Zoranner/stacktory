@@ -21,6 +21,7 @@ use crate::{
 };
 
 use super::{
+    group_fallback_error, group_fallback_source,
     path::{is_safe_segment, safe_resource_url},
     service_index::ServiceIndexSnapshot,
 };
@@ -117,12 +118,12 @@ async fn serve_registration(
                 .await
             {
                 Ok(snapshot) => snapshot,
-                Err(error) if is_retryable(&error) => {
-                    all_not_found = false;
-                    failures.push(format!("{}: {error}", member.name));
-                    continue;
-                }
-                Err(error) if is_group && is_not_found(&error) => {
+                Err(error)
+                    if is_retryable(&error) || group_fallback_error(&error, pool, entry_name) =>
+                {
+                    if !is_not_found(&error) {
+                        all_not_found = false;
+                    }
                     failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
@@ -144,12 +145,10 @@ async fn serve_registration(
             .await
         {
             Ok(response) => response,
-            Err(error) if is_source_retryable(&error) => {
-                all_not_found = false;
-                failures.push(format!("{}: {error}", member.name));
-                continue;
-            }
-            Err(error) if is_group && is_source_not_found(&error) => {
+            Err(error) if group_fallback_source(&error, pool, entry_name) => {
+                if !is_source_not_found(&error) {
+                    all_not_found = false;
+                }
                 failures.push(format!("{}: {error}", member.name));
                 continue;
             }
@@ -724,9 +723,7 @@ fn response(status: StatusCode, content_type: &str, body: Vec<u8>) -> Response {
 fn is_retryable(error: &NugetError) -> bool {
     matches!(
         error,
-        NugetError::Source(SourcePoolError::AllSourcesFailed { .. })
-            | NugetError::InvalidRegistration(_)
-            | NugetError::InvalidServiceIndex(_)
+        NugetError::InvalidRegistration(_) | NugetError::InvalidServiceIndex(_)
     )
 }
 
@@ -739,10 +736,6 @@ fn is_not_found(error: &NugetError) -> bool {
                 ..
             })
     )
-}
-
-fn is_source_retryable(error: &SourcePoolError) -> bool {
-    matches!(error, SourcePoolError::AllSourcesFailed { .. })
 }
 
 fn is_source_not_found(error: &SourcePoolError) -> bool {

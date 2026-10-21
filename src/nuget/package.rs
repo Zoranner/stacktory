@@ -17,6 +17,7 @@ use url::Url;
 use crate::{
     fsutil::atomic_write,
     nuget::{
+        group_fallback_error, group_fallback_source,
         registration::{PackageBinding, binding_for_source, binding_path, persist_binding},
         service_index::{NugetAuditDetails, NugetError, NugetService},
     },
@@ -78,12 +79,14 @@ async fn serve_package_index(
                 .await
             {
                 Ok(snapshot) => snapshot,
-                Err(error) if is_group && is_retryable(&error) => {
-                    all_not_found = false;
-                    failures.push(format!("{}: {error}", member.name));
-                    continue;
-                }
-                Err(error) if is_group && is_not_found(&error) => {
+                Err(error)
+                    if is_group
+                        && (is_retryable(&error)
+                            || group_fallback_error(&error, pool, entry_name)) =>
+                {
+                    if !is_not_found(&error) {
+                        all_not_found = false;
+                    }
                     failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
@@ -124,12 +127,10 @@ async fn serve_package_index(
             .await
         {
             Ok(response) => response,
-            Err(error) if is_group && is_source_retryable(&error) => {
-                all_not_found = false;
-                failures.push(format!("{}: {error}", member.name));
-                continue;
-            }
-            Err(error) if is_group && is_source_not_found(&error) => {
+            Err(error) if group_fallback_source(&error, pool, entry_name) => {
+                if !is_source_not_found(&error) {
+                    all_not_found = false;
+                }
                 failures.push(format!("{}: {error}", member.name));
                 continue;
             }
@@ -248,8 +249,14 @@ async fn serve_package(
                     .await
                 {
                     Ok(snapshot) => snapshot,
-                    Err(error) if is_group && is_retryable(&error) => {
-                        all_not_found = false;
+                    Err(error)
+                        if is_group
+                            && (is_retryable(&error)
+                                || group_fallback_error(&error, pool, entry_name)) =>
+                    {
+                        if !is_not_found(&error) {
+                            all_not_found = false;
+                        }
                         failures.push(format!("{}: {error}", member.name));
                         continue;
                     }
@@ -279,8 +286,14 @@ async fn serve_package(
                     .await
                     {
                         Ok(binding) => binding,
-                        Err(error) if is_group && is_retryable(&error) => {
-                            all_not_found = false;
+                        Err(error)
+                            if is_group
+                                && (is_retryable(&error)
+                                    || group_fallback_error(&error, pool, entry_name)) =>
+                        {
+                            if !is_not_found(&error) {
+                                all_not_found = false;
+                            }
                             failures.push(format!("{}: {error}", member.name));
                             continue;
                         }
@@ -299,8 +312,14 @@ async fn serve_package(
                 .await
                 {
                     Ok(binding) => binding,
-                    Err(error) if is_group && is_retryable(&error) => {
-                        all_not_found = false;
+                    Err(error)
+                        if is_group
+                            && (is_retryable(&error)
+                                || group_fallback_error(&error, pool, entry_name)) =>
+                    {
+                        if !is_not_found(&error) {
+                            all_not_found = false;
+                        }
                         failures.push(format!("{}: {error}", member.name));
                         continue;
                     }
@@ -345,8 +364,10 @@ async fn serve_package(
             .await
         {
             Ok(response) => response,
-            Err(error) if is_group && is_source_retryable(&error) => {
-                all_not_found = false;
+            Err(error) if group_fallback_source(&error, pool, entry_name) => {
+                if !is_source_not_found(&error) {
+                    all_not_found = false;
+                }
                 failures.push(format!("{}: {error}", member.name));
                 service.record_object(
                     "nuget_package_fallback",
@@ -356,22 +377,11 @@ async fn serve_package(
                         selected_proxy: &member.name,
                         object_type: "package-content",
                         cache_status: "fallback",
-                        failure_category: Some("source_unavailable"),
-                    },
-                )?;
-                continue;
-            }
-            Err(error) if is_group && is_source_not_found(&error) => {
-                failures.push(format!("{}: {error}", member.name));
-                service.record_object(
-                    "nuget_package_fallback",
-                    NugetAuditDetails {
-                        object_key: &format!("package/{package_id}/{version}"),
-                        entry_name,
-                        selected_proxy: &member.name,
-                        object_type: "package-content",
-                        cache_status: "fallback",
-                        failure_category: Some("not_found"),
+                        failure_category: Some(if is_source_not_found(&error) {
+                            "not_found"
+                        } else {
+                            "source_unavailable"
+                        }),
                     },
                 )?;
                 continue;
@@ -786,8 +796,7 @@ fn package_error_response(error: &NugetError) -> Response {
 fn is_retryable(error: &NugetError) -> bool {
     matches!(
         error,
-        NugetError::Source(SourcePoolError::AllSourcesFailed { .. })
-            | NugetError::InvalidRegistration(_)
+        NugetError::InvalidRegistration(_)
             | NugetError::InvalidServiceIndex(_)
             | NugetError::InvalidPackageIndex(_)
             | NugetError::InvalidPackage(_)
@@ -804,10 +813,6 @@ fn is_not_found(error: &NugetError) -> bool {
                 ..
             })
     )
-}
-
-fn is_source_retryable(error: &SourcePoolError) -> bool {
-    matches!(error, SourcePoolError::AllSourcesFailed { .. })
 }
 
 fn is_source_not_found(error: &SourcePoolError) -> bool {

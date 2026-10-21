@@ -8,6 +8,7 @@ use url::Url;
 use crate::{
     SourceConfig, SourceGraph,
     sources::{
+        fetch_error_is_group_fallback,
         fetcher::{FetchedFile, HttpFetcher},
         policy::{is_public_host, same_origin},
     },
@@ -401,6 +402,13 @@ impl SourcePool {
                         headers: response.headers,
                     });
                 }
+                Err(error) if is_group && fetch_error_is_group_fallback(&error) => {
+                    saw_failure = true;
+                    if error.status_code() != Some(404) {
+                        all_not_found = false;
+                    }
+                    failures.push(format!("{}: {error}", source.name));
+                }
                 Err(error) if error.is_retryable() => {
                     saw_failure = true;
                     all_not_found = false;
@@ -408,11 +416,6 @@ impl SourcePool {
                 }
                 Err(error) => {
                     let status = error.status_code().unwrap_or_default();
-                    if is_group && status == 404 {
-                        saw_failure = true;
-                        failures.push(format!("{}: {error}", source.name));
-                        continue;
-                    }
                     return Err(SourcePoolError::TerminalSourceError {
                         source_name: source.name,
                         status,

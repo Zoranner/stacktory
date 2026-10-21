@@ -19,7 +19,7 @@ use crate::{
     audit::{AuditDetails, AuditSink},
     fsutil::atomic_write,
     sources::registry::{Adapter, AdapterFuture, AdapterRequest},
-    sources::{FetchOperation, SourcePoolError},
+    sources::{FetchOperation, SourcePoolError, source_error_is_group_fallback},
 };
 
 use super::{
@@ -257,15 +257,14 @@ impl CargoService {
                         }
                     }
                 }
-                Err(error) if is_retryable(&error) => {
-                    saw_failure = true;
-                    all_not_found = false;
-                    failures.push(format!("{}: {error}", member.name));
-                }
                 Err(error)
-                    if terminal_status(&error) == Some(404) && is_group_entry(pool, entry_name) =>
+                    if is_group_entry(pool, entry_name)
+                        && source_error_is_group_fallback(&error) =>
                 {
                     saw_failure = true;
+                    if terminal_status(&error) != Some(404) {
+                        all_not_found = false;
+                    }
                     failures.push(format!("{}: {error}", member.name));
                 }
                 Err(error) => return Err(error.into()),
@@ -397,9 +396,11 @@ impl CargoService {
                         continue;
                     }
                 },
-                Err(error) if is_retryable(&error) => {
+                Err(error) if is_group && source_error_is_group_fallback(&error) => {
                     saw_failure = true;
-                    all_not_found = false;
+                    if terminal_status(&error) != Some(404) {
+                        all_not_found = false;
+                    }
                     self.record_cargo(
                         "cargo_artifact_fallback",
                         entry_name,
@@ -408,23 +409,11 @@ impl CargoService {
                             selected_proxy: Some(&member.name),
                             object_type: "artifact",
                             cache_status: "fallback",
-                            failure_category: Some("source_unavailable"),
-                        },
-                    );
-                    failures.push(format!("{}: {error}", member.name));
-                    continue;
-                }
-                Err(error) if terminal_status(&error) == Some(404) && is_group => {
-                    saw_failure = true;
-                    self.record_cargo(
-                        "cargo_artifact_fallback",
-                        entry_name,
-                        &request_key,
-                        CargoAuditDetails {
-                            selected_proxy: Some(&member.name),
-                            object_type: "artifact",
-                            cache_status: "fallback",
-                            failure_category: Some("not_found"),
+                            failure_category: Some(if terminal_status(&error) == Some(404) {
+                                "not_found"
+                            } else {
+                                "source_unavailable"
+                            }),
                         },
                     );
                     failures.push(format!("{}: {error}", member.name));
@@ -477,26 +466,19 @@ impl CargoService {
                     );
                     return Ok(response.body);
                 }
-                Ok(_) => failures.push(format!(
-                    "{}: checksum mismatch for {crate_name} {version}",
-                    member.name
-                )),
-                Err(error) if terminal_status(&error) == Some(404) && is_group => {
+                Ok(_) => {
                     saw_failure = true;
-                    self.record_cargo(
-                        "cargo_artifact_fallback",
-                        entry_name,
-                        &request_key,
-                        CargoAuditDetails {
-                            selected_proxy: Some(&member.name),
-                            object_type: "artifact",
-                            cache_status: "fallback",
-                            failure_category: Some("not_found"),
-                        },
-                    );
-                    failures.push(format!("{}: {error}", member.name));
+                    all_not_found = false;
+                    failures.push(format!(
+                        "{}: checksum mismatch for {crate_name} {version}",
+                        member.name
+                    ));
                 }
-                Err(error) if is_source_failure(&error) => {
+                Err(error)
+                    if is_group
+                        && (source_error_is_group_fallback(&error)
+                            || matches!(error, SourcePoolError::InvalidConfiguredUrl(_))) =>
+                {
                     saw_failure = true;
                     if terminal_status(&error) != Some(404) {
                         all_not_found = false;
@@ -672,17 +654,6 @@ fn cargo_error_response(error: &CargoError) -> Response {
 
 fn response(status: StatusCode, content_type: &'static str, body: Vec<u8>) -> Response {
     (status, [(CONTENT_TYPE, content_type)], Body::from(body)).into_response()
-}
-
-fn is_retryable(error: &SourcePoolError) -> bool {
-    matches!(error, SourcePoolError::AllSourcesFailed { .. })
-}
-
-fn is_source_failure(error: &SourcePoolError) -> bool {
-    matches!(
-        error,
-        SourcePoolError::AllSourcesFailed { .. } | SourcePoolError::InvalidConfiguredUrl(_)
-    )
 }
 
 fn terminal_status(error: &SourcePoolError) -> Option<u16> {

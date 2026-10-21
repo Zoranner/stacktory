@@ -183,11 +183,18 @@ async fn rejects_unbound_artifacts_and_invalid_scoped_paths() {
 }
 
 #[tokio::test]
-async fn preserves_terminal_upstream_errors_without_group_fallback() {
+async fn falls_back_for_forbidden_upstream() {
     let first_hits = Arc::new(AtomicUsize::new(0));
     let second_hits = Arc::new(AtomicUsize::new(0));
     let first = start_status_server(StatusCode::FORBIDDEN, first_hits.clone()).await;
-    let second = start_status_server(StatusCode::OK, second_hits.clone()).await;
+    let second = start_npm_server(
+        "left-pad",
+        b"verified npm tarball".to_vec(),
+        second_hits.clone(),
+        Arc::new(AtomicUsize::new(0)),
+    )
+    .await
+    .0;
     let router = npm_router(
         vec![
             proxy("first", first.as_str()),
@@ -202,9 +209,9 @@ async fn preserves_terminal_upstream_errors_without_group_fallback() {
         .await
         .expect("terminal response");
 
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(first_hits.load(Ordering::SeqCst), 1);
-    assert_eq!(second_hits.load(Ordering::SeqCst), 0);
+    assert_eq!(second_hits.load(Ordering::SeqCst), 1);
 }
 
 fn npm_router(sources: Vec<SourceConfig>, data_dir: &Path) -> axum::Router {

@@ -8,6 +8,7 @@ use url::Url;
 
 use crate::{
     nuget::service_index::{NugetAuditDetails, NugetError, NugetService},
+    nuget::{group_fallback_error, group_fallback_source},
     sources::{FetchOperation, SourcePool, SourcePoolError},
 };
 
@@ -56,7 +57,11 @@ async fn search(
                     .await
                 {
                     Ok(snapshot) => snapshot,
-                    Err(error) if is_group && is_retryable(&error) => {
+                    Err(error)
+                        if is_group
+                            && (is_retryable(&error)
+                                || group_fallback_error(&error, pool, entry_name)) =>
+                    {
                         failures.push(format!("{}: {error}", member.name));
                         continue;
                     }
@@ -69,7 +74,11 @@ async fn search(
                 .await
             {
                 Ok(snapshot) => snapshot,
-                Err(error) if is_group && is_retryable(&error) => {
+                Err(error)
+                    if is_group
+                        && (is_retryable(&error)
+                            || group_fallback_error(&error, pool, entry_name)) =>
+                {
                     failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
@@ -91,18 +100,28 @@ async fn search(
             .await
         {
             Ok(response) => response,
-            Err(error) if is_group && is_source_retryable(&error) => {
-                failures.push(format!("{}: {error}", member.name));
-                continue;
-            }
-            Err(error) if is_group && is_source_not_found(&error) => {
+            Err(error) if group_fallback_source(&error, pool, entry_name) => {
                 failures.push(format!("{}: {error}", member.name));
                 continue;
             }
             Err(error) => return Err(error.into()),
         };
-        let mut body: Value = serde_json::from_slice(&upstream.body)?;
-        rewrite_registration_links(&mut body, &snapshot.registration_urls, service, entry_name)?;
+        let mut body: Value = match serde_json::from_slice(&upstream.body) {
+            Ok(body) => body,
+            Err(error) => {
+                failures.push(format!("{}: invalid search JSON: {error}", member.name));
+                continue;
+            }
+        };
+        if let Err(error) =
+            rewrite_registration_links(&mut body, &snapshot.registration_urls, service, entry_name)
+        {
+            if is_group {
+                failures.push(format!("{}: {error}", member.name));
+                continue;
+            }
+            return Err(error);
+        }
         let body = serde_json::to_vec(&body)?;
         service.record_object(
             "nuget_search_query",
@@ -293,24 +312,7 @@ fn same_origin(left: &Url, right: &Url) -> bool {
 fn is_retryable(error: &NugetError) -> bool {
     matches!(
         error,
-        NugetError::Source(SourcePoolError::AllSourcesFailed { .. })
-            | NugetError::InvalidSearch(_)
-            | NugetError::InvalidServiceIndex(_)
-    )
-}
-
-fn is_source_retryable(error: &SourcePoolError) -> bool {
-    matches!(error, SourcePoolError::AllSourcesFailed { .. })
-}
-
-fn is_source_not_found(error: &SourcePoolError) -> bool {
-    matches!(
-        error,
-        SourcePoolError::TerminalSourceError { status: 404, .. }
-            | SourcePoolError::AllSourcesFailed {
-                status: Some(404),
-                ..
-            }
+        NugetError::InvalidSearch(_) | NugetError::InvalidServiceIndex(_)
     )
 }
 

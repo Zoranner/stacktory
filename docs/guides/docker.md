@@ -51,6 +51,9 @@ docker.example.com:19000/v2/...
 如果部署网络无法直连 Docker Hub，而 `xuanyuan` 等镜像源可用，应把该镜像源放在
 `members` 前面，并把 `official` 放到最后，避免每次请求先等待官方源超时。
 
+Docker group 会按成员顺序回退 `401`、`403`、`404`、`408`、`429`、`5xx` 和网络
+失败；其他 `4xx` 直接返回。直接 source 入口不会向兄弟来源回退。
+
 可以由外部 DNS、端口映射或反向代理将域名绑定到该端口。未配置
 `listen_port` 的 source 仍只能通过 `/mirror/docker/{name}/v2/...` 访问。
 仓库的 `deploy/app/config.example.toml` 已为 `group` 显式配置 `19000`，

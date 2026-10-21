@@ -121,6 +121,39 @@ async fn group_falls_back_after_manifest_digest_mismatch() {
 }
 
 #[tokio::test]
+async fn group_falls_back_for_unauthorized_forbidden_timeout_and_rate_limit() {
+    for status in [
+        StatusCode::UNAUTHORIZED,
+        StatusCode::FORBIDDEN,
+        StatusCode::REQUEST_TIMEOUT,
+        StatusCode::TOO_MANY_REQUESTS,
+    ] {
+        let manifest =
+            br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#
+                .to_vec();
+        let digest = sha256_digest(&manifest);
+        let first_hits = Arc::new(AtomicUsize::new(0));
+        let second_hits = Arc::new(AtomicUsize::new(0));
+        let first =
+            start_manifest_server(status, Vec::new(), String::new(), first_hits.clone()).await;
+        let second =
+            start_manifest_server(StatusCode::OK, manifest, digest, second_hits.clone()).await;
+        let data_dir = tempdir().expect("data directory");
+
+        let response = docker_router(first, second, data_dir.path())
+            .oneshot(get_request(
+                "/mirror/docker/fallbacks/v2/library/demo/manifests/latest",
+            ))
+            .await
+            .expect("status fallback response");
+
+        assert_eq!(response.status(), StatusCode::OK, "status {status}");
+        assert_eq!(first_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(second_hits.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test]
 async fn group_and_direct_proxy_reuse_blob_cache_for_the_selected_proxy() {
     let config = br#"{"architecture":"amd64","os":"linux"}"#.to_vec();
     let config_digest = sha256_digest(&config);
