@@ -206,6 +206,62 @@ async fn service_index_rebases_cached_public_urls_without_refetching() {
 }
 
 #[tokio::test]
+async fn service_index_refetches_when_the_source_target_changes() {
+    let first = start_service_index_with_body(|port| {
+        format!(
+            r#"{{"version":"3.0.0","resources":[
+                {{"@id":"http://127.0.0.1:{port}/first/registration/","@type":"RegistrationsBaseUrl/3.6.0"}},
+                {{"@id":"http://127.0.0.1:{port}/first/packages/","@type":"PackageBaseAddress/3.0.0"}}
+            ]}}"#
+        )
+    })
+    .await;
+    let second = start_service_index_with_body(|port| {
+        format!(
+            r#"{{"version":"3.0.0","resources":[
+                {{"@id":"http://127.0.0.1:{port}/second/registration/","@type":"RegistrationsBaseUrl/3.6.0"}},
+                {{"@id":"http://127.0.0.1:{port}/second/packages/","@type":"PackageBaseAddress/3.0.0"}}
+            ]}}"#
+        )
+    })
+    .await;
+    let data_dir = tempdir().expect("data directory");
+
+    let first_response = nuget_router(first, data_dir.path())
+        .oneshot(get_request("/mirror/nuget/official/v3/index.json"))
+        .await
+        .expect("first service index response");
+    assert_eq!(first_response.status(), axum::http::StatusCode::OK);
+
+    let second_response = nuget_router(second.clone(), data_dir.path())
+        .oneshot(get_request("/mirror/nuget/official/v3/index.json"))
+        .await
+        .expect("second service index response");
+    assert_eq!(second_response.status(), axum::http::StatusCode::OK);
+
+    let descriptor: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            data_dir
+                .path()
+                .join("stores/nuget/metadata/official/service-index.source"),
+        )
+        .expect("service index source"),
+    )
+    .expect("service index source JSON");
+    assert_eq!(
+        descriptor["source_fingerprint"],
+        format!("official|{}|false", second.as_str())
+    );
+    assert_eq!(
+        descriptor["registration_url"],
+        format!(
+            "http://127.0.0.1:{}/second/registration/",
+            second.port().expect("second port")
+        )
+    );
+}
+
+#[tokio::test]
 async fn service_index_rejects_unknown_resource_relationships() {
     let upstream = start_server(Router::new().route(
         "/v3/index.json",
@@ -275,7 +331,7 @@ async fn service_index_returns_internal_error_when_audit_storage_fails() {
     .expect("service index cache");
     std::fs::write(
         metadata_dir.join("service-index.source"),
-        br#"{"selected_proxy":"official","public_base_url":"http://127.0.0.1:18761","registration_url":"http://127.0.0.1:9/v3/registration/","package_base_url":"http://127.0.0.1:9/v3-flatcontainer/"}"#,
+        br#"{"selected_proxy":"official","source_fingerprint":"official|http://127.0.0.1:9/v3/index.json|false","public_base_url":"http://127.0.0.1:18761","registration_url":"http://127.0.0.1:9/v3/registration/","package_base_url":"http://127.0.0.1:9/v3-flatcontainer/"}"#,
     )
     .expect("service index sidecar");
     std::fs::write(data_dir.path().join("audit"), b"not a directory").expect("audit blocker");

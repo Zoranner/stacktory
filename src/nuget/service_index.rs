@@ -78,6 +78,8 @@ pub enum NugetError {
 pub(crate) struct ServiceIndexDescriptor {
     pub(crate) selected_proxy: String,
     #[serde(default)]
+    pub(crate) source_fingerprint: String,
+    #[serde(default)]
     pub(crate) public_base_url: String,
     pub(crate) registration_url: Option<String>,
     #[serde(default)]
@@ -93,6 +95,7 @@ pub(crate) struct ServiceIndexDescriptor {
 pub(crate) struct ServiceIndexSnapshot {
     pub(crate) body: Vec<u8>,
     pub(crate) selected_proxy: String,
+    pub(crate) source_fingerprint: String,
     pub(crate) registration_url: Option<Url>,
     pub(crate) registration_urls: Vec<Url>,
     pub(crate) package_base_url: Option<Url>,
@@ -192,11 +195,9 @@ impl NugetService {
             read_descriptor(&descriptor_path)?,
         ) && !descriptor.public_base_url.is_empty()
             && is_valid_cached_service_index(&body, &descriptor)
-            && pool.proxy_members(entry_name).is_some_and(|configured| {
-                configured
-                    .iter()
-                    .any(|source| source.name == descriptor.selected_proxy)
-            })
+            && pool
+                .source_fingerprint(entry_name, &descriptor.selected_proxy)
+                .is_some_and(|fingerprint| fingerprint == descriptor.source_fingerprint)
         {
             if descriptor.public_base_url != self.root_url.as_str() {
                 if let Some(rebased) = crate::nuget::render::rebase_public_urls(
@@ -220,6 +221,7 @@ impl NugetService {
             return Ok(ServiceIndexSnapshot {
                 body,
                 selected_proxy: descriptor.selected_proxy,
+                source_fingerprint: descriptor.source_fingerprint,
                 registration_url: parse_optional_url(descriptor.registration_url.clone())?,
                 registration_urls: parse_url_list(
                     descriptor.registration_urls,
@@ -271,6 +273,7 @@ impl NugetService {
                 Ok(rewritten) => {
                     let descriptor = ServiceIndexDescriptor {
                         selected_proxy: upstream.source_name.clone(),
+                        source_fingerprint: member.fingerprint(),
                         public_base_url: self.root_url.to_string(),
                         registration_url: rewritten.registration_url.as_ref().map(Url::to_string),
                         registration_urls: rewritten
@@ -294,6 +297,7 @@ impl NugetService {
                     return Ok(ServiceIndexSnapshot {
                         body: rewritten.body,
                         selected_proxy: upstream.source_name,
+                        source_fingerprint: descriptor.source_fingerprint,
                         registration_url: rewritten.registration_url,
                         registration_urls: rewritten.registration_urls,
                         package_base_url: rewritten.package_base_url,
@@ -368,6 +372,7 @@ impl NugetService {
         Ok(ServiceIndexSnapshot {
             body: rewritten.body,
             selected_proxy: source_name.to_owned(),
+            source_fingerprint: source.fingerprint(),
             registration_url: rewritten.registration_url,
             registration_urls: rewritten.registration_urls,
             package_base_url: rewritten.package_base_url,
@@ -383,6 +388,7 @@ impl NugetService {
     ) -> Result<(), NugetError> {
         let descriptor = ServiceIndexDescriptor {
             selected_proxy: snapshot.selected_proxy.clone(),
+            source_fingerprint: snapshot.source_fingerprint.clone(),
             public_base_url: self.root_url.to_string(),
             registration_url: snapshot.registration_url.as_ref().map(Url::to_string),
             registration_urls: snapshot

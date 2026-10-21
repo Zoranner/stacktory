@@ -155,6 +155,14 @@ impl SourcePool {
             .map(|members| members.into_iter().cloned().collect())
     }
 
+    pub fn source_fingerprint(&self, entry_name: &str, source_name: &str) -> Option<String> {
+        self.graph
+            .proxy_members(entry_name)?
+            .into_iter()
+            .find(|source| source.name == source_name)
+            .map(SourceConfig::fingerprint)
+    }
+
     pub fn proxies(&self) -> Vec<SourceConfig> {
         self.graph.proxies().into_iter().cloned().collect()
     }

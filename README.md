@@ -79,6 +79,10 @@ Docker source 开放标准 CLI 端口，在 `deploy/app/config.toml` 中设置�
 npm/UPM metadata、Rustup manifest 和 NuGet JSON metadata 会在读取时按当前
 地址重新渲染或重写；缺少公开地址标记的旧缓存按未命中重建。
 
+修改同名 proxy 的 `base_url` 或 `require_https` 后，NuGet 和 Docker 中保存上游
+绝对地址或可变引用的 metadata 与来源绑定会按未命中重建；按 digest 或摘要校验的
+制品内容仍可继续复用。
+
 Cargo 索引命中超过 15 分钟后会从上游重新验证；上游删除 crate 时会清理本地索引。
 
 如果 NuGet 上游删除并重新发布了同一个版本，可以在服务所在目录执行：
@@ -88,4 +92,6 @@ stacktory invalidate-nuget-metadata --entry group
 ```
 
 该命令只删除指定入口的 NuGet metadata，保留 package content；后续请求会重新
-获取 service index、registration 和 package index，并按新摘要重新校验包内容。
+获取 service index、registration 和 package index。新 registration 提供摘要时
+按新摘要重新校验包内容；未提供摘要且来源身份未变化时，旧 package content 不会
+仅因执行该命令而失效。

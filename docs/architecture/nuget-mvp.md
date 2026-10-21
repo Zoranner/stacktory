@@ -135,15 +135,25 @@ service index、registration、package content、漏洞索引和漏洞数据分�
 package ID/version 在不同命名入口或不同 selected proxy 下不能共享没有来源绑定的
 文件。
 
-service index、registration 和漏洞索引的 sidecar 记录生成时的公开基地址。
-读取缓存时如果 `root_url` 已变化，adapter 只重写 JSON 中的客户端可见 URL 并更新
-sidecar，不访问上游，也不删除 package content。缺少公开基地址标记的旧缓存按
-未命中重新获取。
+service index、registration、package binding 和漏洞索引/数据的 sidecar 记录
+来源指纹，由 proxy 名称、`base_url` 和 `require_https` 组成。同名 proxy 修改上游
+目标后，旧 metadata 按未命中重新获取；内容寻址且摘要仍匹配的 package content
+可以继续复用。`root_url` 不进入来源指纹，公开地址变化时 adapter 只重写 JSON 中的
+客户端可见 URL 并更新 sidecar，不访问上游，也不删除 package content。缺少来源
+指纹或公开基地址标记的旧缓存按未命中重新获取。
 
 本 MVP 不做隐式 stale-while-revalidate 或跨来源拼接。metadata 缓存只有在 JSON、
-restore 资源 sidecar 和 selected proxy 仍有效时命中；package content 缓存每次命中
-仍执行已声明摘要或本地 SHA-256 校验。需要强制重新获取时由管理员清理对应
-`data_dir/stores/nuget` 缓存。
+restore 资源 sidecar、selected proxy 和来源指纹仍有效时命中；package content
+缓存每次命中仍执行已声明摘要或本地 SHA-256 校验。上游删除并重新发布同一版本时，
+可以强制重建指定入口的 NuGet metadata：
+
+```text
+stacktory invalidate-nuget-metadata --entry <name>
+```
+
+命令只删除该入口的 metadata 和来源绑定，保留 package content；新 registration
+提供摘要时按新摘要重新校验。上游未提供摘要且来源指纹未变化时，该命令不会使旧
+package content 自动失效，需要另行清理对应的 package content 缓存。
 
 - 未知入口、非法资源路径、未知 package/version、未被 restore metadata 引用的
   content 或未被漏洞索引声明的文件名：`404`。

@@ -28,6 +28,8 @@ use crate::{
 struct PackageCacheMetadata {
     local_sha256: String,
     upstream_verified: bool,
+    #[serde(default)]
+    source_fingerprint: String,
 }
 
 pub(crate) async fn serve(
@@ -207,7 +209,11 @@ async fn serve_package(
     let (package_id, version) = parse_package_path(path)?;
     let binding_path = binding_path(&service.data_dir, entry_name, &package_id, &version);
     let initial_snapshot = service.service_index(entry_name, pool).await?;
-    let stored_binding: Option<PackageBinding> = read_json(&binding_path)?;
+    let stored_binding: Option<PackageBinding> =
+        read_json(&binding_path)?.filter(|binding: &PackageBinding| {
+            pool.source_fingerprint(entry_name, &binding.selected_proxy)
+                .is_some_and(|fingerprint| fingerprint == binding.source_fingerprint)
+        });
     if let Some(binding) = &stored_binding
         && (!binding.package_id.eq_ignore_ascii_case(&package_id)
             || !binding.version.eq_ignore_ascii_case(&version))
@@ -538,6 +544,7 @@ async fn binding_for_package_index(
     ));
     Ok(PackageBinding {
         selected_proxy: snapshot.selected_proxy.clone(),
+        source_fingerprint: snapshot.source_fingerprint.clone(),
         package_id,
         version,
         upstream_url: upstream_url.to_string(),
@@ -639,7 +646,8 @@ fn cache_is_valid(
             else {
                 return Ok(false);
             };
-            Ok(metadata.local_sha256 == format!("{:x}", Sha256::digest(bytes)))
+            Ok(metadata.source_fingerprint == binding.source_fingerprint
+                && metadata.local_sha256 == format!("{:x}", Sha256::digest(bytes)))
         }
         Err(_) => Ok(false),
     }
@@ -682,6 +690,7 @@ fn publish_verified(
         &serde_json::to_vec(&PackageCacheMetadata {
             local_sha256: format!("{:x}", Sha256::digest(bytes)),
             upstream_verified,
+            source_fingerprint: binding.source_fingerprint.clone(),
         })?,
     )?;
     Ok(())

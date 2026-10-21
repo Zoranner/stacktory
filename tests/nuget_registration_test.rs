@@ -139,6 +139,54 @@ async fn registration_cache_rebases_after_the_public_root_changes() {
 }
 
 #[tokio::test]
+async fn registration_cache_refetches_after_the_source_target_changes() {
+    let (first_upstream, first_address) = start_registration_server(false, false).await;
+    let (second_upstream, second_address) = start_registration_server(false, false).await;
+    let data_dir = tempdir().expect("data directory");
+    let first_fingerprint = format!("official|{first_upstream}|false");
+    let second_fingerprint = format!("official|{second_upstream}|false");
+
+    for (upstream, address, expected_fingerprint) in [
+        (first_upstream, first_address, first_fingerprint),
+        (second_upstream, second_address, second_fingerprint),
+    ] {
+        let router = nuget_router(upstream, address, data_dir.path());
+        let response = router
+            .oneshot(get_request(
+                "/mirror/nuget/official/registration/foo/index.json",
+            ))
+            .await
+            .expect("registration response");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let descriptor: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(
+                data_dir
+                    .path()
+                    .join("stores/nuget/metadata/official/registration/foo/index.json.source"),
+            )
+            .expect("registration descriptor"),
+        )
+        .expect("registration descriptor JSON");
+        assert_eq!(
+            descriptor["source_fingerprint"],
+            expected_fingerprint.as_str()
+        );
+
+        let binding: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(
+                data_dir
+                    .path()
+                    .join("stores/nuget/metadata/official/bindings/foo/1.0.0.json"),
+            )
+            .expect("package binding"),
+        )
+        .expect("package binding JSON");
+        assert_eq!(binding["source_fingerprint"], expected_fingerprint.as_str());
+    }
+}
+
+#[tokio::test]
 async fn registration_rejects_package_content_outside_the_discovered_package_resource() {
     let (upstream, address) = start_registration_server(true, false).await;
     let data_dir = tempdir().expect("data directory");

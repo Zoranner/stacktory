@@ -126,6 +126,34 @@ async fn catalog_and_tags_queries_use_entry_bound_verified_cache() {
 }
 
 #[tokio::test]
+async fn query_cache_is_invalidated_when_the_source_target_changes() {
+    let first_hits = Arc::new(AtomicUsize::new(0));
+    let second_hits = Arc::new(AtomicUsize::new(0));
+    let first = start_counted_query_server(first_hits.clone()).await;
+    let second = start_counted_query_server(second_hits.clone()).await;
+    let data_dir = tempdir().expect("data directory");
+    let path = "/mirror/docker/official/v2/_catalog?n=2";
+
+    let first_response = docker_router_with_official(first, data_dir.path())
+        .oneshot(Request::get(path).body(Body::empty()).expect("first query"))
+        .await
+        .expect("first query response");
+    assert_eq!(first_response.status(), StatusCode::OK);
+
+    let second_response = docker_router_with_official(second, data_dir.path())
+        .oneshot(
+            Request::get(path)
+                .body(Body::empty())
+                .expect("second query"),
+        )
+        .await
+        .expect("second query response");
+    assert_eq!(second_response.status(), StatusCode::OK);
+    assert_eq!(first_hits.load(Ordering::SeqCst), 1);
+    assert_eq!(second_hits.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn group_query_falls_back_after_invalid_json_response() {
     let first = start_json_server(b"not-json".to_vec(), StatusCode::OK).await;
     let second = start_json_server(
@@ -171,6 +199,26 @@ fn docker_router_with_sources(first: Url, second: Url, data_dir: &std::path::Pat
                         group("fallbacks", &["official", "second"]),
                     ])
                     .expect("source graph"),
+                )
+                .expect("source pool"),
+            ),
+            Arc::new(DockerAdapter::new(
+                Url::parse("http://127.0.0.1:18761").expect("root URL"),
+                data_dir,
+            )),
+        )
+        .expect("adapter registration");
+    router_with_registry(registry)
+}
+
+fn docker_router_with_official(upstream: Url, data_dir: &std::path::Path) -> axum::Router {
+    let registry = AdapterRegistry::new()
+        .with_adapter(
+            "docker",
+            Arc::new(
+                SourcePool::new(
+                    "docker",
+                    SourceGraph::new(vec![proxy("official", upstream)]).expect("source graph"),
                 )
                 .expect("source pool"),
             ),

@@ -94,6 +94,8 @@ struct ManifestMetadata {
     reference: String,
     digest: String,
     selected_proxy: String,
+    #[serde(default)]
+    source_fingerprint: String,
     content_type: Option<String>,
     #[serde(default)]
     accept: Option<String>,
@@ -122,6 +124,11 @@ struct CachedManifest {
     content_type: Option<String>,
 }
 
+struct ManifestSource<'a> {
+    name: &'a str,
+    fingerprint: &'a str,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct QueryMetadata {
     namespace: String,
@@ -129,6 +136,8 @@ struct QueryMetadata {
     query: Option<String>,
     object_type: String,
     selected_proxy: String,
+    #[serde(default)]
+    source_fingerprint: String,
     digest: String,
     content_type: Option<String>,
     link: Option<String>,
@@ -356,7 +365,14 @@ impl DockerService {
             request_key,
             query,
         )?
-        .filter(|metadata| source_is_member(pool, entry_name, &metadata.selected_proxy));
+        .filter(|metadata| {
+            source_is_current(
+                pool,
+                entry_name,
+                &metadata.selected_proxy,
+                &metadata.source_fingerprint,
+            )
+        });
         if let Some(metadata) = &bound
             && let Some(body) = read_verified_artifact(
                 &self.data_dir,
@@ -425,6 +441,9 @@ impl DockerService {
                         query: query.map(str::to_owned),
                         object_type: object_type.to_owned(),
                         selected_proxy: source_name.clone(),
+                        source_fingerprint: pool
+                            .source_fingerprint(entry_name, &source_name)
+                            .unwrap_or_default(),
                         digest: digest.clone(),
                         content_type: upstream.content_type.clone(),
                         link: upstream
@@ -578,7 +597,14 @@ impl DockerService {
             reference.as_str(),
             accept.as_deref(),
         )?
-        .filter(|metadata| source_is_member(pool, entry_name, &metadata.selected_proxy));
+        .filter(|metadata| {
+            source_is_current(
+                pool,
+                entry_name,
+                &metadata.selected_proxy,
+                &metadata.source_fingerprint,
+            )
+        });
         if let Some(metadata) = &bound
             && let Some(body) = read_verified_artifact(
                 &self.data_dir,
@@ -609,11 +635,15 @@ impl DockerService {
         if let ManifestReference::Digest(digest) = reference {
             for source_name in candidate_sources(pool, entry_name, None)? {
                 if let Some(cached) = read_cached_manifest(&self.data_dir, &source_name, digest)? {
+                    let source_fingerprint = pool
+                        .source_fingerprint(entry_name, &source_name)
+                        .unwrap_or_default();
                     let metadata = ManifestMetadata {
                         repository: repository.to_owned(),
                         reference: digest.clone(),
                         digest: digest.clone(),
                         selected_proxy: source_name,
+                        source_fingerprint,
                         content_type: cached.content_type,
                         accept: accept.clone(),
                     };
@@ -648,6 +678,9 @@ impl DockerService {
         let mut failures = Vec::new();
         let mut all_not_found = true;
         for source_name in candidates {
+            let source_fingerprint = pool
+                .source_fingerprint(entry_name, &source_name)
+                .unwrap_or_default();
             match pool
                 .fetch_proxy_registry_path(
                     &source_name,
@@ -661,7 +694,10 @@ impl DockerService {
                 Ok(upstream) => match validate_manifest(
                     repository,
                     reference,
-                    &source_name,
+                    ManifestSource {
+                        name: &source_name,
+                        fingerprint: &source_fingerprint,
+                    },
                     upstream.content_type.as_deref(),
                     &upstream.headers,
                     &upstream.body,
@@ -1254,7 +1290,7 @@ fn json_response(body: Vec<u8>, content_type: Option<&str>, link: Option<&str>) 
 fn validate_manifest(
     repository: &str,
     reference: &ManifestReference,
-    selected_proxy: &str,
+    source: ManifestSource<'_>,
     content_type: Option<&str>,
     headers: &HeaderMap,
     body: &[u8],
@@ -1312,7 +1348,8 @@ fn validate_manifest(
         repository: repository.to_owned(),
         reference: reference.as_str().to_owned(),
         digest: actual_digest,
-        selected_proxy: selected_proxy.to_owned(),
+        selected_proxy: source.name.to_owned(),
+        source_fingerprint: source.fingerprint.to_owned(),
         content_type,
         accept: accept.map(str::to_owned),
     })
@@ -1715,6 +1752,16 @@ async fn publish_verified_file(
 fn source_is_member(pool: &SourcePool, entry_name: &str, source_name: &str) -> bool {
     pool.proxy_members(entry_name)
         .is_some_and(|members| members.iter().any(|member| member.name == source_name))
+}
+
+fn source_is_current(
+    pool: &SourcePool,
+    entry_name: &str,
+    source_name: &str,
+    source_fingerprint: &str,
+) -> bool {
+    pool.source_fingerprint(entry_name, source_name)
+        .is_some_and(|fingerprint| fingerprint == source_fingerprint)
 }
 
 fn candidate_sources(

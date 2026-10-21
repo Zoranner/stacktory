@@ -262,6 +262,56 @@ async fn tag_manifest_cache_isolated_by_accept_representation() {
 }
 
 #[tokio::test]
+async fn tag_manifest_cache_is_invalidated_when_the_source_target_changes() {
+    let first_manifest =
+        br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","first":true}"#
+            .to_vec();
+    let second_manifest =
+        br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","second":true}"#
+            .to_vec();
+    let first_upstream = start_manifest_server(
+        first_manifest.clone(),
+        sha256_digest(&first_manifest),
+        Arc::new(Mutex::new(None)),
+        Arc::new(Mutex::new(None)),
+    )
+    .await;
+    let second_upstream = start_manifest_server(
+        second_manifest.clone(),
+        sha256_digest(&second_manifest),
+        Arc::new(Mutex::new(None)),
+        Arc::new(Mutex::new(None)),
+    )
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let path = "/mirror/docker/official/v2/library/alpine/manifests/latest";
+
+    let first = docker_router(first_upstream, data_dir.path())
+        .oneshot(get_request(path))
+        .await
+        .expect("first manifest response");
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(first.into_body(), usize::MAX)
+            .await
+            .expect("first manifest body"),
+        first_manifest
+    );
+
+    let second = docker_router(second_upstream, data_dir.path())
+        .oneshot(get_request(path))
+        .await
+        .expect("second manifest response");
+    assert_eq!(second.status(), StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(second.into_body(), usize::MAX)
+            .await
+            .expect("second manifest body"),
+        second_manifest
+    );
+}
+
+#[tokio::test]
 async fn invalid_manifest_is_not_written_to_cache() {
     let body = b"not valid json".to_vec();
     let digest = sha256_digest(&body);
@@ -316,6 +366,10 @@ fn docker_router(upstream: Url, data_dir: &std::path::Path) -> axum::Router {
         )
         .expect("adapter registration");
     router_with_registry(registry)
+}
+
+fn get_request(path: &str) -> Request<Body> {
+    Request::get(path).body(Body::empty()).expect("request")
 }
 
 async fn start_manifest_server(

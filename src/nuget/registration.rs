@@ -29,6 +29,8 @@ use super::{
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct PackageBinding {
     pub(crate) selected_proxy: String,
+    #[serde(default)]
+    pub(crate) source_fingerprint: String,
     pub(crate) package_id: String,
     pub(crate) version: String,
     pub(crate) upstream_url: String,
@@ -39,6 +41,8 @@ pub(crate) struct PackageBinding {
 #[derive(Debug, Deserialize, Serialize)]
 struct RegistrationDescriptor {
     selected_proxy: String,
+    #[serde(default)]
+    source_fingerprint: String,
     upstream_url: String,
     #[serde(default)]
     public_base_url: String,
@@ -80,11 +84,7 @@ async fn serve_registration(
         read_descriptor(&descriptor_path)?,
     ) && !descriptor.public_base_url.is_empty()
         && descriptor.selected_proxy == snapshot.selected_proxy
-        && pool.proxy_members(entry_name).is_some_and(|members| {
-            members
-                .iter()
-                .any(|member| member.name == descriptor.selected_proxy)
-        })
+        && descriptor.source_fingerprint == snapshot.source_fingerprint
     {
         if descriptor.public_base_url != service.root_url.as_str() {
             if let Some(rebased) = crate::nuget::render::rebase_public_urls(
@@ -198,6 +198,7 @@ async fn serve_registration(
             &descriptor_path,
             &serde_json::to_vec(&RegistrationDescriptor {
                 selected_proxy: source_snapshot.selected_proxy.clone(),
+                source_fingerprint: source_snapshot.source_fingerprint.clone(),
                 upstream_url: upstream_url.to_string(),
                 public_base_url: service.root_url.to_string(),
             })?,
@@ -471,6 +472,7 @@ fn rewrite_object(
         );
         let binding = PackageBinding {
             selected_proxy: snapshot.selected_proxy.clone(),
+            source_fingerprint: snapshot.source_fingerprint.clone(),
             package_id: package_id.to_owned(),
             version: version.to_owned(),
             upstream_url: upstream_url.to_string(),

@@ -363,6 +363,10 @@ manifest、image config 和 layer blob 分别记录 object type。group 只按�
 实际 `selected_proxy`、repository、object type 和 digest 复用，因此 group
 入口与其实际选中的 direct proxy 可以复用同一内容对象。
 
+Docker manifest/tag 和 catalog/tags query metadata 记录来源指纹，由 proxy 名称、
+`base_url` 和 `require_https` 组成。同名 proxy 修改上游目标后，旧的 tag 映射和
+查询结果按未命中重新获取；digest 校验通过的内容对象仍可按内容地址复用。
+
 Docker 适配器首期不实现 push、delete、账号管理、私有凭据、签名管理、构建服务
 和 Docker Registry V1 查询；对公开 Registry 返回的匿名 Bearer challenge，
 Stacktory 在服务端获取短期 pull token，不向客户端暴露上游认证信息。真实

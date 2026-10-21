@@ -132,11 +132,64 @@ async fn package_content_without_upstream_digest_uses_local_cache_hash() {
     );
 }
 
+#[tokio::test]
+async fn package_cache_without_upstream_digest_is_rebound_after_the_source_changes() {
+    let first_package = valid_nupkg_with_comment(b"first");
+    let second_package = valid_nupkg_with_comment(b"second");
+    let first_requests = Arc::new(AtomicUsize::new(0));
+    let second_requests = Arc::new(AtomicUsize::new(0));
+    let (first_upstream, first_address) =
+        start_package_server_without_hash(first_package.clone(), first_requests.clone()).await;
+    let (second_upstream, second_address) =
+        start_package_server_without_hash(second_package.clone(), second_requests.clone()).await;
+    let data_dir = tempdir().expect("data directory");
+    let path = "/mirror/nuget/official/package/foo/1.0.0/foo.1.0.0.nupkg";
+
+    let first_router = nuget_router(first_upstream, first_address, data_dir.path());
+    prime_registration(&first_router).await;
+    let first = first_router
+        .oneshot(get_request(path))
+        .await
+        .expect("first package response");
+    assert_eq!(first.status(), axum::http::StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(first.into_body(), usize::MAX)
+            .await
+            .expect("first package body"),
+        first_package
+    );
+
+    let second_router = nuget_router(second_upstream, second_address, data_dir.path());
+    prime_registration(&second_router).await;
+    let second = second_router
+        .oneshot(get_request(path))
+        .await
+        .expect("second package response");
+    assert_eq!(second.status(), axum::http::StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(second.into_body(), usize::MAX)
+            .await
+            .expect("second package body"),
+        second_package
+    );
+    assert_eq!(first_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(second_requests.load(Ordering::SeqCst), 1);
+}
+
 fn valid_nupkg() -> Vec<u8> {
     vec![
         0x50, 0x4b, 0x05, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ]
+}
+
+fn valid_nupkg_with_comment(comment: &[u8]) -> Vec<u8> {
+    let mut package = valid_nupkg();
+    let comment_length = u16::try_from(comment.len()).expect("comment length");
+    let length = package.len();
+    package[length - 2..].copy_from_slice(&comment_length.to_le_bytes());
+    package.extend_from_slice(comment);
+    package
 }
 
 #[tokio::test]
