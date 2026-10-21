@@ -1,4 +1,5 @@
 use std::{
+    fs,
     path::PathBuf,
     sync::{
         Arc,
@@ -36,6 +37,49 @@ async fn health_route_reports_service_availability() {
         .expect("response");
 
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn readiness_checks_data_and_log_directories() {
+    let data_dir = tempdir().expect("data directory");
+    let log_dir = tempdir().expect("log directory");
+
+    let writable = rustup_service(data_dir.path().to_path_buf(), log_dir.path().to_path_buf());
+    let response = router_with_rustup(Arc::new(writable))
+        .oneshot(
+            Request::get("/readyz")
+                .body(Body::empty())
+                .expect("readiness request"),
+        )
+        .await
+        .expect("readiness response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let blocked_data = data_dir.path().join("blocked-data");
+    fs::write(&blocked_data, b"not a directory").expect("data blocker");
+    let blocked_data_service = rustup_service(blocked_data, log_dir.path().to_path_buf());
+    let response = router_with_rustup(Arc::new(blocked_data_service))
+        .oneshot(
+            Request::get("/readyz")
+                .body(Body::empty())
+                .expect("blocked data request"),
+        )
+        .await
+        .expect("blocked data response");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let blocked_log = log_dir.path().join("blocked-log");
+    fs::write(&blocked_log, b"not a directory").expect("log blocker");
+    let blocked_log_service = rustup_service(data_dir.path().to_path_buf(), blocked_log);
+    let response = router_with_rustup(Arc::new(blocked_log_service))
+        .oneshot(
+            Request::get("/readyz")
+                .body(Body::empty())
+                .expect("blocked log request"),
+        )
+        .await
+        .expect("blocked log response");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]
@@ -605,6 +649,33 @@ fn source(name: &str, base_url: impl Into<String>) -> SourceConfig {
         require_https: false,
         members: vec![],
     }
+}
+
+fn rustup_service(data_dir: PathBuf, log_dir: PathBuf) -> RustupService {
+    RustupService::new(Config {
+        listen_address: "127.0.0.1".parse().expect("address"),
+        listen_port: 18761,
+        data_dir,
+        log_dir,
+        root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
+        proxy_url: None,
+        proxy_no_proxy: None,
+        retention: RetentionConfig::default(),
+        rustup: RustupConfig {
+            refresh_interval_secs: 3600,
+            channels: vec!["stable".to_owned()],
+            sources: SourceGraph::new(vec![source("test", "http://127.0.0.1:1")])
+                .expect("source graph"),
+        },
+        cargo: None,
+        vscode: None,
+        docker: None,
+        npm: None,
+        nuget: None,
+        pypi: None,
+        upm: None,
+    })
+    .expect("service")
 }
 
 fn group(name: &str, members: &[&str]) -> SourceConfig {

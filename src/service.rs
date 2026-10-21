@@ -1,4 +1,8 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use thiserror::Error;
 
@@ -20,6 +24,8 @@ pub struct RustupService {
     snapshots: SnapshotStore,
     cache: ArtifactCache,
     audit: AuditSink,
+    data_dir: PathBuf,
+    log_dir: PathBuf,
     refresh_locks: ShardedLocks,
     artifact_locks: ShardedLocks,
 }
@@ -42,6 +48,8 @@ impl RustupService {
     pub fn new(config: Config) -> Result<Self, ServiceError> {
         let proxy_url = config.proxy_url.clone();
         let proxy_no_proxy = config.proxy_no_proxy.clone();
+        let data_dir = config.data_dir.clone();
+        let log_dir = config.log_dir.clone();
         let sources = SourcePool::new_with_proxy(
             "rustup",
             config.rustup.sources,
@@ -53,12 +61,24 @@ impl RustupService {
             refresh_interval_secs: config.rustup.refresh_interval_secs,
             root_url: config.root_url,
             sources,
-            snapshots: SnapshotStore::new(config.data_dir.clone()),
-            cache: ArtifactCache::new(config.data_dir.clone()),
-            audit: AuditSink::new(config.data_dir),
+            snapshots: SnapshotStore::new(data_dir.clone()),
+            cache: ArtifactCache::new(data_dir.clone()),
+            audit: AuditSink::new(data_dir.clone()),
+            data_dir,
+            log_dir,
             refresh_locks: ShardedLocks::default(),
             artifact_locks: ShardedLocks::default(),
         })
+    }
+
+    pub async fn is_ready(&self) -> bool {
+        let data_dir = self.data_dir.clone();
+        let log_dir = self.log_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            directory_is_writable(&data_dir) && directory_is_writable(&log_dir)
+        })
+        .await
+        .unwrap_or(false)
     }
 
     pub async fn refresh(&self, source_name: &str, channel: &str) -> Result<(), ServiceError> {
@@ -370,4 +390,25 @@ fn sha256(contents: &[u8]) -> String {
     use sha2::{Digest, Sha256};
 
     format!("{:x}", Sha256::digest(contents))
+}
+
+fn directory_is_writable(path: &Path) -> bool {
+    if fs::create_dir_all(path).is_err() {
+        return false;
+    }
+    let probe = path.join(format!(
+        ".ready-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    ));
+    match fs::write(&probe, b"ok") {
+        Ok(()) => {
+            let _ = fs::remove_file(probe);
+            true
+        }
+        Err(_) => false,
+    }
 }

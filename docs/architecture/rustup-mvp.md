@@ -41,6 +41,7 @@ Rustup 使用 `/mirror/rustup/{name}` 命名入口，开发机设置
 | `GET /mirror/rustup/{name}/dist/channel-rust-{channel}.toml.sha256` | 返回与当前 manifest 配对的 SHA-256。 |
 | `GET /mirror/rustup/{name}/dist/{path}` | 返回经过路径限制、上游校验和缓存的 Rustup 制品。 |
 | `GET /healthz` | 服务存活检查，不暴露上游、缓存或配置细节。 |
+| `GET /readyz` | 就绪检查，验证数据目录和日志目录可写；失败返回 `503`。 |
 
 旧 `/mirror/rustup/dist/**` 路由不再注册，也不提供兼容别名。
 

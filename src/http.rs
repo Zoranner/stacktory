@@ -28,6 +28,7 @@ pub fn router() -> Router {
 pub fn router_with_rustup(service: Arc<RustupService>) -> Router {
     Router::new()
         .route("/healthz", get(health))
+        .route("/readyz", get(ready))
         .route("/mirror/rustup/{name}/{*path}", get(rustup_dist))
         .with_state(service)
 }
@@ -90,6 +91,14 @@ fn registry_routes(registry: AdapterRegistry, docker_entry: Option<String>) -> R
 
 async fn health() -> StatusCode {
     StatusCode::OK
+}
+
+async fn ready(State(service): State<Arc<RustupService>>) -> StatusCode {
+    if service.is_ready().await {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
 }
 
 async fn registry_cors(request: Request<Body>, next: Next) -> axum::response::Response {
