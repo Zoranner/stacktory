@@ -8,7 +8,7 @@ use url::Url;
 use crate::{
     SourceConfig, SourceGraph,
     sources::{
-        fetch_error_is_group_fallback,
+        GroupRun, fetch_error_is_group_fallback,
         fetcher::{FetchedFile, HttpFetcher},
         policy::{is_public_host, same_origin},
     },
@@ -494,19 +494,11 @@ impl SourcePool {
         request: SourceRequest<'_>,
     ) -> Result<SourceResponse, SourcePoolError> {
         let _artifact_permit = self.artifact_permit(operation).await;
-        let members = self
-            .proxy_members(entry_name)
-            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
-        let is_group = self
-            .graph
-            .get(entry_name)
-            .is_some_and(|source| source.source_type == crate::SourceType::Group);
+        let mut run = GroupRun::new(self, entry_name, None)?;
+        let is_group = run.is_group();
         let request_key = normalize_request_key(request_key)?;
-        let mut failures = Vec::new();
-        let mut saw_failure = false;
-        let mut all_not_found = true;
 
-        for source in members {
+        while let Some(source) = run.next_member() {
             let url = source_url(&source, &request_key)?;
             let result = match request {
                 SourceRequest::Get => self.fetcher.fetch(url, operation.timeout()).await,
@@ -526,16 +518,14 @@ impl SourcePool {
                     });
                 }
                 Err(error) if is_group && fetch_error_is_group_fallback(&error) => {
-                    saw_failure = true;
-                    if error.status_code() != Some(404) {
-                        all_not_found = false;
-                    }
-                    failures.push(format!("{}: {error}", source.name));
+                    run.record_failure(
+                        &source.name,
+                        &error.to_string(),
+                        error.status_code() == Some(404),
+                    );
                 }
                 Err(error) if error.is_retryable() => {
-                    saw_failure = true;
-                    all_not_found = false;
-                    failures.push(format!("{}: {error}", source.name));
+                    run.record_failure(&source.name, &error.to_string(), false);
                 }
                 Err(error) => {
                     let status = error.status_code().unwrap_or_default();
@@ -548,12 +538,7 @@ impl SourcePool {
             }
         }
 
-        Err(SourcePoolError::AllSourcesFailed {
-            entry_name: entry_name.to_owned(),
-            request_key,
-            failures: failures.join("; "),
-            status: (is_group && saw_failure && all_not_found).then_some(404),
-        })
+        Err(run.all_sources_failed(request_key))
     }
 
     pub async fn fetch_configured_url(

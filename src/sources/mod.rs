@@ -4,5 +4,8 @@ mod policy;
 pub mod pool;
 pub mod registry;
 
-pub(crate) use fallback::{fetch_error_is_group_fallback, source_error_is_group_fallback};
+pub(crate) use fallback::{
+    GroupRun, fetch_error_is_group_fallback, source_error_is_group_fallback,
+    source_error_is_not_found,
+};
 pub use pool::{ArtifactBudget, FetchOperation, SourcePool, SourcePoolError, SourceResponse};

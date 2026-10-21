@@ -12,7 +12,8 @@ use crate::{
     locks::ShardedLocks,
     rustup::{DistPath, ManifestPolicy, RustupError, rewrite_manifest},
     sources::{
-        ArtifactBudget, FetchOperation, SourcePool, SourcePoolError, source_error_is_group_fallback,
+        ArtifactBudget, FetchOperation, GroupRun, SourcePool, SourcePoolError,
+        source_error_is_group_fallback, source_error_is_not_found,
     },
     storage::{ArtifactCache, ArtifactFile, SnapshotStore, StorageError, StoredSnapshot},
 };
@@ -293,19 +294,14 @@ impl RustupService {
         source_name: &str,
         channel: &str,
     ) -> Result<(String, crate::rustup::RewrittenManifest), ServiceError> {
-        let members = self
-            .sources
-            .proxy_members(source_name)
-            .ok_or_else(|| SourcePoolError::UnknownEntry(source_name.to_owned()))?;
-        let is_group = self.sources.is_group(source_name);
+        let mut run = GroupRun::new(&self.sources, source_name, None)?;
+        let is_group = run.is_group();
         let manifest_key = format!("dist/channel-rust-{channel}.toml");
         let checksum_key = format!("{manifest_key}.sha256");
         let entry_root = self.entry_root_url(source_name);
         let file_name = format!("channel-rust-{channel}.toml");
         let policy = self.manifest_policy();
-        let mut failures = Vec::new();
-
-        for member in members {
+        while let Some(member) = run.next_member() {
             let manifest = match self
                 .sources
                 .fetch(&member.name, &manifest_key, FetchOperation::Metadata)
@@ -319,7 +315,11 @@ impl RustupService {
                         &member.name,
                         source_failure_category(&error),
                     );
-                    failures.push(format!("{}: {error}", member.name));
+                    run.record_failure(
+                        &member.name,
+                        &error.to_string(),
+                        source_error_is_not_found(&error),
+                    );
                     continue;
                 }
                 Err(error) => return Err(error.into()),
@@ -337,7 +337,11 @@ impl RustupService {
                         &member.name,
                         source_failure_category(&error),
                     );
-                    failures.push(format!("{}: {error}", member.name));
+                    run.record_failure(
+                        &member.name,
+                        &error.to_string(),
+                        source_error_is_not_found(&error),
+                    );
                     continue;
                 }
                 Err(error) => return Err(error.into()),
@@ -352,7 +356,7 @@ impl RustupService {
                         &member.name,
                         "protocol_invalid",
                     );
-                    failures.push(format!("{}: manifest is not UTF-8", member.name));
+                    run.record_failure(&member.name, "manifest is not UTF-8", false);
                     continue;
                 }
             };
@@ -365,7 +369,7 @@ impl RustupService {
                         &member.name,
                         "protocol_invalid",
                     );
-                    failures.push(format!("{}: checksum is not UTF-8", member.name));
+                    run.record_failure(&member.name, "checksum is not UTF-8", false);
                     continue;
                 }
             };
@@ -377,7 +381,7 @@ impl RustupService {
                     &member.name,
                     "checksum_mismatch",
                 );
-                failures.push(format!("{}: checksum does not match manifest", member.name));
+                run.record_failure(&member.name, "checksum does not match manifest", false);
                 continue;
             }
 
@@ -390,18 +394,12 @@ impl RustupService {
                         &member.name,
                         "protocol_invalid",
                     );
-                    failures.push(format!("{}: {error}", member.name));
+                    run.record_failure(&member.name, &error.to_string(), false);
                 }
             }
         }
 
-        Err(SourcePoolError::AllSourcesFailed {
-            entry_name: source_name.to_owned(),
-            request_key: manifest_key,
-            failures: failures.join("; "),
-            status: None,
-        }
-        .into())
+        Err(run.all_sources_failed(manifest_key).into())
     }
 
     fn entry_root_url(&self, source_name: &str) -> url::Url {

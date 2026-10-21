@@ -25,7 +25,7 @@ use crate::{
     audit::{AuditDetails, AuditSink},
     fsutil::atomic_write,
     sources::registry::{Adapter, AdapterFuture, AdapterRequest},
-    sources::{FetchOperation, SourcePoolError, source_error_is_group_fallback},
+    sources::{FetchOperation, GroupRun, SourcePoolError, source_error_is_group_fallback},
 };
 
 use super::{
@@ -317,21 +317,8 @@ impl CargoService {
         preferred_source: Option<&str>,
     ) -> Result<FetchedIndex, CargoError> {
         let request_key = index_path.to_owned();
-        let mut members = pool
-            .proxy_members(entry_name)
-            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
-        if let Some(preferred_source) = preferred_source
-            && let Some(index) = members
-                .iter()
-                .position(|member| member.name == preferred_source)
-        {
-            let preferred = members.remove(index);
-            members.insert(0, preferred);
-        }
-        let mut failures = Vec::new();
-        let mut saw_failure = false;
-        let mut all_not_found = true;
-        for member in members {
+        let mut run = GroupRun::new(pool, entry_name, preferred_source)?;
+        while let Some(member) = run.next_member() {
             match pool
                 .fetch(&member.name, &request_key, FetchOperation::Metadata)
                 .await
@@ -358,12 +345,11 @@ impl CargoService {
                                 normalize_crate_name(&record.name)
                                     .is_ok_and(|name| name == crate_name)
                             }) {
-                                saw_failure = true;
-                                all_not_found = false;
-                                failures.push(format!(
-                                    "{}: index does not contain the requested crate",
-                                    member.name
-                                ));
+                                run.record_failure(
+                                    &member.name,
+                                    "index does not contain the requested crate",
+                                    false,
+                                );
                                 continue;
                             }
                             return Ok(FetchedIndex {
@@ -372,21 +358,16 @@ impl CargoService {
                             });
                         }
                         Err(error) => {
-                            saw_failure = true;
-                            all_not_found = false;
-                            failures.push(format!("{}: {error}", member.name));
+                            run.record_failure(&member.name, &error.to_string(), false);
                         }
                     }
                 }
-                Err(error)
-                    if is_group_entry(pool, entry_name)
-                        && source_error_is_group_fallback(&error) =>
-                {
-                    saw_failure = true;
-                    if terminal_status(&error) != Some(404) {
-                        all_not_found = false;
-                    }
-                    failures.push(format!("{}: {error}", member.name));
+                Err(error) if run.is_group() && source_error_is_group_fallback(&error) => {
+                    run.record_failure(
+                        &member.name,
+                        &error.to_string(),
+                        terminal_status(&error) == Some(404),
+                    );
                 }
                 Err(error) => return Err(error.into()),
             }
@@ -400,21 +381,14 @@ impl CargoService {
                 selected_proxy: None,
                 object_type: "index",
                 cache_status: "failed",
-                failure_category: Some(if saw_failure && all_not_found {
+                failure_category: Some(if run.has_failures() && run.all_not_found() {
                     "not_found"
                 } else {
                     "source_failed"
                 }),
             },
         );
-        Err(SourcePoolError::AllSourcesFailed {
-            entry_name: entry_name.to_owned(),
-            request_key,
-            failures: failures.join("; "),
-            status: (is_group_entry(pool, entry_name) && saw_failure && all_not_found)
-                .then_some(404),
-        }
-        .into())
+        Err(run.all_sources_failed(request_key).into())
     }
 
     fn publish_index_cache(
@@ -492,20 +466,8 @@ impl CargoService {
         }
 
         let request_key = format!("crates/{crate_name}/{version}.crate");
-        let mut failures = Vec::new();
-        let mut members = pool
-            .proxy_members(entry_name)
-            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
-        if let Some(position) = members
-            .iter()
-            .position(|member| member.name == snapshot.selected_proxy)
-        {
-            let selected = members.remove(position);
-            members.insert(0, selected);
-        }
-        let is_group = is_group_entry(pool, entry_name);
-        let mut saw_failure = false;
-        let mut all_not_found = true;
+        let mut run = GroupRun::new(pool, entry_name, Some(&snapshot.selected_proxy))?;
+        let is_group = run.is_group();
         self.record_cargo(
             "cargo_artifact_read",
             entry_name,
@@ -517,7 +479,7 @@ impl CargoService {
                 failure_category: None,
             },
         );
-        for member in members {
+        while let Some(member) = run.next_member() {
             let config = match pool
                 .fetch(&member.name, "config.json", FetchOperation::Metadata)
                 .await
@@ -525,8 +487,7 @@ impl CargoService {
                 Ok(response) => match parse_registry_config(&response.body) {
                     Ok(config) => config,
                     Err(error) => {
-                        saw_failure = true;
-                        all_not_found = false;
+                        run.record_failure(&member.name, &error.to_string(), false);
                         self.record_cargo(
                             "cargo_artifact_fallback",
                             entry_name,
@@ -538,15 +499,15 @@ impl CargoService {
                                 failure_category: Some("invalid_config"),
                             },
                         );
-                        failures.push(format!("{}: {error}", member.name));
                         continue;
                     }
                 },
                 Err(error) if is_group && source_error_is_group_fallback(&error) => {
-                    saw_failure = true;
-                    if terminal_status(&error) != Some(404) {
-                        all_not_found = false;
-                    }
+                    run.record_failure(
+                        &member.name,
+                        &error.to_string(),
+                        terminal_status(&error) == Some(404),
+                    );
                     self.record_cargo(
                         "cargo_artifact_fallback",
                         entry_name,
@@ -562,7 +523,6 @@ impl CargoService {
                             }),
                         },
                     );
-                    failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
                 Err(error) => return Err(error.into()),
@@ -580,9 +540,7 @@ impl CargoService {
             ) {
                 Ok(url) => url,
                 Err(error) => {
-                    saw_failure = true;
-                    all_not_found = false;
-                    failures.push(format!("{}: {error}", member.name));
+                    run.record_failure(&member.name, &error.to_string(), false);
                     continue;
                 }
             };
@@ -602,10 +560,11 @@ impl CargoService {
                         && (source_error_is_group_fallback(&error)
                             || matches!(error, SourcePoolError::InvalidConfiguredUrl(_))) =>
                 {
-                    saw_failure = true;
-                    if terminal_status(&error) != Some(404) {
-                        all_not_found = false;
-                    }
+                    run.record_failure(
+                        &member.name,
+                        &error.to_string(),
+                        terminal_status(&error) == Some(404),
+                    );
                     self.record_cargo(
                         "cargo_artifact_fallback",
                         entry_name,
@@ -621,7 +580,6 @@ impl CargoService {
                             }),
                         },
                     );
-                    failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
                 Err(error) => return Err(error.into()),
@@ -649,12 +607,11 @@ impl CargoService {
                 }
                 Ok(_) => {
                     let _ = fs::remove_file(&fetched.path);
-                    saw_failure = true;
-                    all_not_found = false;
-                    failures.push(format!(
-                        "{}: checksum mismatch for {crate_name} {version}",
-                        member.name
-                    ));
+                    run.record_failure(
+                        &member.name,
+                        &format!("checksum mismatch for {crate_name} {version}"),
+                        false,
+                    );
                     self.record_cargo(
                         "cargo_artifact_fallback",
                         entry_name,
@@ -682,20 +639,14 @@ impl CargoService {
                 selected_proxy: None,
                 object_type: "artifact",
                 cache_status: "failed",
-                failure_category: Some(if saw_failure && all_not_found {
+                failure_category: Some(if run.has_failures() && run.all_not_found() {
                     "not_found"
                 } else {
                     "source_failed"
                 }),
             },
         );
-        Err(SourcePoolError::AllSourcesFailed {
-            entry_name: entry_name.to_owned(),
-            request_key,
-            failures: failures.join("; "),
-            status: (is_group && saw_failure && all_not_found).then_some(404),
-        }
-        .into())
+        Err(run.all_sources_failed(request_key).into())
     }
 
     fn metadata_path(&self, entry_name: &str, object_key: &str) -> PathBuf {
@@ -852,10 +803,6 @@ fn index_is_stale(path: &Path) -> bool {
     SystemTime::now()
         .duration_since(modified)
         .is_ok_and(|age| age >= Duration::from_secs(INDEX_REVALIDATE_AFTER_SECS))
-}
-
-fn is_group_entry(pool: &SourcePool, entry_name: &str) -> bool {
-    pool.is_group(entry_name)
 }
 
 fn checksum_file(path: &Path) -> Result<String, io::Error> {

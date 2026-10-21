@@ -22,10 +22,10 @@ use crate::{
     SourcePool,
     audit::{AuditDetails, AuditSink},
     sources::{
-        FetchOperation, SourcePoolError,
+        FetchOperation, GroupRun, SourcePoolError,
         pool::is_safe_configured_url_for_source,
         registry::{Adapter, AdapterFuture, AdapterRequest},
-        source_error_is_group_fallback,
+        source_error_is_group_fallback, source_error_is_not_found,
     },
 };
 
@@ -270,11 +270,8 @@ impl NpmService {
         pool: &SourcePool,
     ) -> Result<Vec<u8>, NpmError> {
         let query = validate_read_query(query)?;
-        let mut failures = Vec::new();
-        for member in pool
-            .proxy_members(entry_name)
-            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?
-        {
+        let mut run = GroupRun::new(pool, entry_name, None)?;
+        while let Some(member) = run.next_member() {
             match pool
                 .fetch_proxy_registry_path_with_query(
                     &member.name,
@@ -297,17 +294,19 @@ impl NpmService {
                     );
                     return Ok(response.body);
                 }
-                Err(error)
-                    if pool.is_group(entry_name) && source_error_is_group_fallback(&error) =>
-                {
-                    failures.push(format!("{}: {error}", member.name));
+                Err(error) if run.is_group() && source_error_is_group_fallback(&error) => {
+                    run.record_failure(
+                        &member.name,
+                        &error.to_string(),
+                        source_error_is_not_found(&error),
+                    );
                 }
                 Err(error) => return Err(error.into()),
             }
         }
         Err(NpmError::AllSourcesFailed {
             package: "-/ping".to_owned(),
-            failures: failures.join("; "),
+            failures: run.failure_summary(),
         })
     }
 
@@ -319,11 +318,8 @@ impl NpmService {
         pool: &SourcePool,
     ) -> Result<Vec<u8>, NpmError> {
         let query = validate_search_query(query)?;
-        let mut failures = Vec::new();
-        for member in pool
-            .proxy_members(entry_name)
-            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?
-        {
+        let mut run = GroupRun::new(pool, entry_name, None)?;
+        while let Some(member) = run.next_member() {
             let response = match pool
                 .fetch_proxy_registry_path_with_query(
                     &member.name,
@@ -336,10 +332,12 @@ impl NpmService {
                 .await
             {
                 Ok(response) => response,
-                Err(error)
-                    if pool.is_group(entry_name) && source_error_is_group_fallback(&error) =>
-                {
-                    failures.push(format!("{}: {error}", member.name));
+                Err(error) if run.is_group() && source_error_is_group_fallback(&error) => {
+                    run.record_failure(
+                        &member.name,
+                        &error.to_string(),
+                        source_error_is_not_found(&error),
+                    );
                     continue;
                 }
                 Err(error) => return Err(error.into()),
@@ -347,13 +345,13 @@ impl NpmService {
             let value = serde_json::from_slice::<Value>(&response.body)
                 .map_err(|_| NpmError::InvalidSearchResponse);
             let Ok(value) = value else {
-                failures.push(format!("{}: invalid search response", member.name));
+                run.record_failure(&member.name, "invalid search response", false);
                 continue;
             };
             if !value.get("objects").is_some_and(Value::is_array)
                 || !value.get("total").is_some_and(Value::is_number)
             {
-                failures.push(format!("{}: invalid search response", member.name));
+                run.record_failure(&member.name, "invalid search response", false);
                 continue;
             }
             self.record(
@@ -368,7 +366,7 @@ impl NpmService {
         }
         Err(NpmError::AllSourcesFailed {
             package: "-/v1/search".to_owned(),
-            failures: failures.join("; "),
+            failures: run.failure_summary(),
         })
     }
 
@@ -484,38 +482,25 @@ impl NpmService {
         preferred_source: Option<&str>,
     ) -> Result<FetchedMetadata, NpmError> {
         let request_key = (self.flavor.upstream_package_path)(package);
-        let mut members = pool
-            .proxy_members(entry_name)
-            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
-        if let Some(preferred_source) = preferred_source
-            && let Some(index) = members
-                .iter()
-                .position(|member| member.name == preferred_source)
-        {
-            let preferred = members.remove(index);
-            members.insert(0, preferred);
-        }
-        let mut failures = Vec::new();
-        let mut all_not_found = true;
-        for member in members {
+        let mut run = GroupRun::new(pool, entry_name, preferred_source)?;
+        while let Some(member) = run.next_member() {
             let response = match pool
                 .fetch_proxy_path(&member.name, &request_key, FetchOperation::Metadata)
                 .await
             {
                 Ok(response) => response,
-                Err(error)
-                    if pool.is_group(entry_name) && source_error_is_group_fallback(&error) =>
-                {
-                    if !is_not_found(&error) {
-                        all_not_found = false;
-                    }
+                Err(error) if run.is_group() && source_error_is_group_fallback(&error) => {
+                    run.record_failure(
+                        &member.name,
+                        &error.to_string(),
+                        source_error_is_not_found(&error),
+                    );
                     self.record_metadata_source_failure(
                         entry_name,
                         package,
                         &member.name,
                         source_failure_category(&error),
                     );
-                    failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
                 Err(error) => {
@@ -535,14 +520,13 @@ impl NpmService {
             ) {
                 Ok(metadata) => metadata,
                 Err(error) => {
-                    all_not_found = false;
+                    run.record_failure(&member.name, &error.to_string(), false);
                     self.record_metadata_source_failure(
                         entry_name,
                         package,
                         &member.name,
                         "protocol_invalid",
                     );
-                    failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
             };
@@ -557,14 +541,13 @@ impl NpmService {
             ) {
                 Ok(rewritten) => rewritten,
                 Err(error) => {
-                    all_not_found = false;
+                    run.record_failure(&member.name, &error.to_string(), false);
                     self.record_metadata_source_failure(
                         entry_name,
                         package,
                         &member.name,
                         "protocol_invalid",
                     );
-                    failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
             };
@@ -572,17 +555,17 @@ impl NpmService {
                 descriptor.source_fingerprint = member.fingerprint();
             }
             if !descriptors_match_source(&rewritten.descriptors, &member) {
-                all_not_found = false;
+                run.record_failure(
+                    &member.name,
+                    "metadata tarball URL is outside the configured source",
+                    false,
+                );
                 self.record_metadata_source_failure(
                     entry_name,
                     package,
                     &member.name,
                     "protocol_invalid",
                 );
-                failures.push(format!(
-                    "{}: metadata tarball URL is outside the configured source",
-                    member.name
-                ));
                 continue;
             }
             let rendered_body = serde_json::to_vec(&rewritten.body)
@@ -612,23 +595,18 @@ impl NpmService {
             package,
             None,
             "failed",
-            Some(if all_not_found {
+            Some(if run.all_not_found() {
                 "not_found"
             } else {
                 "source_failed"
             }),
         );
-        if all_not_found {
-            return Err(NpmError::Source(SourcePoolError::AllSourcesFailed {
-                entry_name: entry_name.to_owned(),
-                request_key,
-                failures: failures.join("; "),
-                status: Some(404),
-            }));
+        if run.all_not_found() {
+            return Err(NpmError::Source(run.all_sources_failed(request_key)));
         }
         Err(NpmError::AllSourcesFailed {
             package: package.to_owned(),
-            failures: failures.join("; "),
+            failures: run.failure_summary(),
         })
     }
 
@@ -730,18 +708,8 @@ impl NpmService {
             return Err(NpmError::MissingArtifact(artifact_key.to_owned()));
         }
 
-        let mut members = pool
-            .proxy_members(entry_name)
-            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
-        if let Some(index) = members
-            .iter()
-            .position(|member| member.name == descriptor.selected_proxy)
-        {
-            let selected = members.remove(index);
-            members.insert(0, selected);
-        }
-        let mut failures = Vec::new();
-        for member in members {
+        let mut run = GroupRun::new(pool, entry_name, Some(&descriptor.selected_proxy))?;
+        while let Some(member) = run.next_member() {
             let candidate = if member.name == descriptor.selected_proxy {
                 descriptor.clone()
             } else {
@@ -757,7 +725,11 @@ impl NpmService {
                 {
                     Ok(candidate) => candidate,
                     Err(error) if is_retryable_npm(&error, pool, entry_name) => {
-                        failures.push(format!("{}: {error}", member.name));
+                        run.record_failure(
+                            &member.name,
+                            &error.to_string(),
+                            is_not_found_npm_error(&error),
+                        );
                         continue;
                     }
                     Err(error) => return Err(error),
@@ -803,10 +775,12 @@ impl NpmService {
                 .await
             {
                 Ok(file) => file,
-                Err(error)
-                    if pool.is_group(entry_name) && source_error_is_group_fallback(&error) =>
-                {
-                    failures.push(format!("{}: {error}", member.name));
+                Err(error) if run.is_group() && source_error_is_group_fallback(&error) => {
+                    run.record_failure(
+                        &member.name,
+                        &error.to_string(),
+                        source_error_is_not_found(&error),
+                    );
                     continue;
                 }
                 Err(error) => return Err(error.into()),
@@ -829,7 +803,7 @@ impl NpmService {
                     return Ok(file);
                 }
                 Err(StorageError::IntegrityMismatch(_)) => {
-                    failures.push(format!("{}: integrity mismatch", member.name));
+                    run.record_failure(&member.name, "integrity mismatch", false);
                     continue;
                 }
                 Err(error) => return Err(error.into()),
@@ -846,7 +820,7 @@ impl NpmService {
         );
         Err(NpmError::AllSourcesFailed {
             package: descriptor.package,
-            failures: failures.join("; "),
+            failures: run.failure_summary(),
         })
     }
 
@@ -957,7 +931,7 @@ impl NpmService {
 }
 
 fn source_failure_category(error: &SourcePoolError) -> &'static str {
-    if is_not_found(error) {
+    if source_error_is_not_found(error) {
         "not_found"
     } else {
         "source_failed"
@@ -1006,25 +980,10 @@ fn is_allowed_source(pool: &SourcePool, entry_name: &str, source_name: &str) -> 
         .is_some_and(|members| members.iter().any(|member| member.name == source_name))
 }
 
-fn is_not_found(error: &SourcePoolError) -> bool {
-    matches!(
-        error,
-        SourcePoolError::TerminalSourceError { status: 404, .. }
-            | SourcePoolError::AllSourcesFailed {
-                status: Some(404),
-                ..
-            }
-    )
-}
-
 fn is_not_found_npm_error(error: &NpmError) -> bool {
     matches!(
         error,
-        NpmError::Source(SourcePoolError::TerminalSourceError { status: 404, .. })
-            | NpmError::Source(SourcePoolError::AllSourcesFailed {
-                status: Some(404),
-                ..
-            })
+        NpmError::Source(source_error) if source_error_is_not_found(source_error)
     )
 }
 
