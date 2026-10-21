@@ -169,3 +169,4 @@ jobs:
             artifacts/*.tar
           fail_on_unmatched_files: true
           overwrite_files: true
+          generate_release_notes: true
