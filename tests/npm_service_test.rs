@@ -195,13 +195,14 @@ async fn falls_back_for_forbidden_upstream() {
     )
     .await
     .0;
+    let data_dir = tempdir().expect("data directory");
     let router = npm_router(
         vec![
             proxy("first", first.as_str()),
             proxy("second", second.as_str()),
             group("group", &["first", "second"]),
         ],
-        tempdir().expect("data directory").path(),
+        data_dir.path(),
     );
 
     let response = router
@@ -212,6 +213,11 @@ async fn falls_back_for_forbidden_upstream() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(first_hits.load(Ordering::SeqCst), 1);
     assert_eq!(second_hits.load(Ordering::SeqCst), 1);
+    let audit =
+        std::fs::read_to_string(data_dir.path().join("audit/events.jsonl")).expect("audit log");
+    assert!(audit.contains(r#""event":"npm_metadata_source_failed""#));
+    assert!(audit.contains(r#""selected_proxy":"first""#));
+    assert!(audit.contains(r#""failure_category":"source_failed""#));
 }
 
 #[tokio::test]

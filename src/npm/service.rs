@@ -501,10 +501,24 @@ impl NpmService {
                     if !is_not_found(&error) {
                         all_not_found = false;
                     }
+                    self.record_metadata_source_failure(
+                        entry_name,
+                        package,
+                        &member.name,
+                        source_failure_category(&error),
+                    );
                     failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    self.record_metadata_source_failure(
+                        entry_name,
+                        package,
+                        &member.name,
+                        source_failure_category(&error),
+                    );
+                    return Err(error.into());
+                }
             };
             let metadata = match crate::npm::metadata::parse_compatible_metadata(
                 &response.body,
@@ -514,6 +528,12 @@ impl NpmService {
                 Ok(metadata) => metadata,
                 Err(error) => {
                     all_not_found = false;
+                    self.record_metadata_source_failure(
+                        entry_name,
+                        package,
+                        &member.name,
+                        "protocol_invalid",
+                    );
                     failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
@@ -530,6 +550,12 @@ impl NpmService {
                 Ok(rewritten) => rewritten,
                 Err(error) => {
                     all_not_found = false;
+                    self.record_metadata_source_failure(
+                        entry_name,
+                        package,
+                        &member.name,
+                        "protocol_invalid",
+                    );
                     failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
@@ -539,6 +565,12 @@ impl NpmService {
             }
             if !descriptors_match_source(&rewritten.descriptors, &member) {
                 all_not_found = false;
+                self.record_metadata_source_failure(
+                    entry_name,
+                    package,
+                    &member.name,
+                    "protocol_invalid",
+                );
                 failures.push(format!(
                     "{}: metadata tarball URL is outside the configured source",
                     member.name
@@ -894,6 +926,31 @@ impl NpmService {
         ) {
             crate::logging::error(format!("audit write failed: {error}"));
         }
+    }
+
+    fn record_metadata_source_failure(
+        &self,
+        entry_name: &str,
+        package: &str,
+        source_name: &str,
+        failure_category: &str,
+    ) {
+        self.record(
+            &self.event("metadata_source_failed"),
+            entry_name,
+            package,
+            Some(source_name),
+            "failed",
+            Some(failure_category),
+        );
+    }
+}
+
+fn source_failure_category(error: &SourcePoolError) -> &'static str {
+    if is_not_found(error) {
+        "not_found"
+    } else {
+        "source_failed"
     }
 }
 

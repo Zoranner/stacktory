@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::{
     Config,
-    audit::AuditSink,
+    audit::{AuditDetails, AuditSink},
     locks::ShardedLocks,
     rustup::{DistPath, ManifestPolicy, RustupError, rewrite_manifest},
     sources::{
@@ -289,6 +289,12 @@ impl RustupService {
             {
                 Ok(response) => response.body,
                 Err(error) if should_try_next_source(&error, is_group) => {
+                    self.record_manifest_member_failure(
+                        source_name,
+                        channel,
+                        &member.name,
+                        source_failure_category(&error),
+                    );
                     failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
@@ -301,6 +307,12 @@ impl RustupService {
             {
                 Ok(response) => response.body,
                 Err(error) if should_try_next_source(&error, is_group) => {
+                    self.record_manifest_member_failure(
+                        source_name,
+                        channel,
+                        &member.name,
+                        source_failure_category(&error),
+                    );
                     failures.push(format!("{}: {error}", member.name));
                     continue;
                 }
@@ -310,6 +322,12 @@ impl RustupService {
             let manifest = match String::from_utf8(manifest) {
                 Ok(manifest) => manifest,
                 Err(_) => {
+                    self.record_manifest_member_failure(
+                        source_name,
+                        channel,
+                        &member.name,
+                        "protocol_invalid",
+                    );
                     failures.push(format!("{}: manifest is not UTF-8", member.name));
                     continue;
                 }
@@ -317,19 +335,39 @@ impl RustupService {
             let checksum_file = match String::from_utf8(checksum_file) {
                 Ok(checksum_file) => checksum_file,
                 Err(_) => {
+                    self.record_manifest_member_failure(
+                        source_name,
+                        channel,
+                        &member.name,
+                        "protocol_invalid",
+                    );
                     failures.push(format!("{}: checksum is not UTF-8", member.name));
                     continue;
                 }
             };
             let actual_checksum = sha256(manifest.as_bytes());
             if parse_checksum_file(&checksum_file, &file_name) != Some(actual_checksum.as_str()) {
+                self.record_manifest_member_failure(
+                    source_name,
+                    channel,
+                    &member.name,
+                    "checksum_mismatch",
+                );
                 failures.push(format!("{}: checksum does not match manifest", member.name));
                 continue;
             }
 
             match rewrite_manifest(&manifest, &policy, &entry_root, channel) {
                 Ok(rewritten) => return Ok((member.name, rewritten)),
-                Err(error) => failures.push(format!("{}: {error}", member.name)),
+                Err(error) => {
+                    self.record_manifest_member_failure(
+                        source_name,
+                        channel,
+                        &member.name,
+                        "protocol_invalid",
+                    );
+                    failures.push(format!("{}: {error}", member.name));
+                }
             }
         }
 
@@ -375,6 +413,33 @@ impl RustupService {
             crate::logging::error(format!("audit write failed: {error}"));
         }
     }
+
+    fn record_manifest_member_failure(
+        &self,
+        entry_name: &str,
+        channel: &str,
+        source_name: &str,
+        failure_category: &str,
+    ) {
+        let object_key = format!("dist/channel-rust-{channel}.toml");
+        if let Err(error) = self.audit.record_detailed(
+            "manifest_member_failed",
+            &object_key,
+            "failure",
+            AuditDetails {
+                ecosystem: Some("rustup"),
+                entry_name: Some(entry_name),
+                object_key: Some(&object_key),
+                selected_proxy: Some(source_name),
+                object_type: Some("manifest"),
+                cache_status: Some("failed"),
+                failure_category: Some(failure_category),
+                count: None,
+            },
+        ) {
+            crate::logging::error(format!("audit write failed: {error}"));
+        }
+    }
 }
 
 fn should_try_next_source(error: &SourcePoolError, is_group: bool) -> bool {
@@ -400,6 +465,16 @@ fn sha256(contents: &[u8]) -> String {
     use sha2::{Digest, Sha256};
 
     format!("{:x}", Sha256::digest(contents))
+}
+
+fn source_failure_category(error: &SourcePoolError) -> &'static str {
+    match error {
+        SourcePoolError::TerminalSourceError { status: 404, .. }
+        | SourcePoolError::AllSourcesFailed {
+            status: Some(404), ..
+        } => "not_found",
+        _ => "source_failed",
+    }
 }
 
 fn directory_is_writable(path: &Path) -> bool {

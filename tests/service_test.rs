@@ -156,6 +156,11 @@ async fn group_manifest_refresh_falls_back_after_member_404() {
     let snapshot = service.manifest("group", "stable").expect("snapshot");
 
     assert_eq!(snapshot.source_name, "second");
+    let audit =
+        std::fs::read_to_string(data_dir.path().join("audit/events.jsonl")).expect("audit log");
+    assert!(audit.contains(r#""event":"manifest_member_failed""#));
+    assert!(audit.contains(r#""selected_proxy":"first""#));
+    assert!(audit.contains(r#""failure_category":"not_found""#));
 }
 
 #[tokio::test]
@@ -179,6 +184,10 @@ async fn group_manifest_refresh_falls_back_when_member_checksum_is_missing() {
     let snapshot = service.manifest("group", "stable").expect("snapshot");
 
     assert_eq!(snapshot.source_name, "second");
+    let audit =
+        std::fs::read_to_string(data_dir.path().join("audit/events.jsonl")).expect("audit log");
+    assert!(audit.contains(r#""event":"manifest_member_failed""#));
+    assert!(audit.contains(r#""selected_proxy":"first""#));
 }
 
 #[tokio::test]
