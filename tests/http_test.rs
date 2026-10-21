@@ -10,7 +10,7 @@ use std::{
 use axum::{
     Router,
     body::Body,
-    http::{Request, StatusCode},
+    http::{Request, StatusCode, header::CONTENT_LENGTH},
     response::IntoResponse,
     routing::get,
 };
@@ -227,12 +227,30 @@ async fn public_rustup_artifact_route_serves_only_a_verified_published_artifact(
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
+        response
+            .headers()
+            .get(CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned),
+        Some(artifact.len().to_string())
+    );
+    assert_eq!(
         axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("body"),
         artifact
     );
     assert_eq!(artifact_requests.load(Ordering::SeqCst), 1);
+    let temporary_files = fs::read_dir(data_dir.path().join("tmp"))
+        .expect("temporary directory")
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("rustup-") && name.ends_with(".part")
+        })
+        .count();
+    assert_eq!(temporary_files, 0);
 }
 
 #[tokio::test]

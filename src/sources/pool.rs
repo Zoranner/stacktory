@@ -267,6 +267,49 @@ impl SourcePool {
         }
     }
 
+    pub(crate) async fn fetch_proxy_path_to_file(
+        &self,
+        source_name: &str,
+        request_key: &str,
+        operation: FetchOperation,
+        path: PathBuf,
+    ) -> Result<FetchedFile, SourcePoolError> {
+        let _artifact_permit = self.artifact_permit(operation).await;
+        let source = self
+            .graph
+            .get(source_name)
+            .ok_or_else(|| SourcePoolError::UnknownEntry(source_name.to_owned()))?;
+        if source.source_type != crate::SourceType::Proxy {
+            return Err(SourcePoolError::UnknownEntry(source_name.to_owned()));
+        }
+        let request_key = normalize_proxy_path(request_key)?;
+        let url = source_url_raw(source, &request_key)?;
+        match self
+            .fetcher
+            .fetch_safe_redirects_to_file(
+                url.clone(),
+                source.require_https,
+                true,
+                operation.timeout(),
+                path,
+            )
+            .await
+        {
+            Ok(file) => Ok(file),
+            Err(error) if error.is_retryable() => Err(SourcePoolError::AllSourcesFailed {
+                entry_name: source_name.to_owned(),
+                request_key,
+                failures: error.to_string(),
+                status: error.status_code(),
+            }),
+            Err(error) => Err(SourcePoolError::TerminalSourceError {
+                source_name: source_name.to_owned(),
+                status: error.status_code().unwrap_or_default(),
+                error: error.to_string(),
+            }),
+        }
+    }
+
     pub async fn fetch_proxy_registry_path(
         &self,
         source_name: &str,

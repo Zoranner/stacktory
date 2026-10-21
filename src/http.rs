@@ -9,6 +9,7 @@ use axum::{
     response::IntoResponse,
     routing::{any, get},
 };
+use tokio_util::io::ReaderStream;
 
 use crate::{
     cargo::CargoAdapter,
@@ -18,7 +19,7 @@ use crate::{
         SourcePool,
         registry::{AdapterRegistry, AdapterRequest},
     },
-    storage::StorageError,
+    storage::{ArtifactFile, StorageError},
 };
 
 pub fn router() -> Router {
@@ -246,10 +247,34 @@ async fn rustup_dist(
         Ok(path) => path,
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
-    match service.artifact_for_request(&name, channel, &path).await {
-        Ok(contents) => contents.into_response(),
+    match service
+        .artifact_file_for_request(&name, channel, &path)
+        .await
+    {
+        Ok(file) => rustup_artifact_response(file).await,
         Err(error) => service_error_response(&error),
     }
+}
+
+async fn rustup_artifact_response(file: ArtifactFile) -> axum::response::Response {
+    let handle = match tokio::fs::File::open(&file.path).await {
+        Ok(handle) => handle,
+        Err(error) => {
+            return service_error_response(&ServiceError::Storage(StorageError::Io(error)));
+        }
+    };
+    let mut response =
+        (StatusCode::OK, Body::from_stream(ReaderStream::new(handle))).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/octet-stream"),
+    );
+    if let Ok(length) = axum::http::HeaderValue::from_str(&file.length.to_string()) {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_LENGTH, length);
+    }
+    response
 }
 
 fn service_error_response(error: &ServiceError) -> axum::response::Response {
