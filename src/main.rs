@@ -18,9 +18,10 @@ use stacktory::{
 use tokio::net::TcpListener;
 
 const ROOT_URL_MARKER: &str = ".root-url";
-const CACHE_ECOSYSTEMS: &[&str] = &[
-    "cargo", "docker", "npm", "nuget", "pypi", "rustup", "upm", "vscode",
-];
+// Only ecosystems that still persist a response containing the public base
+// address need invalidation. npm/UPM, Cargo, Docker and VS Code keep
+// address-independent metadata.
+const CACHE_ECOSYSTEMS: &[&str] = &["nuget", "pypi", "rustup"];
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -381,12 +382,21 @@ mod tests {
     fn clears_rewritten_cache_when_root_url_changes() {
         let directory = tempfile::tempdir().expect("data directory");
         let data_dir = directory.path();
-        let metadata = data_dir.join("stores/npm/metadata/group/left-pad/current.toml");
+        let rewritten_metadata = data_dir.join("stores/nuget/metadata/group/v3/index.json");
+        let canonical_metadata = data_dir.join("stores/npm/metadata/group/left-pad/current.toml");
+        let cargo_metadata = data_dir.join("stores/cargo/metadata/group/index/se/rd/serde");
+        let docker_metadata =
+            data_dir.join("stores/docker/metadata/group/library/demo/latest.json");
+        let vscode_metadata = data_dir.join("stores/vscode/metadata/group/marketplace/query.json");
         let snapshot = data_dir.join("stores/rustup/snapshots/group/stable/current.toml");
         let artifact = data_dir.join("stores/npm/artifacts/npmjs/objects/artifact");
         let audit = data_dir.join("audit/events.jsonl");
         for (path, contents) in [
-            (&metadata, "old metadata"),
+            (&rewritten_metadata, "old rewritten metadata"),
+            (&canonical_metadata, "canonical metadata"),
+            (&cargo_metadata, "cargo metadata"),
+            (&docker_metadata, "docker metadata"),
+            (&vscode_metadata, "vscode metadata"),
             (&snapshot, "old snapshot"),
             (&artifact, "artifact"),
             (&audit, "audit"),
@@ -399,24 +409,30 @@ mod tests {
             super::invalidate_rewritten_cache_on_root_url_change(data_dir, "https://old.example")
                 .expect("initial invalidation")
         );
-        assert!(!metadata.exists());
+        assert!(!rewritten_metadata.exists());
+        assert!(canonical_metadata.exists());
+        assert!(cargo_metadata.exists());
+        assert!(docker_metadata.exists());
+        assert!(vscode_metadata.exists());
         assert!(!snapshot.exists());
         assert!(artifact.exists());
         assert!(audit.exists());
 
-        fs::create_dir_all(metadata.parent().expect("parent")).expect("metadata directory");
-        fs::write(&metadata, "new metadata").expect("new metadata");
+        fs::create_dir_all(rewritten_metadata.parent().expect("parent"))
+            .expect("metadata directory");
+        fs::write(&rewritten_metadata, "new metadata").expect("new metadata");
         assert!(
             !super::invalidate_rewritten_cache_on_root_url_change(data_dir, "https://old.example",)
                 .expect("unchanged root URL")
         );
-        assert!(metadata.exists());
+        assert!(rewritten_metadata.exists());
 
         assert!(
             super::invalidate_rewritten_cache_on_root_url_change(data_dir, "https://new.example")
                 .expect("changed root URL")
         );
-        assert!(!metadata.exists());
+        assert!(!rewritten_metadata.exists());
+        assert!(canonical_metadata.exists());
     }
 
     fn proxy(name: &str, base_url: &str) -> SourceConfig {
