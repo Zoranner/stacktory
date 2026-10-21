@@ -17,7 +17,7 @@
 - Keep direct source terminal behavior; do not add sibling fallback to a direct proxy.
 - Keep npm and UPM on the same implementation through `RegistryFlavor`.
 - Do not clear npm/UPM canonical metadata only because `root_url` changed.
-- Keep existing tests passing; final verification is 265 tests.
+- Keep existing tests passing; the current full suite is 287 tests.
 
 ---
 
@@ -89,4 +89,4 @@
 - Modify: `README.md` if the cache-invalidation statement is no longer exact.
 
 - [x] Document canonical metadata, render-on-read, the 15-minute revalidation window, and the fact that root-url changes no longer clear npm/UPM metadata.
-- [x] Run `cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --all-targets --all-features`.
+- [x] Run `cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --all-targets --all-features` (287 tests passing).
