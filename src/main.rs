@@ -4,14 +4,14 @@ use stacktory::{
     Config, SourcePool,
     audit::AuditSink,
     cargo::CargoAdapter,
-    docker::register_adapter_with_proxy,
+    docker::register_adapter_with_proxy_and_budget,
     http::{router_with_docker_entry, router_with_rustup_and_registry},
     logging,
     npm::NpmAdapter,
     nuget::NugetAdapter,
     retention,
     service::RustupService,
-    sources::registry::AdapterRegistry,
+    sources::{ArtifactBudget, registry::AdapterRegistry},
     upm::UpmAdapter,
     vscode::VscodeAdapter,
 };
@@ -47,7 +47,9 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         logging::warn("pypi is configured but the PyPI adapter is not registered");
     }
     let mut docker_listeners = Vec::new();
-    let registry = configured_registry(&mut config, &mut docker_listeners)?;
+    let artifact_budget = ArtifactBudget::default();
+    let registry =
+        configured_registry_with_budget(&mut config, &mut docker_listeners, &artifact_budget)?;
     let listener = TcpListener::bind((config.listen_address, config.listen_port)).await?;
     retention::spawn(config.data_dir.clone(), log_file.clone(), config.retention);
     if let Some(rotated) = rotated_log {
@@ -61,7 +63,10 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         config.log_dir.display(),
         log_file.path().display()
     ));
-    let service = Arc::new(RustupService::new(config)?);
+    let service = Arc::new(RustupService::new_with_artifact_budget(
+        config,
+        artifact_budget,
+    )?);
     let mut docker_tasks = Vec::new();
     for docker_listener in docker_listeners {
         let listener = TcpListener::bind((docker_listener.address, docker_listener.port)).await?;
@@ -223,9 +228,19 @@ struct DockerListener {
     entry_name: String,
 }
 
+#[cfg(test)]
 fn configured_registry(
     config: &mut Config,
     docker_listeners: &mut Vec<DockerListener>,
+) -> Result<AdapterRegistry, Box<dyn std::error::Error>> {
+    let artifact_budget = ArtifactBudget::default();
+    configured_registry_with_budget(config, docker_listeners, &artifact_budget)
+}
+
+fn configured_registry_with_budget(
+    config: &mut Config,
+    docker_listeners: &mut Vec<DockerListener>,
+    artifact_budget: &ArtifactBudget,
 ) -> Result<AdapterRegistry, Box<dyn std::error::Error>> {
     let mut registry = AdapterRegistry::new();
     let proxy_url = config.proxy_url.clone();
@@ -233,12 +248,15 @@ fn configured_registry(
     if let Some(cargo) = config.cargo.take() {
         registry.register(
             "cargo",
-            Arc::new(SourcePool::new_with_proxy(
-                "cargo",
-                cargo.sources,
-                proxy_url.as_ref(),
-                proxy_no_proxy.as_deref(),
-            )?),
+            Arc::new(
+                SourcePool::new_with_proxy(
+                    "cargo",
+                    cargo.sources,
+                    proxy_url.as_ref(),
+                    proxy_no_proxy.as_deref(),
+                )?
+                .with_artifact_budget(artifact_budget.clone()),
+            ),
             Arc::new(CargoAdapter::new(
                 config.root_url.clone(),
                 config.data_dir.clone(),
@@ -248,12 +266,15 @@ fn configured_registry(
     if let Some(npm) = config.npm.take() {
         registry.register(
             "npm",
-            Arc::new(SourcePool::new_with_proxy(
-                "npm",
-                npm.sources,
-                proxy_url.as_ref(),
-                proxy_no_proxy.as_deref(),
-            )?),
+            Arc::new(
+                SourcePool::new_with_proxy(
+                    "npm",
+                    npm.sources,
+                    proxy_url.as_ref(),
+                    proxy_no_proxy.as_deref(),
+                )?
+                .with_artifact_budget(artifact_budget.clone()),
+            ),
             Arc::new(NpmAdapter::new(
                 config.root_url.clone(),
                 config.data_dir.clone(),
@@ -263,12 +284,15 @@ fn configured_registry(
     if let Some(nuget) = config.nuget.take() {
         registry.register(
             "nuget",
-            Arc::new(SourcePool::new_with_proxy(
-                "nuget",
-                nuget.sources,
-                proxy_url.as_ref(),
-                proxy_no_proxy.as_deref(),
-            )?),
+            Arc::new(
+                SourcePool::new_with_proxy(
+                    "nuget",
+                    nuget.sources,
+                    proxy_url.as_ref(),
+                    proxy_no_proxy.as_deref(),
+                )?
+                .with_artifact_budget(artifact_budget.clone()),
+            ),
             Arc::new(NugetAdapter::new(
                 config.root_url.clone(),
                 config.data_dir.clone(),
@@ -278,12 +302,15 @@ fn configured_registry(
     if let Some(upm) = config.upm.take() {
         registry.register(
             "upm",
-            Arc::new(SourcePool::new_with_proxy(
-                "upm",
-                upm.sources,
-                proxy_url.as_ref(),
-                proxy_no_proxy.as_deref(),
-            )?),
+            Arc::new(
+                SourcePool::new_with_proxy(
+                    "upm",
+                    upm.sources,
+                    proxy_url.as_ref(),
+                    proxy_no_proxy.as_deref(),
+                )?
+                .with_artifact_budget(artifact_budget.clone()),
+            ),
             Arc::new(UpmAdapter::new(
                 config.root_url.clone(),
                 config.data_dir.clone(),
@@ -293,12 +320,15 @@ fn configured_registry(
     if let Some(vscode) = config.vscode.take() {
         registry.register(
             "vscode",
-            Arc::new(SourcePool::new_with_proxy(
-                "vscode",
-                vscode.sources,
-                proxy_url.as_ref(),
-                proxy_no_proxy.as_deref(),
-            )?),
+            Arc::new(
+                SourcePool::new_with_proxy(
+                    "vscode",
+                    vscode.sources,
+                    proxy_url.as_ref(),
+                    proxy_no_proxy.as_deref(),
+                )?
+                .with_artifact_budget(artifact_budget.clone()),
+            ),
             Arc::new(VscodeAdapter::new(
                 config.root_url.clone(),
                 config.data_dir.clone(),
@@ -313,13 +343,14 @@ fn configured_registry(
                 entry_name,
             },
         ));
-        register_adapter_with_proxy(
+        register_adapter_with_proxy_and_budget(
             &mut registry,
             docker,
             config.root_url.clone(),
             config.data_dir.clone(),
             proxy_url.as_ref(),
             proxy_no_proxy.as_deref(),
+            artifact_budget,
         )?;
     }
     Ok(registry)

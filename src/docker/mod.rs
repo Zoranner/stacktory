@@ -29,7 +29,7 @@ use crate::{
     fsutil::atomic_write,
     locks::ShardedLocks,
     sources::registry::{Adapter, AdapterFuture, AdapterRegistry, AdapterRequest, RegistryError},
-    sources::{FetchOperation, SourcePoolError, source_error_is_group_fallback},
+    sources::{ArtifactBudget, FetchOperation, SourcePoolError, source_error_is_group_fallback},
 };
 
 use self::path::{DockerRequest, ManifestReference, parse_request};
@@ -176,14 +176,33 @@ pub fn register_adapter_with_proxy(
     proxy_url: Option<&Url>,
     proxy_no_proxy: Option<&str>,
 ) -> Result<(), DockerRegistrationError> {
+    let artifact_budget = ArtifactBudget::default();
+    register_adapter_with_proxy_and_budget(
+        registry,
+        config,
+        root_url,
+        data_dir,
+        proxy_url,
+        proxy_no_proxy,
+        &artifact_budget,
+    )
+}
+
+pub fn register_adapter_with_proxy_and_budget(
+    registry: &mut AdapterRegistry,
+    config: DockerConfig,
+    root_url: Url,
+    data_dir: impl Into<PathBuf>,
+    proxy_url: Option<&Url>,
+    proxy_no_proxy: Option<&str>,
+    artifact_budget: &ArtifactBudget,
+) -> Result<(), DockerRegistrationError> {
     registry.register(
         "docker",
-        Arc::new(SourcePool::new_with_proxy(
-            "docker",
-            config.sources,
-            proxy_url,
-            proxy_no_proxy,
-        )?),
+        Arc::new(
+            SourcePool::new_with_proxy("docker", config.sources, proxy_url, proxy_no_proxy)?
+                .with_artifact_budget(artifact_budget.clone()),
+        ),
         Arc::new(DockerAdapter::new(root_url, data_dir)),
     )?;
     Ok(())

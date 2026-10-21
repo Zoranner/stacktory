@@ -218,6 +218,10 @@ Rustup manifest/artifact 和 Docker blob 的单飞（single-flight）锁按对�
 固定数量的分片，不按访问过的对象数量创建新锁。不同对象可能共享分片并短暂
 串行，但内存上界固定；同一对象的并发请求仍由同一分片互斥，避免重复上游请求。
 
+所有生态和 Rustup 的 artifact 下载共享同一个固定并发预算，默认同时最多 4 个
+上游制品请求。预算只约束制品传输，metadata 请求不占用该预算；单个生态不能再
+通过增加 `SourcePool` 扩大全局并发。
+
 `metadata_ttl_secs` 是 metadata 文件的清理窗口，不是请求路径的缓存 TTL；配置
 值必须为正整数，当前没有 `0` 或 `-1` 的特殊语义。请求路径的重新验证窗口由
 各适配器契约固定，例如 npm/UPM、Cargo 和 NuGet 当前都使用 15 分钟。旧缓存是否

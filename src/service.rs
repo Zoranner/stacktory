@@ -11,7 +11,9 @@ use crate::{
     audit::AuditSink,
     locks::ShardedLocks,
     rustup::{DistPath, ManifestPolicy, RustupError, rewrite_manifest},
-    sources::{FetchOperation, SourcePool, SourcePoolError, source_error_is_group_fallback},
+    sources::{
+        ArtifactBudget, FetchOperation, SourcePool, SourcePoolError, source_error_is_group_fallback,
+    },
     storage::{ArtifactCache, SnapshotStore, StorageError, StoredSnapshot},
 };
 
@@ -46,6 +48,13 @@ pub enum ServiceError {
 
 impl RustupService {
     pub fn new(config: Config) -> Result<Self, ServiceError> {
+        Self::new_with_artifact_budget(config, ArtifactBudget::default())
+    }
+
+    pub fn new_with_artifact_budget(
+        config: Config,
+        artifact_budget: ArtifactBudget,
+    ) -> Result<Self, ServiceError> {
         let proxy_url = config.proxy_url.clone();
         let proxy_no_proxy = config.proxy_no_proxy.clone();
         let data_dir = config.data_dir.clone();
@@ -55,7 +64,8 @@ impl RustupService {
             config.rustup.sources,
             proxy_url.as_ref(),
             proxy_no_proxy.as_deref(),
-        )?;
+        )?
+        .with_artifact_budget(artifact_budget);
         Ok(Self {
             channels: config.rustup.channels,
             refresh_interval_secs: config.rustup.refresh_interval_secs,

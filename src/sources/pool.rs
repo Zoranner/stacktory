@@ -19,10 +19,43 @@ pub struct SourcePool {
     ecosystem: String,
     graph: SourceGraph,
     fetcher: Arc<HttpFetcher>,
-    artifact_limit: Arc<Semaphore>,
+    artifact_budget: ArtifactBudget,
 }
 
 const MAX_CONCURRENT_ARTIFACTS: usize = 4;
+
+#[derive(Clone, Debug)]
+pub struct ArtifactBudget {
+    semaphore: Arc<Semaphore>,
+}
+
+impl Default for ArtifactBudget {
+    fn default() -> Self {
+        Self::new(MAX_CONCURRENT_ARTIFACTS)
+    }
+}
+
+impl ArtifactBudget {
+    pub fn new(limit: usize) -> Self {
+        assert!(limit > 0, "artifact budget requires at least one slot");
+        Self {
+            semaphore: Arc::new(Semaphore::new(limit)),
+        }
+    }
+
+    async fn acquire(&self) -> OwnedSemaphorePermit {
+        self.semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("artifact budget must remain open")
+    }
+
+    #[cfg(test)]
+    fn available_permits(&self) -> usize {
+        self.semaphore.available_permits()
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FetchOperation {
@@ -128,21 +161,20 @@ impl SourcePool {
             fetcher: Arc::new(
                 fetcher.map_err(|error| SourcePoolError::FetcherBuild(error.to_string()))?,
             ),
-            artifact_limit: Arc::new(Semaphore::new(MAX_CONCURRENT_ARTIFACTS)),
+            artifact_budget: ArtifactBudget::default(),
         })
+    }
+
+    pub fn with_artifact_budget(mut self, budget: ArtifactBudget) -> Self {
+        self.artifact_budget = budget;
+        self
     }
 
     async fn artifact_permit(&self, operation: FetchOperation) -> Option<OwnedSemaphorePermit> {
         if operation != FetchOperation::Artifact {
             return None;
         }
-        Some(
-            self.artifact_limit
-                .clone()
-                .acquire_owned()
-                .await
-                .expect("artifact semaphore must remain open"),
-        )
+        Some(self.artifact_budget.acquire().await)
     }
 
     pub fn ecosystem(&self) -> &str {
@@ -876,4 +908,55 @@ fn path_is_within(base_path: &str, candidate_path: &str) -> bool {
     base_path.is_empty()
         || candidate_path == base_path
         || candidate_path.starts_with(&format!("{base_path}/"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ArtifactBudget, FetchOperation, SourcePool};
+    use crate::{SourceConfig, SourceGraph, SourceType};
+    use url::Url;
+
+    fn pool(name: &str, budget: ArtifactBudget) -> SourcePool {
+        SourcePool::new(
+            name,
+            SourceGraph::new(vec![SourceConfig {
+                name: "official".to_owned(),
+                source_type: SourceType::Proxy,
+                base_url: Some(Url::parse("http://127.0.0.1:9").expect("base URL")),
+                require_https: false,
+                members: vec![],
+            }])
+            .expect("source graph"),
+        )
+        .expect("source pool")
+        .with_artifact_budget(budget)
+    }
+
+    #[tokio::test]
+    async fn artifact_budget_is_shared_across_pools() {
+        let budget = ArtifactBudget::new(1);
+        let first = pool("first", budget.clone());
+        let second = pool("second", budget);
+
+        let permit = first
+            .artifact_permit(FetchOperation::Artifact)
+            .await
+            .expect("artifact permit");
+        assert_eq!(second.artifact_budget.available_permits(), 0);
+        drop(permit);
+        assert_eq!(second.artifact_budget.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn metadata_does_not_consume_the_artifact_budget() {
+        let budget = ArtifactBudget::new(1);
+        let pool = pool("metadata", budget);
+
+        assert!(
+            pool.artifact_permit(FetchOperation::Metadata)
+                .await
+                .is_none()
+        );
+        assert_eq!(pool.artifact_budget.available_permits(), 1);
+    }
 }
