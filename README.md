@@ -72,3 +72,8 @@ docker compose -f deploy/docker-compose.yml up -d
 compose 默认发布主服务端口 `18761` 和 Docker `group` 入口的 `19000`。如果需要为其他
 Docker source 开放标准 CLI 端口，在 `deploy/app/config.toml` 中设置对应
 `listen_port`，并在 `deploy/docker-compose.yml` 中增加相同的端口映射。
+
+## 缓存失效
+
+修改 `root_url` 后，服务首次启动会清理旧的重写元数据和 Rustup 快照缓存，
+但保留制品缓存和审计日志。

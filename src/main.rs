@@ -17,6 +17,11 @@ use stacktory::{
 };
 use tokio::net::TcpListener;
 
+const ROOT_URL_MARKER: &str = ".root-url";
+const CACHE_ECOSYSTEMS: &[&str] = &[
+    "cargo", "docker", "npm", "nuget", "pypi", "rustup", "upm", "vscode",
+];
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut arguments = std::env::args().skip(1);
@@ -35,6 +40,11 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = read_config()?;
     let (log_file, rotated_log) =
         logging::init(config.log_dir.clone(), std::time::SystemTime::now())?;
+    if invalidate_rewritten_cache_on_root_url_change(&config.data_dir, config.root_url.as_str())? {
+        logging::info(
+            "cleared rewritten metadata and rustup snapshots to match the configured root_url",
+        );
+    }
     if config.pypi.is_some() {
         logging::warn("pypi is configured but the PyPI adapter is not registered");
     }
@@ -67,6 +77,35 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
+}
+
+fn invalidate_rewritten_cache_on_root_url_change(
+    data_dir: &std::path::Path,
+    root_url: &str,
+) -> Result<bool, std::io::Error> {
+    fs::create_dir_all(data_dir)?;
+    let marker_path = data_dir.join(ROOT_URL_MARKER);
+    match fs::read_to_string(&marker_path) {
+        Ok(current) if current == root_url => return Ok(false),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
+    for ecosystem in CACHE_ECOSYSTEMS {
+        remove_dir_if_exists(&stacktory::layout::metadata_root(data_dir, ecosystem))?;
+    }
+    remove_dir_if_exists(&stacktory::layout::snapshots_root(data_dir, "rustup"))?;
+    fs::write(marker_path, root_url)?;
+    Ok(true)
+}
+
+fn remove_dir_if_exists(path: &std::path::Path) -> Result<(), std::io::Error> {
+    match fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 async fn shutdown_signal() {
@@ -254,7 +293,7 @@ fn configured_registry(
 
 #[cfg(test)]
 mod tests {
-    use std::{net::IpAddr, path::PathBuf};
+    use std::{fs, net::IpAddr, path::PathBuf};
 
     use axum::{body::Body, http::Request};
     use stacktory::{
@@ -336,6 +375,48 @@ mod tests {
         assert_ne!(npm_response.status(), axum::http::StatusCode::NOT_FOUND);
         assert_ne!(upm_response.status(), axum::http::StatusCode::NOT_FOUND);
         assert_ne!(nuget_response.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn clears_rewritten_cache_when_root_url_changes() {
+        let directory = tempfile::tempdir().expect("data directory");
+        let data_dir = directory.path();
+        let metadata = data_dir.join("stores/npm/metadata/group/left-pad/current.toml");
+        let snapshot = data_dir.join("stores/rustup/snapshots/group/stable/current.toml");
+        let artifact = data_dir.join("stores/npm/artifacts/npmjs/objects/artifact");
+        let audit = data_dir.join("audit/events.jsonl");
+        for (path, contents) in [
+            (&metadata, "old metadata"),
+            (&snapshot, "old snapshot"),
+            (&artifact, "artifact"),
+            (&audit, "audit"),
+        ] {
+            fs::create_dir_all(path.parent().expect("parent")).expect("cache directory");
+            fs::write(path, contents).expect("cache file");
+        }
+
+        assert!(
+            super::invalidate_rewritten_cache_on_root_url_change(data_dir, "https://old.example")
+                .expect("initial invalidation")
+        );
+        assert!(!metadata.exists());
+        assert!(!snapshot.exists());
+        assert!(artifact.exists());
+        assert!(audit.exists());
+
+        fs::create_dir_all(metadata.parent().expect("parent")).expect("metadata directory");
+        fs::write(&metadata, "new metadata").expect("new metadata");
+        assert!(
+            !super::invalidate_rewritten_cache_on_root_url_change(data_dir, "https://old.example",)
+                .expect("unchanged root URL")
+        );
+        assert!(metadata.exists());
+
+        assert!(
+            super::invalidate_rewritten_cache_on_root_url_change(data_dir, "https://new.example")
+                .expect("changed root URL")
+        );
+        assert!(!metadata.exists());
     }
 
     fn proxy(name: &str, base_url: &str) -> SourceConfig {
