@@ -11,7 +11,10 @@ use axum::{
     Router,
     body::Body,
     extract::OriginalUri,
-    http::{Request, StatusCode, header::CONTENT_TYPE},
+    http::{
+        Request, StatusCode,
+        header::{CONTENT_LENGTH, CONTENT_TYPE},
+    },
     response::IntoResponse,
 };
 use sha2::{Digest, Sha512};
@@ -27,11 +30,12 @@ use url::Url;
 #[tokio::test]
 async fn serves_unscoped_and_scoped_metadata_with_internal_tarball_urls() {
     let package_body = b"verified npm tarball".to_vec();
+    let artifact_requests = Arc::new(AtomicUsize::new(0));
     let (upstream, _) = start_npm_server(
         "left-pad",
         package_body.clone(),
         Arc::new(AtomicUsize::new(0)),
-        Arc::new(AtomicUsize::new(0)),
+        artifact_requests.clone(),
     )
     .await;
     let data_dir = tempdir().expect("data directory");
@@ -62,12 +66,41 @@ async fn serves_unscoped_and_scoped_metadata_with_internal_tarball_urls() {
         .await
         .expect("tarball response");
     assert_eq!(artifact.status(), StatusCode::OK);
+    let content_length = artifact
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    assert_eq!(content_length, Some(package_body.len().to_string()));
     assert_eq!(
         axum::body::to_bytes(artifact.into_body(), usize::MAX)
             .await
             .expect("tarball body"),
         package_body
     );
+    let cached = router
+        .clone()
+        .oneshot(get_request(&tarball_path))
+        .await
+        .expect("cached tarball response");
+    assert_eq!(cached.status(), StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(cached.into_body(), usize::MAX)
+            .await
+            .expect("cached tarball body"),
+        package_body
+    );
+    assert_eq!(artifact_requests.load(Ordering::SeqCst), 1);
+    let temporary_files = std::fs::read_dir(data_dir.path().join("tmp"))
+        .expect("temporary directory")
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("npm-") && name.ends_with(".part")
+        })
+        .count();
+    assert_eq!(temporary_files, 0);
 
     let scoped = router
         .oneshot(get_request("/mirror/npm/official/@scope%2Fpackage"))

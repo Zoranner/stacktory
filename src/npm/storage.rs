@@ -1,13 +1,14 @@
 use std::{
-    fs, io,
-    path::PathBuf,
+    fs,
+    io::{self, Read},
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha384, Sha512};
 use thiserror::Error;
 
 use crate::fsutil::atomic_write;
@@ -45,6 +46,12 @@ pub struct IntegrityExpectation {
 pub struct VerifiedArtifact {
     pub local_sha256: String,
     pub upstream_verified: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ArtifactFile {
+    pub path: PathBuf,
+    pub length: u64,
 }
 
 #[derive(Debug)]
@@ -109,13 +116,46 @@ impl NpmStorage {
             return Err(StorageError::InvalidIdentity(key.ecosystem.clone()));
         }
         validate_artifact_key(artifact_key)?;
-        let upstream_verified = verify_contents(artifact_key, expectation, contents)?;
+        let verification = verify_contents(artifact_key, expectation, contents)?;
         let result = VerifiedArtifact {
-            local_sha256: sha256(contents),
-            upstream_verified,
+            local_sha256: verification.local_sha256,
+            upstream_verified: verification.upstream_verified,
         };
         atomic_write(&self.artifact_path(key, artifact_key), contents)?;
         Ok(result)
+    }
+
+    pub fn publish_verified_artifact_file(
+        &self,
+        key: &NpmCacheKey,
+        artifact_key: &str,
+        expectation: &IntegrityExpectation,
+        temporary_path: &Path,
+    ) -> Result<ArtifactFile, StorageError> {
+        validate_key(key)?;
+        if key.ecosystem != self.ecosystem {
+            return Err(StorageError::InvalidIdentity(key.ecosystem.clone()));
+        }
+        validate_artifact_key(artifact_key)?;
+        if let Err(error) = verify_file(artifact_key, expectation, temporary_path) {
+            let _ = fs::remove_file(temporary_path);
+            return Err(error);
+        }
+        let destination = self.artifact_path(key, artifact_key);
+        let parent = destination
+            .parent()
+            .ok_or_else(|| io::Error::other("npm artifact cache has no parent directory"))?;
+        if let Err(error) =
+            fs::create_dir_all(parent).and_then(|()| fs::rename(temporary_path, &destination))
+        {
+            let _ = fs::remove_file(temporary_path);
+            return Err(StorageError::Io(error));
+        }
+        let length = fs::metadata(&destination)?.len();
+        Ok(ArtifactFile {
+            path: destination,
+            length,
+        })
     }
 
     pub fn read_verified_artifact(
@@ -124,27 +164,67 @@ impl NpmStorage {
         artifact_key: &str,
         expectation: &IntegrityExpectation,
     ) -> Result<Option<Vec<u8>>, StorageError> {
+        let Some(file) = self.read_verified_artifact_file(key, artifact_key, expectation)? else {
+            return Ok(None);
+        };
+        fs::read(file.path).map(Some).map_err(StorageError::Io)
+    }
+
+    pub fn read_verified_artifact_file(
+        &self,
+        key: &NpmCacheKey,
+        artifact_key: &str,
+        expectation: &IntegrityExpectation,
+    ) -> Result<Option<ArtifactFile>, StorageError> {
         validate_key(key)?;
         if key.ecosystem != self.ecosystem {
             return Err(StorageError::InvalidIdentity(key.ecosystem.clone()));
         }
         validate_artifact_key(artifact_key)?;
         let path = self.artifact_path(key, artifact_key);
-        let contents = match fs::read(&path) {
-            Ok(contents) => contents,
+        let length = match fs::metadata(&path) {
+            Ok(metadata) => metadata.len(),
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(StorageError::Io(error)),
         };
-        match verify_contents(artifact_key, expectation, &contents) {
-            Ok(_) => {
-                let _ = crate::retention::note_access(&path);
-                Ok(Some(contents))
-            }
+        match verify_file(artifact_key, expectation, &path) {
+            Ok(_) => {}
             Err(StorageError::IntegrityMismatch(_)) => {
                 fs::remove_file(path)?;
-                Ok(None)
+                return Ok(None);
             }
-            Err(error) => Err(error),
+            Err(error) => return Err(error),
+        }
+        let _ = crate::retention::note_access(&path);
+        Ok(Some(ArtifactFile { path, length }))
+    }
+
+    pub fn temporary_artifact_path(&self) -> Result<PathBuf, StorageError> {
+        let directory = self.data_dir.join("tmp");
+        fs::create_dir_all(&directory)?;
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        Ok(directory.join(format!(
+            "{}-{}-{nonce}.part",
+            safe_component(&self.ecosystem),
+            std::process::id()
+        )))
+    }
+
+    pub fn cleanup_temporary_artifacts(&self) {
+        let directory = self.data_dir.join("tmp");
+        let prefix = format!("{}-", safe_component(&self.ecosystem));
+        let Ok(entries) = fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with(&prefix) && name.ends_with(".part") {
+                let _ = fs::remove_file(entry.path());
+            }
         }
     }
 
@@ -445,60 +525,180 @@ fn verify_contents(
     artifact_key: &str,
     expectation: &IntegrityExpectation,
     contents: &[u8],
-) -> Result<bool, StorageError> {
-    if let Some(integrity) = expectation.integrity.as_deref() {
-        verify_integrity(artifact_key, integrity, contents)?;
-        return Ok(true);
-    }
-    if let Some(shasum) = expectation.shasum.as_deref() {
-        if shasum.len() != 40 || !shasum.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(StorageError::InvalidIntegrity(shasum.to_owned()));
+) -> Result<VerificationResult, StorageError> {
+    let plan = VerificationPlan::new(expectation)?;
+    let mut contents = io::Cursor::new(contents);
+    let digests = hash_reader(&mut contents, &plan)?;
+    verify_digests(artifact_key, &plan, digests)
+}
+
+fn verify_file(
+    artifact_key: &str,
+    expectation: &IntegrityExpectation,
+    path: &Path,
+) -> Result<VerificationResult, StorageError> {
+    let plan = VerificationPlan::new(expectation)?;
+    let mut file = fs::File::open(path)?;
+    let digests = hash_reader(&mut file, &plan)?;
+    verify_digests(artifact_key, &plan, digests)
+}
+
+struct VerificationResult {
+    local_sha256: String,
+    upstream_verified: bool,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum IntegrityAlgorithm {
+    Sha256,
+    Sha384,
+    Sha512,
+}
+
+struct ExpectedIntegrity {
+    algorithm: IntegrityAlgorithm,
+    digest: Vec<u8>,
+}
+
+struct VerificationPlan {
+    integrity: Vec<ExpectedIntegrity>,
+    shasum: Option<String>,
+}
+
+impl VerificationPlan {
+    fn new(expectation: &IntegrityExpectation) -> Result<Self, StorageError> {
+        if let Some(integrity) = expectation.integrity.as_deref() {
+            let mut expected = Vec::new();
+            for token in integrity.split_whitespace() {
+                let Some((algorithm, encoded)) = token.split_once('-') else {
+                    continue;
+                };
+                let digest = STANDARD
+                    .decode(encoded)
+                    .map_err(|_| StorageError::InvalidIntegrity(integrity.to_owned()))?;
+                let algorithm = match algorithm {
+                    "sha512" => IntegrityAlgorithm::Sha512,
+                    "sha384" => IntegrityAlgorithm::Sha384,
+                    "sha256" => IntegrityAlgorithm::Sha256,
+                    _ => continue,
+                };
+                expected.push(ExpectedIntegrity { algorithm, digest });
+            }
+            if expected.is_empty() {
+                return Err(StorageError::InvalidIntegrity(integrity.to_owned()));
+            }
+            return Ok(Self {
+                integrity: expected,
+                shasum: None,
+            });
         }
-        let actual = format!("{:x}", Sha1::digest(contents));
+        if let Some(shasum) = expectation.shasum.as_deref() {
+            if shasum.len() != 40 || !shasum.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(StorageError::InvalidIntegrity(shasum.to_owned()));
+            }
+            return Ok(Self {
+                integrity: Vec::new(),
+                shasum: Some(shasum.to_owned()),
+            });
+        }
+        Ok(Self {
+            integrity: Vec::new(),
+            shasum: None,
+        })
+    }
+
+    fn needs(&self, algorithm: IntegrityAlgorithm) -> bool {
+        self.integrity
+            .iter()
+            .any(|expected| expected.algorithm == algorithm)
+    }
+}
+
+struct FileDigests {
+    sha256: Vec<u8>,
+    sha1: Option<Vec<u8>>,
+    sha384: Option<Vec<u8>>,
+    sha512: Option<Vec<u8>>,
+}
+
+fn hash_reader<R: Read>(
+    reader: &mut R,
+    plan: &VerificationPlan,
+) -> Result<FileDigests, StorageError> {
+    let mut sha256 = Sha256::new();
+    let mut sha1 = plan.shasum.as_ref().map(|_| Sha1::new());
+    let mut sha384 = plan.needs(IntegrityAlgorithm::Sha384).then(Sha384::new);
+    let mut sha512 = plan.needs(IntegrityAlgorithm::Sha512).then(Sha512::new);
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let chunk = &buffer[..read];
+        sha256.update(chunk);
+        if let Some(hasher) = &mut sha1 {
+            hasher.update(chunk);
+        }
+        if let Some(hasher) = &mut sha384 {
+            hasher.update(chunk);
+        }
+        if let Some(hasher) = &mut sha512 {
+            hasher.update(chunk);
+        }
+    }
+    Ok(FileDigests {
+        sha256: sha256.finalize().to_vec(),
+        sha1: sha1.map(|hasher| hasher.finalize().to_vec()),
+        sha384: sha384.map(|hasher| hasher.finalize().to_vec()),
+        sha512: sha512.map(|hasher| hasher.finalize().to_vec()),
+    })
+}
+
+fn verify_digests(
+    artifact_key: &str,
+    plan: &VerificationPlan,
+    digests: FileDigests,
+) -> Result<VerificationResult, StorageError> {
+    if !plan.integrity.is_empty() {
+        for expected in &plan.integrity {
+            let actual = match expected.algorithm {
+                IntegrityAlgorithm::Sha256 => &digests.sha256,
+                IntegrityAlgorithm::Sha384 => digests
+                    .sha384
+                    .as_ref()
+                    .expect("SHA-384 digest is computed when requested"),
+                IntegrityAlgorithm::Sha512 => digests
+                    .sha512
+                    .as_ref()
+                    .expect("SHA-512 digest is computed when requested"),
+            };
+            if actual == &expected.digest {
+                return Ok(VerificationResult {
+                    local_sha256: hex(&digests.sha256),
+                    upstream_verified: true,
+                });
+            }
+        }
+        return Err(StorageError::IntegrityMismatch(artifact_key.to_owned()));
+    }
+    if let Some(shasum) = plan.shasum.as_deref() {
+        let actual = hex(digests
+            .sha1
+            .as_ref()
+            .expect("SHA-1 digest is computed when requested"));
         if !actual.eq_ignore_ascii_case(shasum) {
             return Err(StorageError::IntegrityMismatch(artifact_key.to_owned()));
         }
-        return Ok(true);
+        return Ok(VerificationResult {
+            local_sha256: hex(&digests.sha256),
+            upstream_verified: true,
+        });
     }
-    Ok(false)
-}
-
-fn verify_integrity(
-    artifact_key: &str,
-    integrity: &str,
-    contents: &[u8],
-) -> Result<(), StorageError> {
-    let mut supported = false;
-    for token in integrity.split_whitespace() {
-        let Some((algorithm, encoded)) = token.split_once('-') else {
-            continue;
-        };
-        let expected = STANDARD
-            .decode(encoded)
-            .map_err(|_| StorageError::InvalidIntegrity(integrity.to_owned()))?;
-        let actual = match algorithm {
-            "sha512" => {
-                supported = true;
-                sha2::Sha512::digest(contents).to_vec()
-            }
-            "sha384" => {
-                supported = true;
-                sha2::Sha384::digest(contents).to_vec()
-            }
-            "sha256" => {
-                supported = true;
-                Sha256::digest(contents).to_vec()
-            }
-            _ => continue,
-        };
-        if actual == expected {
-            return Ok(());
-        }
-    }
-    if !supported {
-        return Err(StorageError::InvalidIntegrity(integrity.to_owned()));
-    }
-    Err(StorageError::IntegrityMismatch(artifact_key.to_owned()))
+    Ok(VerificationResult {
+        local_sha256: hex(&digests.sha256),
+        upstream_verified: false,
+    })
 }
 
 fn safe_component(value: &str) -> String {
@@ -507,6 +707,10 @@ fn safe_component(value: &str) -> String {
 
 fn sha256(contents: &[u8]) -> String {
     format!("{:x}", Sha256::digest(contents))
+}
+
+fn hex(contents: &[u8]) -> String {
+    contents.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn now_unix_secs() -> u64 {

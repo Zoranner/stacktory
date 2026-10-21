@@ -6,12 +6,16 @@ use std::{
 
 use axum::{
     body::Body,
-    http::{HeaderMap, Method, StatusCode, header::CONTENT_TYPE},
+    http::{
+        HeaderMap, Method, StatusCode,
+        header::{CONTENT_LENGTH, CONTENT_TYPE},
+    },
     response::{IntoResponse, Response},
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use tokio_util::io::ReaderStream;
 use url::Url;
 
 use crate::{
@@ -28,7 +32,9 @@ use crate::{
 use super::{
     metadata::{NpmArtifactDescriptor, NpmMetadataError},
     path::{parse_artifact_path, parse_metadata_path},
-    storage::{IntegrityExpectation, NpmCacheKey, NpmStorage, StorageError, StoredMetadata},
+    storage::{
+        ArtifactFile, IntegrityExpectation, NpmCacheKey, NpmStorage, StorageError, StoredMetadata,
+    },
 };
 
 const METADATA_REVALIDATE_AFTER_SECS: u64 = 15 * 60;
@@ -145,10 +151,12 @@ impl NpmService {
         flavor: RegistryFlavor,
     ) -> Self {
         let data_dir = data_dir.into();
+        let storage = NpmStorage::new_for_ecosystem(data_dir.clone(), flavor.ecosystem);
+        storage.cleanup_temporary_artifacts();
         Self {
             flavor,
             root_url,
-            storage: NpmStorage::new_for_ecosystem(data_dir.clone(), flavor.ecosystem),
+            storage,
             audit: AuditSink::new(data_dir),
         }
     }
@@ -187,7 +195,7 @@ impl NpmService {
                 Err(_) => return StatusCode::NOT_FOUND.into_response(),
             };
             return match self.tarball(entry_name, &artifact_key, pool).await {
-                Ok(body) => response(StatusCode::OK, "application/octet-stream", body),
+                Ok(file) => artifact_response(file).await,
                 Err(error) => npm_error_response(&error),
             };
         }
@@ -702,7 +710,7 @@ impl NpmService {
         entry_name: &str,
         artifact_key: &str,
         pool: &SourcePool,
-    ) -> Result<Vec<u8>, NpmError> {
+    ) -> Result<ArtifactFile, NpmError> {
         let descriptor = self
             .storage
             .read_descriptor(entry_name, artifact_key)?
@@ -765,9 +773,9 @@ impl NpmService {
                 selected_proxy: member.name.clone(),
             };
             let expectation = expectation(&candidate);
-            if let Some(contents) =
+            if let Some(file) =
                 self.storage
-                    .read_verified_artifact(&key, artifact_key, &expectation)?
+                    .read_verified_artifact_file(&key, artifact_key, &expectation)?
             {
                 self.record(
                     &self.event("artifact_read"),
@@ -777,22 +785,24 @@ impl NpmService {
                     "hit",
                     None,
                 );
-                return Ok(contents);
+                return Ok(file);
             }
             let upstream_url = Url::parse(&candidate.upstream_tarball).map_err(|_| {
                 NpmError::Metadata(NpmMetadataError::InvalidTarballUrl(
                     candidate.upstream_tarball.clone(),
                 ))
             })?;
-            let response = match pool
-                .fetch_configured_url_following_safe_redirects(
+            let temporary_path = self.storage.temporary_artifact_path()?;
+            let fetched = match pool
+                .fetch_configured_url_following_safe_redirects_to_file(
                     &member.name,
                     upstream_url,
                     FetchOperation::Artifact,
+                    temporary_path,
                 )
                 .await
             {
-                Ok(response) => response,
+                Ok(file) => file,
                 Err(error)
                     if pool.is_group(entry_name) && source_error_is_group_fallback(&error) =>
                 {
@@ -801,13 +811,13 @@ impl NpmService {
                 }
                 Err(error) => return Err(error.into()),
             };
-            match self.storage.publish_verified_artifact(
+            match self.storage.publish_verified_artifact_file(
                 &key,
                 artifact_key,
                 &expectation,
-                &response.body,
+                &fetched.path,
             ) {
-                Ok(_) => {
+                Ok(file) => {
                     self.record(
                         &self.event("artifact_published"),
                         entry_name,
@@ -816,7 +826,7 @@ impl NpmService {
                         "published",
                         None,
                     );
-                    return Ok(response.body);
+                    return Ok(file);
                 }
                 Err(StorageError::IntegrityMismatch(_)) => {
                     failures.push(format!("{}: integrity mismatch", member.name));
@@ -1161,4 +1171,21 @@ fn npm_error_response(error: &NpmError) -> Response {
 
 fn response(status: StatusCode, content_type: &'static str, body: Vec<u8>) -> Response {
     (status, [(CONTENT_TYPE, content_type)], Body::from(body)).into_response()
+}
+
+async fn artifact_response(file: ArtifactFile) -> Response {
+    let handle = match tokio::fs::File::open(&file.path).await {
+        Ok(handle) => handle,
+        Err(error) => return npm_error_response(&NpmError::Storage(StorageError::Io(error))),
+    };
+    let mut response =
+        (StatusCode::OK, Body::from_stream(ReaderStream::new(handle))).into_response();
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/octet-stream"),
+    );
+    if let Ok(length) = axum::http::HeaderValue::from_str(&file.length.to_string()) {
+        response.headers_mut().insert(CONTENT_LENGTH, length);
+    }
+    response
 }
