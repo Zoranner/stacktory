@@ -18,3 +18,8 @@ deploy/app/logs/
 /logs/
 .idea/
 .vscode/
+
+# Local secrets
+.env
+.env.*
+!.env.example
