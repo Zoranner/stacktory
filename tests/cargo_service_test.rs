@@ -11,7 +11,7 @@ use std::{
 use axum::{
     Router,
     body::Body,
-    http::{Request, StatusCode},
+    http::{Request, StatusCode, header::CONTENT_LENGTH},
     response::IntoResponse,
     routing::get,
 };
@@ -263,7 +263,7 @@ async fn cargo_artifact_cache_is_shared_by_group_and_its_proxy() {
     let crate_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (upstream, upstream_address) = start_counted_configured_server(
         index_body,
-        crate_body,
+        crate_body.clone(),
         &crate_hash,
         crate_requests.clone(),
     )
@@ -302,6 +302,14 @@ async fn cargo_artifact_cache_is_shared_by_group_and_its_proxy() {
             .await
             .expect("crate response");
         assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned),
+            Some(crate_body.len().to_string())
+        );
     }
 
     assert_eq!(crate_requests.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -311,6 +319,16 @@ async fn cargo_artifact_cache_is_shared_by_group_and_its_proxy() {
             .join("stores/cargo/artifacts/official/objects/crates/serde/1.0.0.crate")
             .exists()
     );
+    let temporary_files = std::fs::read_dir(data_dir.path().join("tmp"))
+        .expect("temporary directory")
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("cargo-") && name.ends_with(".part")
+        })
+        .count();
+    assert_eq!(temporary_files, 0);
 }
 
 #[tokio::test]

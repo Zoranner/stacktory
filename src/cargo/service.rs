@@ -1,18 +1,23 @@
 use std::{
-    fs, io,
+    fs,
+    io::{self, Read},
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, SystemTime},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
     body::Body,
-    http::{StatusCode, header::CONTENT_TYPE},
+    http::{
+        StatusCode,
+        header::{CONTENT_LENGTH, CONTENT_TYPE},
+    },
     response::{IntoResponse, Response},
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use tokio_util::io::ReaderStream;
 use url::Url;
 
 use crate::{
@@ -56,6 +61,16 @@ struct FetchedIndex {
     source_name: String,
 }
 
+struct CrateFile {
+    path: PathBuf,
+    length: u64,
+}
+
+enum CargoPayload {
+    Bytes(&'static str, Vec<u8>),
+    File(CrateFile),
+}
+
 #[derive(Debug, Error)]
 pub enum CargoError {
     #[error(transparent)]
@@ -85,6 +100,7 @@ impl CargoAdapter {
 impl CargoService {
     pub fn new(root_url: Url, data_dir: impl Into<PathBuf>) -> Self {
         let data_dir = data_dir.into();
+        cleanup_temporary_artifacts(&data_dir);
         Self {
             root_url,
             audit: AuditSink::new(data_dir.clone()),
@@ -99,7 +115,10 @@ impl CargoService {
         pool: &SourcePool,
     ) -> Response {
         match self.serve(entry_name, path, pool).await {
-            Ok((content_type, body)) => response(StatusCode::OK, content_type, body),
+            Ok(CargoPayload::Bytes(content_type, body)) => {
+                response(StatusCode::OK, content_type, body)
+            }
+            Ok(CargoPayload::File(file)) => crate_file_response(file).await,
             Err(error) => cargo_error_response(&error),
         }
     }
@@ -109,23 +128,26 @@ impl CargoService {
         entry_name: &str,
         path: &str,
         pool: &SourcePool,
-    ) -> Result<(&'static str, Vec<u8>), CargoError> {
+    ) -> Result<CargoPayload, CargoError> {
         if pool.proxy_members(entry_name).is_none() {
             return Err(SourcePoolError::UnknownEntry(entry_name.to_owned()).into());
         }
         if path == "config.json" {
-            return Ok(("application/json", self.config(entry_name)?));
+            return Ok(CargoPayload::Bytes(
+                "application/json",
+                self.config(entry_name)?,
+            ));
         }
         if let Ok((crate_name, _)) = sparse_path_for_request(path) {
             let body = self.index(entry_name, path, &crate_name, pool).await?;
-            return Ok(("application/json", body.body));
+            return Ok(CargoPayload::Bytes("application/json", body.body));
         }
         if let Some(crate_path) = path.strip_prefix("crates/") {
             let (crate_name, version) = parse_crate_request(crate_path)?;
-            let body = self
+            let file = self
                 .crate_file(entry_name, &crate_name, &version, pool)
                 .await?;
-            return Ok(("application/octet-stream", body));
+            return Ok(CargoPayload::File(file));
         }
         Err(CargoPathError::Invalid(path.to_owned()).into())
     }
@@ -429,7 +451,7 @@ impl CargoService {
         crate_name: &str,
         version: &str,
         pool: &SourcePool,
-    ) -> Result<Vec<u8>, CargoError> {
+    ) -> Result<CrateFile, CargoError> {
         let index_path = super::path::sparse_index_path(crate_name)?;
         let snapshot = self
             .index(entry_name, &index_path, crate_name, pool)
@@ -453,23 +475,20 @@ impl CargoService {
             })?;
 
         let cache_path = self.artifact_path(&snapshot.selected_proxy, crate_name, version);
-        if let Some(contents) = read_if_present(&cache_path)? {
-            if checksum(&contents).eq_ignore_ascii_case(&expected) {
-                let _ = crate::retention::note_access(&cache_path);
-                self.record_cargo(
-                    "cargo_artifact_read",
-                    entry_name,
-                    &format!("crates/{crate_name}/{version}.crate"),
-                    CargoAuditDetails {
-                        selected_proxy: Some(&snapshot.selected_proxy),
-                        object_type: "artifact",
-                        cache_status: "hit",
-                        failure_category: None,
-                    },
-                );
-                return Ok(contents);
-            }
-            fs::remove_file(&cache_path)?;
+        if let Some(file) = cached_crate_file(&cache_path, &expected)? {
+            let _ = crate::retention::note_access(&cache_path);
+            self.record_cargo(
+                "cargo_artifact_read",
+                entry_name,
+                &format!("crates/{crate_name}/{version}.crate"),
+                CargoAuditDetails {
+                    selected_proxy: Some(&snapshot.selected_proxy),
+                    object_type: "artifact",
+                    cache_status: "hit",
+                    failure_category: None,
+                },
+            );
+            return Ok(file);
         }
 
         let request_key = format!("crates/{crate_name}/{version}.crate");
@@ -567,40 +586,17 @@ impl CargoService {
                     continue;
                 }
             };
-            match pool
-                .fetch_configured_url(&member.name, download_url, FetchOperation::Artifact)
+            let temporary_path = temporary_artifact_path(&self.data_dir)?;
+            let fetched = match pool
+                .fetch_configured_url_following_safe_redirects_to_file(
+                    &member.name,
+                    download_url,
+                    FetchOperation::Artifact,
+                    temporary_path,
+                )
                 .await
             {
-                Ok(response) if checksum(&response.body).eq_ignore_ascii_case(&expected) => {
-                    atomic_write(
-                        &self.artifact_path(&member.name, crate_name, version),
-                        &response.body,
-                    )?;
-                    atomic_write(
-                        &self.metadata_sidecar_path(entry_name, &index_path),
-                        format!("{}\n", member.name).as_bytes(),
-                    )?;
-                    self.record_cargo(
-                        "cargo_artifact_published",
-                        entry_name,
-                        &request_key,
-                        CargoAuditDetails {
-                            selected_proxy: Some(&member.name),
-                            object_type: "artifact",
-                            cache_status: "published",
-                            failure_category: None,
-                        },
-                    );
-                    return Ok(response.body);
-                }
-                Ok(_) => {
-                    saw_failure = true;
-                    all_not_found = false;
-                    failures.push(format!(
-                        "{}: checksum mismatch for {crate_name} {version}",
-                        member.name
-                    ));
-                }
+                Ok(file) => file,
                 Err(error)
                     if is_group
                         && (source_error_is_group_fallback(&error)
@@ -626,8 +622,55 @@ impl CargoService {
                         },
                     );
                     failures.push(format!("{}: {error}", member.name));
+                    continue;
                 }
                 Err(error) => return Err(error.into()),
+            };
+            match checksum_file(&fetched.path) {
+                Ok(actual) if actual.eq_ignore_ascii_case(&expected) => {
+                    let destination = self.artifact_path(&member.name, crate_name, version);
+                    publish_crate_file(&fetched.path, &destination)?;
+                    atomic_write(
+                        &self.metadata_sidecar_path(entry_name, &index_path),
+                        format!("{}\n", member.name).as_bytes(),
+                    )?;
+                    self.record_cargo(
+                        "cargo_artifact_published",
+                        entry_name,
+                        &request_key,
+                        CargoAuditDetails {
+                            selected_proxy: Some(&member.name),
+                            object_type: "artifact",
+                            cache_status: "published",
+                            failure_category: None,
+                        },
+                    );
+                    return crate_file_at(&destination);
+                }
+                Ok(_) => {
+                    let _ = fs::remove_file(&fetched.path);
+                    saw_failure = true;
+                    all_not_found = false;
+                    failures.push(format!(
+                        "{}: checksum mismatch for {crate_name} {version}",
+                        member.name
+                    ));
+                    self.record_cargo(
+                        "cargo_artifact_fallback",
+                        entry_name,
+                        &request_key,
+                        CargoAuditDetails {
+                            selected_proxy: Some(&member.name),
+                            object_type: "artifact",
+                            cache_status: "fallback",
+                            failure_category: Some("integrity_mismatch"),
+                        },
+                    );
+                }
+                Err(error) => {
+                    let _ = fs::remove_file(&fetched.path);
+                    return Err(error.into());
+                }
             }
         }
 
@@ -815,8 +858,78 @@ fn is_group_entry(pool: &SourcePool, entry_name: &str) -> bool {
     pool.is_group(entry_name)
 }
 
-fn checksum(contents: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(contents))
+fn checksum_file(path: &Path) -> Result<String, io::Error> {
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn cached_crate_file(path: &Path, expected_checksum: &str) -> Result<Option<CrateFile>, io::Error> {
+    let length = match fs::metadata(path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if checksum_file(path)?.eq_ignore_ascii_case(expected_checksum) {
+        return Ok(Some(CrateFile {
+            path: path.to_path_buf(),
+            length,
+        }));
+    }
+    fs::remove_file(path)?;
+    Ok(None)
+}
+
+fn publish_crate_file(temporary_path: &Path, destination: &Path) -> Result<(), io::Error> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| io::Error::other("cargo artifact cache has no parent directory"))?;
+    if let Err(error) =
+        fs::create_dir_all(parent).and_then(|()| fs::rename(temporary_path, destination))
+    {
+        let _ = fs::remove_file(temporary_path);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn crate_file_at(path: &Path) -> Result<CrateFile, CargoError> {
+    Ok(CrateFile {
+        path: path.to_path_buf(),
+        length: fs::metadata(path)?.len(),
+    })
+}
+
+fn temporary_artifact_path(data_dir: &Path) -> Result<PathBuf, io::Error> {
+    let directory = data_dir.join("tmp");
+    fs::create_dir_all(&directory)?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    Ok(directory.join(format!("cargo-{}-{nonce}.part", std::process::id())))
+}
+
+fn cleanup_temporary_artifacts(data_dir: &Path) {
+    let directory = data_dir.join("tmp");
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("cargo-") && name.ends_with(".part") {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>, io::Error> {
@@ -825,4 +938,21 @@ fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>, io::Error> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
+}
+
+async fn crate_file_response(file: CrateFile) -> Response {
+    let handle = match tokio::fs::File::open(&file.path).await {
+        Ok(handle) => handle,
+        Err(error) => return cargo_error_response(&CargoError::Storage(error)),
+    };
+    let mut response =
+        (StatusCode::OK, Body::from_stream(ReaderStream::new(handle))).into_response();
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/octet-stream"),
+    );
+    if let Ok(length) = axum::http::HeaderValue::from_str(&file.length.to_string()) {
+        response.headers_mut().insert(CONTENT_LENGTH, length);
+    }
+    response
 }
