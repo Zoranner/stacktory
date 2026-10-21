@@ -29,6 +29,7 @@ pub(crate) struct FetchedFile {
     pub(crate) path: PathBuf,
     pub(crate) length: u64,
     pub(crate) sha256: String,
+    pub(crate) content_type: Option<String>,
 }
 
 #[derive(Debug)]
@@ -442,6 +443,11 @@ impl HttpFetcher {
         if !response.status().is_success() {
             return Err(FetchError::HttpStatus(url, response.status()));
         }
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
         let mut response = response;
         let mut file = File::create(&path).await.map_err(FetchError::TempFile)?;
         let mut hasher = Sha256::new();
@@ -460,6 +466,7 @@ impl HttpFetcher {
             path,
             length,
             sha256: format!("sha256:{:x}", hasher.finalize()),
+            content_type,
         })
     }
 

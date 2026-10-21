@@ -11,7 +11,7 @@ use std::{
 use axum::{
     Router,
     body::Body,
-    http::{HeaderMap, Request, StatusCode},
+    http::{HeaderMap, Request, StatusCode, header::CONTENT_LENGTH},
     response::IntoResponse,
     routing::{get, post},
 };
@@ -79,6 +79,14 @@ async fn marketplace_query_rewrites_assets_and_publishes_descriptors() {
             .and_then(|value| value.to_str().ok()),
         Some("application/vnd.ms-vsix")
     );
+    assert_eq!(
+        asset
+            .headers()
+            .get(CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned),
+        Some(vsix.len().to_string())
+    );
     assert_eq!(body_bytes(asset).await, vsix);
 
     let asset_base_id = asset_base.rsplit('/').next().expect("asset base ID");
@@ -127,6 +135,16 @@ async fn marketplace_query_rewrites_assets_and_publishes_descriptors() {
         Some("application/vnd.ms-vsix")
     );
     assert_eq!(body_bytes(extension).await, b"verified marketplace VSIX");
+    let temporary_files = fs::read_dir(data_dir.path().join("tmp"))
+        .expect("temporary directory")
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("vscode-") && name.ends_with(".part")
+        })
+        .count();
+    assert_eq!(temporary_files, 0);
 }
 
 #[tokio::test]

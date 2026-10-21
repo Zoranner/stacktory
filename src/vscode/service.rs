@@ -1,19 +1,25 @@
 use std::{
     collections::BTreeMap,
-    fs, io,
+    fs,
+    io::{self, Read},
     path::{Path, PathBuf},
     sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
     body::Body,
-    http::{Method, StatusCode, header::CONTENT_TYPE},
+    http::{
+        Method, StatusCode,
+        header::{CONTENT_LENGTH, CONTENT_TYPE},
+    },
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use tokio_util::io::ReaderStream;
 use url::Url;
 
 use crate::{
@@ -102,6 +108,7 @@ impl VscodeAdapter {
 impl VscodeService {
     pub fn new(root_url: Url, data_dir: impl Into<PathBuf>) -> Self {
         let data_dir = data_dir.into();
+        cleanup_temporary_assets(&data_dir);
         Self {
             root_url,
             audit: AuditSink::new(data_dir.clone()),
@@ -136,33 +143,35 @@ impl VscodeService {
                 .query(entry_name, &request.body, pool)
                 .await
                 .map(|body| response(StatusCode::OK, "application/json", body)),
-            Method::GET => {
-                if let Some(asset_id) = parse_asset_id(&request.path) {
-                    self.asset(entry_name, asset_id, pool)
-                        .await
-                        .map(asset_response)
-                } else if let Some(resource) = parse_resource_request(&request.path) {
-                    self.resource(entry_name, resource, pool)
-                        .await
-                        .map(asset_response)
-                } else if let Some(extension) = parse_extension_request(&request.path) {
-                    self.extension(entry_name, extension, pool)
-                        .await
-                        .map(asset_response)
-                } else if let Some(asset_base) = parse_asset_base_request(&request.path) {
-                    self.asset_base(entry_name, asset_base, pool)
-                        .await
-                        .map(asset_response)
-                } else {
-                    Err(VscodeError::MissingAsset(request.path))
-                }
-            }
+            Method::GET => match self.requested_asset(entry_name, &request.path, pool).await {
+                Ok(asset) => Ok(asset_response(asset).await),
+                Err(error) => Err(error),
+            },
             _ => return StatusCode::METHOD_NOT_ALLOWED.into_response(),
         };
 
         match result {
             Ok(response) => response,
             Err(error) => vscode_error_response(&error),
+        }
+    }
+
+    async fn requested_asset(
+        &self,
+        entry_name: &str,
+        path: &str,
+        pool: &SourcePool,
+    ) -> Result<MarketplaceAsset, VscodeError> {
+        if let Some(asset_id) = parse_asset_id(path) {
+            self.asset(entry_name, asset_id, pool).await
+        } else if let Some(resource) = parse_resource_request(path) {
+            self.resource(entry_name, resource, pool).await
+        } else if let Some(extension) = parse_extension_request(path) {
+            self.extension(entry_name, extension, pool).await
+        } else if let Some(asset_base) = parse_asset_base_request(path) {
+            self.asset_base(entry_name, asset_base, pool).await
+        } else {
+            Err(VscodeError::MissingAsset(path.to_owned()))
         }
     }
 
@@ -447,10 +456,15 @@ impl VscodeService {
         pool: &SourcePool,
     ) -> Result<MarketplaceAsset, VscodeError> {
         let cache_path = self.asset_path(source_name, cache_id);
-        if let Some(bytes) = read_if_present(&cache_path)? {
+        let cached_metadata = match fs::metadata(&cache_path) {
+            Ok(metadata) => Some(metadata),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(VscodeError::Storage(error)),
+        };
+        if let Some(metadata) = cached_metadata {
             let content_type =
                 read_asset_cache_metadata(&self.asset_cache_metadata_path(source_name, cache_id))?;
-            if !is_stale_compressed_cache(&bytes, content_type.as_deref()) {
+            if !is_stale_compressed_cache_file(&cache_path, content_type.as_deref())? {
                 let _ = crate::retention::note_access(&cache_path);
                 let _ = crate::retention::note_access(
                     &self.asset_cache_metadata_path(source_name, cache_id),
@@ -469,7 +483,8 @@ impl VscodeService {
                     },
                 );
                 return Ok(MarketplaceAsset {
-                    bytes,
+                    path: cache_path,
+                    length: metadata.len(),
                     content_type,
                 });
             }
@@ -478,11 +493,17 @@ impl VscodeService {
         let source_url = Url::parse(source_url).map_err(|_| {
             VscodeError::InvalidGalleryResponse("stored asset URL is invalid".to_owned())
         })?;
-        let response = match pool
-            .fetch_configured_url(source_name, source_url, FetchOperation::Artifact)
+        let temporary_path = temporary_asset_path(&self.data_dir)?;
+        let fetched = match pool
+            .fetch_configured_url_following_safe_redirects_to_file(
+                source_name,
+                source_url,
+                FetchOperation::Artifact,
+                temporary_path,
+            )
             .await
         {
-            Ok(response) => response,
+            Ok(file) => file,
             Err(error) => {
                 let Some(fallback_url) = fallback_url else {
                     return Err(error.into());
@@ -492,15 +513,21 @@ impl VscodeService {
                         "stored fallback asset URL is invalid".to_owned(),
                     )
                 })?;
-                pool.fetch_configured_url(source_name, fallback_url, FetchOperation::Artifact)
-                    .await?
+                let temporary_path = temporary_asset_path(&self.data_dir)?;
+                pool.fetch_configured_url_following_safe_redirects_to_file(
+                    source_name,
+                    fallback_url,
+                    FetchOperation::Artifact,
+                    temporary_path,
+                )
+                .await?
             }
         };
-        atomic_write(&cache_path, &response.body)?;
+        let asset = publish_asset_file(&fetched.path, &cache_path)?;
         atomic_write(
             &self.asset_cache_metadata_path(source_name, cache_id),
             toml::to_string(&AssetCacheMetadata {
-                content_type: response.content_type.clone(),
+                content_type: fetched.content_type.clone(),
             })?
             .as_bytes(),
         )?;
@@ -518,8 +545,9 @@ impl VscodeService {
             },
         );
         Ok(MarketplaceAsset {
-            bytes: response.body,
-            content_type: response.content_type,
+            path: asset.path,
+            length: asset.length,
+            content_type: fetched.content_type,
         })
     }
 
@@ -590,19 +618,33 @@ impl VscodeService {
 }
 
 struct MarketplaceAsset {
-    bytes: Vec<u8>,
+    path: PathBuf,
+    length: u64,
     content_type: Option<String>,
 }
 
-fn asset_response(asset: MarketplaceAsset) -> Response {
-    response(
-        StatusCode::OK,
-        asset
-            .content_type
-            .as_deref()
-            .unwrap_or("application/octet-stream"),
-        asset.bytes,
-    )
+struct AssetFile {
+    path: PathBuf,
+    length: u64,
+}
+
+async fn asset_response(asset: MarketplaceAsset) -> Response {
+    let handle = match tokio::fs::File::open(&asset.path).await {
+        Ok(file) => file,
+        Err(error) => return vscode_error_response(&VscodeError::Storage(error)),
+    };
+    let mut response =
+        (StatusCode::OK, Body::from_stream(ReaderStream::new(handle))).into_response();
+    let content_type = asset
+        .content_type
+        .as_deref()
+        .and_then(|value| axum::http::HeaderValue::from_str(value).ok())
+        .unwrap_or_else(|| axum::http::HeaderValue::from_static("application/octet-stream"));
+    response.headers_mut().insert(CONTENT_TYPE, content_type);
+    if let Ok(length) = axum::http::HeaderValue::from_str(&asset.length.to_string()) {
+        response.headers_mut().insert(CONTENT_LENGTH, length);
+    }
+    response
 }
 
 struct ResourceRequest {
@@ -1026,6 +1068,46 @@ fn response(status: StatusCode, content_type: &str, body: Vec<u8>) -> Response {
     response
 }
 
+fn publish_asset_file(temporary_path: &Path, destination: &Path) -> Result<AssetFile, io::Error> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| io::Error::other("VS Code asset cache has no parent directory"))?;
+    if let Err(error) =
+        fs::create_dir_all(parent).and_then(|()| fs::rename(temporary_path, destination))
+    {
+        let _ = fs::remove_file(temporary_path);
+        return Err(error);
+    }
+    Ok(AssetFile {
+        path: destination.to_path_buf(),
+        length: fs::metadata(destination)?.len(),
+    })
+}
+
+fn temporary_asset_path(data_dir: &Path) -> Result<PathBuf, io::Error> {
+    let directory = data_dir.join("tmp");
+    fs::create_dir_all(&directory)?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    Ok(directory.join(format!("vscode-{}-{nonce}.part", std::process::id())))
+}
+
+fn cleanup_temporary_assets(data_dir: &Path) {
+    let directory = data_dir.join("tmp");
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("vscode-") && name.ends_with(".part") {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
 fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>, io::Error> {
     match fs::read(path) {
         Ok(contents) => Ok(Some(contents)),
@@ -1039,6 +1121,23 @@ fn read_asset_cache_metadata(path: &Path) -> Result<Option<String>, VscodeError>
         return Ok(None);
     };
     Ok(toml::from_str::<AssetCacheMetadata>(&String::from_utf8_lossy(&contents))?.content_type)
+}
+
+fn is_stale_compressed_cache_file(
+    path: &Path,
+    content_type: Option<&str>,
+) -> Result<bool, io::Error> {
+    let mut file = fs::File::open(path)?;
+    let mut prefix = [0_u8; 3];
+    let mut read = 0;
+    while read < prefix.len() {
+        let count = file.read(&mut prefix[read..])?;
+        if count == 0 {
+            break;
+        }
+        read += count;
+    }
+    Ok(is_stale_compressed_cache(&prefix[..read], content_type))
 }
 
 fn is_stale_compressed_cache(bytes: &[u8], content_type: Option<&str>) -> bool {
