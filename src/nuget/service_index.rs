@@ -141,6 +141,17 @@ impl NugetAdapter {
 impl NugetService {
     pub fn new(root_url: Url, data_dir: impl Into<PathBuf>) -> Self {
         let data_dir = data_dir.into();
+        let temporary_root = data_dir.join("tmp");
+        let _ = fs::create_dir_all(&temporary_root);
+        if let Ok(entries) = fs::read_dir(&temporary_root) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with("nuget-") && name.ends_with(".part") {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
         Self {
             root_url,
             audit: AuditSink::new(data_dir.clone()),

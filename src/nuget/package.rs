@@ -1,17 +1,19 @@
 use std::{
-    fs, io,
+    fs,
+    io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
     body::Body,
-    http::{StatusCode, header::CONTENT_TYPE},
+    http::{StatusCode, header::CONTENT_LENGTH, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
+use tokio_util::io::ReaderStream;
 use url::Url;
 
 use crate::{
@@ -42,6 +44,11 @@ struct PackageIndexDescriptor {
     validated_at_unix_secs: u64,
 }
 
+struct PackageFile {
+    path: PathBuf,
+    length: u64,
+}
+
 pub(crate) async fn serve(
     service: &NugetService,
     entry_name: &str,
@@ -55,7 +62,7 @@ pub(crate) async fn serve(
         };
     }
     match serve_package(service, entry_name, path, pool).await {
-        Ok(body) => response(StatusCode::OK, "application/octet-stream", body),
+        Ok(file) => package_file_response(file).await,
         Err(error) => package_error_response(&error),
     }
 }
@@ -301,7 +308,7 @@ async fn serve_package(
     entry_name: &str,
     path: &str,
     pool: &SourcePool,
-) -> Result<Vec<u8>, NugetError> {
+) -> Result<PackageFile, NugetError> {
     let (package_id, version) = parse_package_path(path)?;
     let binding_path = binding_path(&service.data_dir, entry_name, &package_id, &version);
     let initial_snapshot = service.service_index(entry_name, pool).await?;
@@ -439,35 +446,37 @@ async fn serve_package(
             &binding.package_id,
             &binding.version,
         );
-        if let Some(bytes) = read_if_present(&cache_path)? {
-            if cache_is_valid(&bytes, &binding, &cache_path)? {
-                let _ = crate::retention::note_access(&cache_path);
-                let _ = crate::retention::note_access(&package_cache_metadata_path(&cache_path));
-                service.record_package(
-                    entry_name,
-                    &package_id,
-                    &version,
-                    &binding.selected_proxy,
-                    "hit",
-                    None,
-                )?;
-                return Ok(bytes);
-            }
+        if cache_path.exists() && cache_is_valid(&cache_path, &binding)? {
+            let _ = crate::retention::note_access(&cache_path);
+            let _ = crate::retention::note_access(&package_cache_metadata_path(&cache_path));
+            service.record_package(
+                entry_name,
+                &package_id,
+                &version,
+                &binding.selected_proxy,
+                "hit",
+                None,
+            )?;
+            return package_file(&cache_path);
+        }
+        if cache_path.exists() {
             let _ = fs::remove_file(&cache_path);
             let _ = fs::remove_file(package_cache_metadata_path(&cache_path));
         }
 
         let upstream_url = Url::parse(&binding.upstream_url)
             .map_err(|_| NugetError::InvalidPackage("stored package URL is invalid".to_owned()))?;
+        let temporary_path = temporary_package_path(&service.data_dir)?;
         let upstream = match pool
-            .fetch_discovered_url_following_safe_redirects(
+            .fetch_discovered_url_following_safe_redirects_to_file(
                 &binding.selected_proxy,
                 upstream_url,
                 FetchOperation::Artifact,
+                temporary_path,
             )
             .await
         {
-            Ok(response) => response,
+            Ok(file) => file,
             Err(error) if group_fallback_source(&error, pool, entry_name) => {
                 if !is_source_not_found(&error) {
                     all_not_found = false;
@@ -492,9 +501,10 @@ async fn serve_package(
             }
             Err(error) => return Err(error.into()),
         };
-        let upstream_verified = match verify_package(&upstream.body, &binding) {
+        let upstream_verified = match verify_package_file(&upstream.path, &binding) {
             Ok(verified) => verified,
             Err(error @ NugetError::PackageIntegrityFailure(_)) if is_group => {
+                let _ = fs::remove_file(&upstream.path);
                 all_not_found = false;
                 failures.push(format!("{}: {error}", member.name));
                 service.record_object(
@@ -510,9 +520,12 @@ async fn serve_package(
                 )?;
                 continue;
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                let _ = fs::remove_file(&upstream.path);
+                return Err(error);
+            }
         };
-        publish_verified(&cache_path, &upstream.body, &binding, upstream_verified)?;
+        publish_verified_file(&cache_path, &upstream.path, &binding, upstream_verified)?;
         if binding.selected_proxy != preferred {
             persist_binding(&service.data_dir, entry_name, &binding)?;
             if let Some(snapshot) = fallback_snapshot {
@@ -527,7 +540,7 @@ async fn serve_package(
             "published",
             None,
         )?;
-        return Ok(upstream.body);
+        return package_file(&cache_path);
     }
 
     service.record_object(
@@ -676,9 +689,9 @@ fn append_path(base_url: &Url, relative: &str) -> Url {
     url
 }
 
-fn verify_package(bytes: &[u8], binding: &PackageBinding) -> Result<bool, NugetError> {
+fn verify_package_file(path: &Path, binding: &PackageBinding) -> Result<bool, NugetError> {
     let Some(expected) = binding.package_hash.as_deref() else {
-        validate_nupkg(bytes)?;
+        validate_nupkg_file(path)?;
         return Ok(false);
     };
     let Some(algorithm) = binding.package_hash_algorithm.as_deref() else {
@@ -689,16 +702,16 @@ fn verify_package(bytes: &[u8], binding: &PackageBinding) -> Result<bool, NugetE
     let expected = STANDARD
         .decode(expected)
         .map_err(|_| NugetError::InvalidPackage("package hash is not valid base64".to_owned()))?;
-    let matches = match algorithm.to_ascii_uppercase().as_str() {
-        "SHA512" => Sha512::digest(bytes).as_slice() == expected.as_slice(),
-        "SHA256" => Sha256::digest(bytes).as_slice() == expected.as_slice(),
+    let actual = match algorithm.to_ascii_uppercase().as_str() {
+        "SHA512" => hash_file::<Sha512>(path)?,
+        "SHA256" => hash_file::<Sha256>(path)?,
         _ => {
             return Err(NugetError::InvalidPackage(format!(
                 "unsupported package hash algorithm `{algorithm}`"
             )));
         }
     };
-    if !matches {
+    if actual != expected {
         return Err(NugetError::PackageIntegrityFailure(
             "package content digest does not match registration".to_owned(),
         ));
@@ -706,25 +719,61 @@ fn verify_package(bytes: &[u8], binding: &PackageBinding) -> Result<bool, NugetE
     Ok(true)
 }
 
-fn validate_nupkg(bytes: &[u8]) -> Result<(), NugetError> {
-    if bytes.len() < 22 || (!bytes.starts_with(b"PK\x03\x04") && !bytes.starts_with(b"PK\x05\x06"))
-    {
+fn hash_file<D: Digest>(path: &Path) -> Result<Vec<u8>, NugetError> {
+    let mut file = fs::File::open(path)?;
+    let mut hasher = D::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize().to_vec())
+}
+
+fn hash_file_sha256(path: &Path) -> Result<String, NugetError> {
+    Ok(hash_file::<Sha256>(path)?
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn validate_nupkg_file(path: &Path) -> Result<(), NugetError> {
+    let mut file = fs::File::open(path)?;
+    let length = file.metadata()?.len();
+    if length < 22 {
         return Err(NugetError::PackageIntegrityFailure(
             "package content is not a ZIP archive".to_owned(),
         ));
     }
-    let search_start = bytes.len().saturating_sub(65_557);
-    let eocd = bytes[search_start..]
+    let mut header = [0_u8; 4];
+    file.read_exact(&mut header)?;
+    if header != *b"PK\x03\x04" && header != *b"PK\x05\x06" {
+        return Err(NugetError::PackageIntegrityFailure(
+            "package content is not a ZIP archive".to_owned(),
+        ));
+    }
+    let tail_length = usize::try_from(length.min(65_557)).expect("ZIP tail length fits usize");
+    file.seek(SeekFrom::End(-(tail_length as i64)))?;
+    let mut tail = vec![0_u8; tail_length];
+    file.read_exact(&mut tail)?;
+    let eocd = tail
         .windows(4)
         .rposition(|window| window == b"PK\x05\x06")
-        .map(|offset| search_start + offset)
         .ok_or_else(|| {
             NugetError::PackageIntegrityFailure(
                 "package content has no ZIP end-of-central-directory record".to_owned(),
             )
         })?;
-    let comment_length = u16::from_le_bytes([bytes[eocd + 20], bytes[eocd + 21]]) as usize;
-    if eocd + 22 + comment_length > bytes.len() {
+    if eocd + 22 > tail.len() {
+        return Err(NugetError::PackageIntegrityFailure(
+            "package ZIP end record is truncated".to_owned(),
+        ));
+    }
+    let comment_length = u16::from_le_bytes([tail[eocd + 20], tail[eocd + 21]]) as usize;
+    if eocd + 22 + comment_length > tail.len() {
         return Err(NugetError::PackageIntegrityFailure(
             "package ZIP end record is truncated".to_owned(),
         ));
@@ -732,12 +781,8 @@ fn validate_nupkg(bytes: &[u8]) -> Result<(), NugetError> {
     Ok(())
 }
 
-fn cache_is_valid(
-    bytes: &[u8],
-    binding: &PackageBinding,
-    cache_path: &Path,
-) -> Result<bool, NugetError> {
-    match verify_package(bytes, binding) {
+fn cache_is_valid(cache_path: &Path, binding: &PackageBinding) -> Result<bool, NugetError> {
+    match verify_package_file(cache_path, binding) {
         Ok(true) => Ok(true),
         Ok(false) => {
             let Some(metadata) =
@@ -746,15 +791,35 @@ fn cache_is_valid(
                 return Ok(false);
             };
             Ok(metadata.source_fingerprint == binding.source_fingerprint
-                && metadata.local_sha256 == format!("{:x}", Sha256::digest(bytes)))
+                && metadata.local_sha256 == hash_file_sha256(cache_path)?)
         }
         Err(_) => Ok(false),
     }
 }
 
-fn publish_verified(
+fn package_file(path: &Path) -> Result<PackageFile, NugetError> {
+    Ok(PackageFile {
+        path: path.to_path_buf(),
+        length: fs::metadata(path)?.len(),
+    })
+}
+
+fn temporary_package_path(data_dir: &Path) -> Result<PathBuf, NugetError> {
+    let directory = data_dir.join("tmp");
+    fs::create_dir_all(&directory)?;
+    Ok(directory.join(format!(
+        "nuget-{}-{}.part",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    )))
+}
+
+fn publish_verified_file(
     path: &Path,
-    bytes: &[u8],
+    temporary: &Path,
     binding: &PackageBinding,
     upstream_verified: bool,
 ) -> Result<(), NugetError> {
@@ -762,36 +827,22 @@ fn publish_verified(
         .parent()
         .ok_or_else(|| io::Error::other("NuGet package cache has no parent"))?;
     fs::create_dir_all(parent)?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| io::Error::other("NuGet package cache has no file name"))?;
-    let temporary = parent.join(format!(
-        ".{file_name}.{}.{}.tmp",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(io::Error::other)?
-            .as_nanos()
-    ));
-    fs::write(&temporary, bytes)?;
-    let verified = fs::read(&temporary)?;
-    if let Err(error) = verify_package(&verified, binding) {
-        let _ = fs::remove_file(&temporary);
-        return Err(error);
-    }
-    fs::rename(&temporary, path).map_err(|error| {
-        let _ = fs::remove_file(&temporary);
+    fs::rename(temporary, path).map_err(|error| {
+        let _ = fs::remove_file(temporary);
         io::Error::other(error)
     })?;
-    atomic_write(
+    let local_sha256 = hash_file_sha256(path)?;
+    if let Err(error) = atomic_write(
         &package_cache_metadata_path(path),
         &serde_json::to_vec(&PackageCacheMetadata {
-            local_sha256: format!("{:x}", Sha256::digest(bytes)),
+            local_sha256,
             upstream_verified,
             source_fingerprint: binding.source_fingerprint.clone(),
         })?,
-    )?;
+    ) {
+        let _ = fs::remove_file(path);
+        return Err(error.into());
+    }
     Ok(())
 }
 
@@ -866,6 +917,23 @@ fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>, io::Error> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
+}
+
+async fn package_file_response(file: PackageFile) -> Response {
+    let handle = match tokio::fs::File::open(&file.path).await {
+        Ok(handle) => handle,
+        Err(error) => return package_error_response(&NugetError::Storage(error)),
+    };
+    let mut response =
+        (StatusCode::OK, Body::from_stream(ReaderStream::new(handle))).into_response();
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/octet-stream"),
+    );
+    if let Ok(length) = axum::http::HeaderValue::from_str(&file.length.to_string()) {
+        response.headers_mut().insert(CONTENT_LENGTH, length);
+    }
+    response
 }
 
 fn response(status: StatusCode, content_type: &str, body: Vec<u8>) -> Response {

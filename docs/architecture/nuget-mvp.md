@@ -96,6 +96,8 @@ registration 文档中的 JSON-LD `@context` 属于术语定义，不参与重�
 package content 首期只支持 restore 所需的 `.nupkg` 下载。下载前必须由
 registration 或 service index 的受限资源关系证明其属于当前 package ID/version；
 下载内容写入临时文件，完成可用的摘要或内容校验后再原子发布。
+缓存命中从已校验的文件流式返回，不把整个包读入内存；服务启动时会清理遗留的
+`nuget-*.part` 临时文件，避免异常退出后长期累积。
 
 如果当前 NuGet 上游未提供可用摘要，适配器可以记录本地 SHA-256 作为缓存校验
 信息，但不能声称完成上游声明的完整性验证。完整性失败不得返回成功内容，也

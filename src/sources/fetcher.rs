@@ -220,6 +220,38 @@ impl HttpFetcher {
         allow_private_initial: bool,
         timeout: Duration,
     ) -> Result<FetchResponse, FetchError> {
+        let (url, response) = self
+            .safe_redirect_response(url, require_https, allow_private_initial, timeout)
+            .await?;
+        self.response_bytes(url, Ok(response)).await
+    }
+
+    pub(crate) async fn fetch_safe_redirects_to_file(
+        &self,
+        url: Url,
+        require_https: bool,
+        allow_private_initial: bool,
+        timeout: Duration,
+        path: PathBuf,
+    ) -> Result<FetchedFile, FetchError> {
+        let (url, response) = self
+            .safe_redirect_response(url, require_https, allow_private_initial, timeout)
+            .await?;
+        let cleanup_path = path.clone();
+        let result = self.response_file(url, response, path).await;
+        if result.is_err() {
+            let _ = tokio::fs::remove_file(&cleanup_path).await;
+        }
+        result
+    }
+
+    async fn safe_redirect_response(
+        &self,
+        url: Url,
+        require_https: bool,
+        allow_private_initial: bool,
+        timeout: Duration,
+    ) -> Result<(Url, reqwest::Response), FetchError> {
         let original_url = url.clone();
         let mut current_url = url;
         for _ in 0..=3 {
@@ -246,7 +278,7 @@ impl HttpFetcher {
                 current_url = next_url;
                 continue;
             }
-            return self.response_bytes(current_url, Ok(response)).await;
+            return Ok((current_url, response));
         }
         Err(FetchError::RegistryRedirectLimit(current_url))
     }

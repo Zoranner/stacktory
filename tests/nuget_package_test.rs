@@ -66,6 +66,63 @@ async fn package_content_is_verified_and_reused_from_source_bound_cache() {
             .join("stores/nuget/artifacts/official/objects/package/foo/1.0.0/foo.1.0.0.nupkg")
             .exists()
     );
+    assert!(!has_part_files(data_dir.path()));
+}
+
+#[tokio::test]
+async fn package_content_is_streamed_and_temporary_files_are_cleaned_up() {
+    let comment = vec![b'x'; 60 * 1024];
+    let package = valid_nupkg_with_comment(&comment);
+    let package_hash = STANDARD.encode(Sha512::digest(&package));
+    let (upstream, address) =
+        start_package_server(package.clone(), package_hash, Arc::new(AtomicUsize::new(0))).await;
+    let data_dir = tempdir().expect("data directory");
+    let router = nuget_router(upstream, address, data_dir.path());
+
+    prime_registration(&router).await;
+    let path = "/mirror/nuget/official/package/foo/1.0.0/foo.1.0.0.nupkg";
+    let expected_length = package.len().to_string();
+    for _ in 0..2 {
+        let response = router
+            .clone()
+            .oneshot(get_request(path))
+            .await
+            .expect("streamed package response");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok()),
+            Some(expected_length.as_str())
+        );
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("streamed package body"),
+            package
+        );
+    }
+    assert!(!has_part_files(data_dir.path()));
+}
+
+#[test]
+fn constructor_removes_stale_nuget_temporary_files() {
+    let data_dir = tempdir().expect("data directory");
+    let temporary = data_dir.path().join("tmp");
+    std::fs::create_dir_all(&temporary).expect("temporary directory");
+    let stale_nuget = temporary.join("nuget-stale.part");
+    let docker_temp = temporary.join("docker-stale.part");
+    std::fs::write(&stale_nuget, b"stale").expect("stale NuGet temp file");
+    std::fs::write(&docker_temp, b"docker").expect("Docker temp file");
+
+    let _adapter = NugetAdapter::new(
+        Url::parse("http://127.0.0.1:18761").expect("root URL"),
+        data_dir.path(),
+    );
+
+    assert!(!stale_nuget.exists());
+    assert!(docker_temp.exists());
 }
 
 #[tokio::test]
@@ -93,6 +150,7 @@ async fn package_content_digest_failure_does_not_publish_or_return_the_bad_bytes
             .join("stores/nuget/artifacts/official/objects/package/foo/1.0.0/foo.1.0.0.nupkg")
             .exists()
     );
+    assert!(!has_part_files(data_dir.path()));
 }
 
 #[tokio::test]
@@ -229,6 +287,16 @@ fn valid_nupkg() -> Vec<u8> {
         0x50, 0x4b, 0x05, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ]
+}
+
+fn has_part_files(data_dir: &Path) -> bool {
+    std::fs::read_dir(data_dir.join("tmp"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .any(|entry| entry.file_name().to_string_lossy().ends_with(".part"))
+        })
+        .unwrap_or(false)
 }
 
 fn valid_nupkg_with_comment(comment: &[u8]) -> Vec<u8> {

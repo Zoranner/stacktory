@@ -661,6 +661,51 @@ impl SourcePool {
         .await
     }
 
+    pub(crate) async fn fetch_discovered_url_following_safe_redirects_to_file(
+        &self,
+        source_name: &str,
+        url: Url,
+        operation: FetchOperation,
+        path: PathBuf,
+    ) -> Result<FetchedFile, SourcePoolError> {
+        let _artifact_permit = self.artifact_permit(operation).await;
+        let source = self
+            .graph
+            .get(source_name)
+            .ok_or_else(|| SourcePoolError::UnknownEntry(source_name.to_owned()))?;
+        if source.source_type != crate::SourceType::Proxy || !valid_discovered_url(source, &url) {
+            return Err(SourcePoolError::InvalidConfiguredUrl(url.to_string()));
+        }
+        let allow_private = source
+            .base_url
+            .as_ref()
+            .is_some_and(|base_url| same_origin(base_url, &url));
+        match self
+            .fetcher
+            .fetch_safe_redirects_to_file(
+                url.clone(),
+                source.require_https,
+                allow_private,
+                operation.timeout(),
+                path,
+            )
+            .await
+        {
+            Ok(file) => Ok(file),
+            Err(error) if error.is_retryable() => Err(SourcePoolError::AllSourcesFailed {
+                entry_name: source_name.to_owned(),
+                request_key: url.path().to_owned(),
+                failures: error.to_string(),
+                status: error.status_code(),
+            }),
+            Err(error) => Err(SourcePoolError::TerminalSourceError {
+                source_name: source_name.to_owned(),
+                status: error.status_code().unwrap_or_default(),
+                error: error.to_string(),
+            }),
+        }
+    }
+
     pub async fn fetch_discovered_url_with_query_following_safe_redirects(
         &self,
         source_name: &str,
