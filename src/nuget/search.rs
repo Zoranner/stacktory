@@ -31,7 +31,7 @@ async fn search(
     pool: &SourcePool,
 ) -> Result<Vec<u8>, NugetError> {
     if query.len() > 16 * 1024 || query.chars().any(char::is_control) {
-        return Err(NugetError::InvalidSearch(
+        return Err(NugetError::InvalidSearchRequest(
             "search query is too long or contains control characters".to_owned(),
         ));
     }
@@ -327,11 +327,12 @@ fn response(status: StatusCode, content_type: &str, body: Vec<u8>) -> Response {
 fn error_response(error: &NugetError) -> Response {
     let status = match error {
         NugetError::Source(SourcePoolError::UnknownEntry(_)) => StatusCode::NOT_FOUND,
-        NugetError::InvalidSearch(_) => StatusCode::BAD_REQUEST,
+        NugetError::InvalidSearchRequest(_) => StatusCode::BAD_REQUEST,
         NugetError::Source(SourcePoolError::TerminalSourceError { status, .. }) => {
             StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY)
         }
         NugetError::Source(_)
+        | NugetError::InvalidSearch(_)
         | NugetError::InvalidServiceIndex(_)
         | NugetError::InvalidRegistration(_)
         | NugetError::InvalidRegistrationPath(_)

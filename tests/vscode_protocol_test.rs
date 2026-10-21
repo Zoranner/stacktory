@@ -12,6 +12,7 @@ use axum::{
     Router,
     body::Body,
     http::{HeaderMap, Request, StatusCode},
+    response::IntoResponse,
     routing::{get, post},
 };
 use stacktory::{
@@ -147,6 +148,62 @@ async fn marketplace_query_uses_fixed_gallery_headers_and_preserves_request_body
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(observed.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn marketplace_client_and_upstream_json_errors_use_distinct_statuses() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let upstream = Router::new().route(
+        "/extensionquery",
+        post(|| async { (StatusCode::OK, "not-json").into_response() }),
+    );
+    tokio::spawn(async move {
+        axum::serve(listener, upstream)
+            .await
+            .expect("gallery server");
+    });
+    let data_dir = tempdir().expect("data directory");
+    let registry = AdapterRegistry::new()
+        .with_adapter(
+            "vscode",
+            Arc::new(
+                SourcePool::new(
+                    "vscode",
+                    SourceGraph::new(vec![proxy("official", &format!("http://{address}"))])
+                        .expect("source graph"),
+                )
+                .expect("source pool"),
+            ),
+            Arc::new(VscodeAdapter::new(
+                Url::parse("http://127.0.0.1:18761").expect("root URL"),
+                data_dir.path(),
+            )),
+        )
+        .expect("registry");
+    let router = router_with_registry(registry);
+
+    let request_error = router
+        .clone()
+        .oneshot(
+            Request::post("/mirror/vscode/official/extensionquery")
+                .body(Body::from("not-json"))
+                .expect("invalid query request"),
+        )
+        .await
+        .expect("invalid query response");
+    assert_eq!(request_error.status(), StatusCode::BAD_REQUEST);
+
+    let upstream_error = router
+        .oneshot(
+            Request::post("/mirror/vscode/official/extensionquery")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"filters":[],"assetTypes":[],"flags":914}"#))
+                .expect("query request"),
+        )
+        .await
+        .expect("invalid upstream response");
+    assert_eq!(upstream_error.status(), StatusCode::BAD_GATEWAY);
 }
 
 #[tokio::test]

@@ -10,6 +10,7 @@ use axum::{
     Router,
     body::Body,
     http::{Request, StatusCode},
+    response::IntoResponse,
     routing::get,
 };
 use sha2::{Digest, Sha256};
@@ -35,6 +36,57 @@ async fn health_route_reports_service_availability() {
         .expect("response");
 
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn rustup_direct_source_not_found_preserves_the_upstream_status() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let upstream = Router::new().route(
+        "/{*path}",
+        get(|| async { StatusCode::NOT_FOUND.into_response() }),
+    );
+    tokio::spawn(async move {
+        axum::serve(listener, upstream)
+            .await
+            .expect("upstream server");
+    });
+    let data_dir = tempdir().expect("temporary directory");
+    let service = RustupService::new(Config {
+        listen_address: "127.0.0.1".parse().expect("address"),
+        listen_port: 18761,
+        data_dir: data_dir.path().to_path_buf(),
+        log_dir: PathBuf::from("logs"),
+        root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
+        proxy_url: None,
+        proxy_no_proxy: None,
+        retention: RetentionConfig::default(),
+        rustup: RustupConfig {
+            refresh_interval_secs: 3600,
+            channels: vec!["stable".to_owned()],
+            sources: SourceGraph::new(vec![source("test", format!("http://{address}"))])
+                .expect("source graph"),
+        },
+        cargo: None,
+        vscode: None,
+        docker: None,
+        npm: None,
+        nuget: None,
+        pypi: None,
+        upm: None,
+    })
+    .expect("service");
+
+    let response = router_with_rustup(Arc::new(service))
+        .oneshot(
+            Request::get("/mirror/rustup/test/dist/channel-rust-stable.toml")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

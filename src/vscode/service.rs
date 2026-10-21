@@ -628,7 +628,9 @@ fn rewrite_gallery_query(
     entry_name: &str,
     source_name: &str,
 ) -> Result<RewrittenGalleryQuery, VscodeError> {
-    let mut query: Value = serde_json::from_slice(source)?;
+    let mut query: Value = serde_json::from_slice(source).map_err(|error| {
+        VscodeError::InvalidGalleryResponse(format!("response JSON is invalid: {error}"))
+    })?;
     let results = query
         .get_mut("results")
         .and_then(Value::as_array_mut)
@@ -825,7 +827,9 @@ fn rewrite_gallery_query(
             extension_descriptors,
             asset_base_descriptors,
         })
-        .map_err(VscodeError::RequestJson)
+        .map_err(|error| {
+            VscodeError::InvalidGalleryResponse(format!("rewritten response is invalid: {error}"))
+        })
 }
 
 fn parse_asset_id(path: &str) -> Option<String> {

@@ -87,6 +87,29 @@ async fn search_resource_is_exposed_and_query_is_forwarded_safely() {
     assert!(!String::from_utf8_lossy(&body).contains("nuget.example"));
 }
 
+#[tokio::test]
+async fn search_request_errors_and_upstream_response_errors_use_distinct_statuses() {
+    let (upstream, address) = start_search_server().await;
+    let data_dir = tempdir().expect("data directory");
+    let router = search_router(upstream, address, data_dir.path());
+
+    let invalid_query = "a".repeat(16 * 1024 + 1);
+    let request_error = router
+        .clone()
+        .oneshot(get_request(&format!(
+            "/mirror/nuget/official/search/query?q={invalid_query}"
+        )))
+        .await
+        .expect("invalid search request response");
+    assert_eq!(request_error.status(), StatusCode::BAD_REQUEST);
+
+    let upstream_error = router
+        .oneshot(get_request("/mirror/nuget/official/search/query?q=invalid"))
+        .await
+        .expect("invalid search response");
+    assert_eq!(upstream_error.status(), StatusCode::BAD_GATEWAY);
+}
+
 fn get_request(path: &str) -> Request<Body> {
     Request::get(path).body(Body::empty()).expect("request")
 }
@@ -161,6 +184,9 @@ async fn start_search_server() -> (Url, SocketAddr) {
         .route(
             "/query",
             get(move |OriginalUri(uri): OriginalUri| async move {
+                if uri.query() == Some("q=invalid") {
+                    return (StatusCode::OK, "not-json").into_response();
+                }
                 if uri.query() != Some("q=Newtonsoft.Json&take=5") {
                     return (StatusCode::BAD_REQUEST, "unexpected query").into_response();
                 }

@@ -251,6 +251,14 @@ fn service_error_response(error: &ServiceError) -> axum::response::Response {
         ServiceError::Source(crate::sources::SourcePoolError::UnknownEntry(_)) => {
             StatusCode::NOT_FOUND
         }
+        ServiceError::Source(crate::sources::SourcePoolError::TerminalSourceError {
+            status,
+            ..
+        }) => StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
+        ServiceError::Source(crate::sources::SourcePoolError::AllSourcesFailed {
+            status: Some(status),
+            ..
+        }) => StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
         ServiceError::Storage(StorageError::MissingSnapshot(_)) => StatusCode::SERVICE_UNAVAILABLE,
         ServiceError::Source(_)
         | ServiceError::Rewrite(_)

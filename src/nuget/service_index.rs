@@ -59,6 +59,8 @@ pub enum NugetError {
     InvalidPackage(String),
     #[error("NuGet package version index is invalid: {0}")]
     InvalidPackageIndex(String),
+    #[error("NuGet search request is invalid: {0}")]
+    InvalidSearchRequest(String),
     #[error("NuGet search response is invalid: {0}")]
     InvalidSearch(String),
     #[error("NuGet vulnerability index is invalid: {0}")]
@@ -863,6 +865,7 @@ fn nuget_error_response(error: &NugetError) -> Response {
             ..
         }) => StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
         NugetError::InvalidVulnerabilityPath(_) => StatusCode::NOT_FOUND,
+        NugetError::InvalidSearchRequest(_) => StatusCode::BAD_REQUEST,
         NugetError::Source(_)
         | NugetError::InvalidServiceIndex(_)
         | NugetError::InvalidRegistration(_)
