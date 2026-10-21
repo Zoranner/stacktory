@@ -85,6 +85,60 @@ async fn registration_index_rewrites_leaf_and_package_content_relationships() {
 }
 
 #[tokio::test]
+async fn registration_cache_rebases_after_the_public_root_changes() {
+    let (upstream, address) = start_registration_server(false, false).await;
+    let data_dir = tempdir().expect("data directory");
+    let first = nuget_router_with_root(
+        upstream.clone(),
+        address,
+        data_dir.path(),
+        Url::parse("http://127.0.0.1:18761").expect("first root URL"),
+    );
+    let second = nuget_router_with_root(
+        upstream,
+        address,
+        data_dir.path(),
+        Url::parse("https://pkg2.example").expect("second root URL"),
+    );
+
+    let service_index = first
+        .clone()
+        .oneshot(get_request("/mirror/nuget/official/v3/index.json"))
+        .await
+        .expect("service index response");
+    assert_eq!(service_index.status(), axum::http::StatusCode::OK);
+    let registration = first
+        .oneshot(get_request(
+            "/mirror/nuget/official/registration/foo/index.json",
+        ))
+        .await
+        .expect("first registration response");
+    assert_eq!(registration.status(), axum::http::StatusCode::OK);
+
+    let rebased = second
+        .oneshot(get_request(
+            "/mirror/nuget/official/registration/foo/index.json",
+        ))
+        .await
+        .expect("rebased registration response");
+    assert_eq!(rebased.status(), axum::http::StatusCode::OK);
+    let rebased: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(rebased.into_body(), usize::MAX)
+            .await
+            .expect("rebased registration body"),
+    )
+    .expect("rebased registration JSON");
+    assert_eq!(
+        rebased["items"][0]["@id"],
+        "https://pkg2.example/mirror/nuget/official/registration/foo/1.0.0.json"
+    );
+    assert_eq!(
+        rebased["items"][0]["packageContent"],
+        "https://pkg2.example/mirror/nuget/official/package/foo/1.0.0/foo.1.0.0.nupkg"
+    );
+}
+
+#[tokio::test]
 async fn registration_rejects_package_content_outside_the_discovered_package_resource() {
     let (upstream, address) = start_registration_server(true, false).await;
     let data_dir = tempdir().expect("data directory");
@@ -223,6 +277,20 @@ fn proxy(name: &str, base_url: &str) -> SourceConfig {
 }
 
 fn nuget_router(upstream: Url, address: SocketAddr, data_dir: &Path) -> axum::Router {
+    nuget_router_with_root(
+        upstream,
+        address,
+        data_dir,
+        Url::parse("http://127.0.0.1:18761").expect("root URL"),
+    )
+}
+
+fn nuget_router_with_root(
+    upstream: Url,
+    address: SocketAddr,
+    data_dir: &Path,
+    root_url: Url,
+) -> axum::Router {
     let registry = AdapterRegistry::new()
         .with_adapter(
             "nuget",
@@ -236,10 +304,7 @@ fn nuget_router(upstream: Url, address: SocketAddr, data_dir: &Path) -> axum::Ro
                 )
                 .expect("source pool"),
             ),
-            Arc::new(NugetAdapter::new(
-                Url::parse("http://127.0.0.1:18761").expect("root URL"),
-                data_dir,
-            )),
+            Arc::new(NugetAdapter::new(root_url, data_dir)),
         )
         .expect("registry");
     router_with_registry(registry)

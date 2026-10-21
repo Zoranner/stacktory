@@ -40,6 +40,8 @@ pub(crate) struct PackageBinding {
 struct RegistrationDescriptor {
     selected_proxy: String,
     upstream_url: String,
+    #[serde(default)]
+    public_base_url: String,
 }
 
 #[derive(Debug)]
@@ -73,16 +75,29 @@ async fn serve_registration(
     let descriptor_path =
         registration_descriptor_path(&service.data_dir, entry_name, &request.relative);
 
-    if let (Some(body), Some(descriptor)) = (
+    if let (Some(mut body), Some(mut descriptor)) = (
         read_if_present(&cache_path)?,
         read_descriptor(&descriptor_path)?,
-    ) && descriptor.selected_proxy == snapshot.selected_proxy
+    ) && !descriptor.public_base_url.is_empty()
+        && descriptor.selected_proxy == snapshot.selected_proxy
         && pool.proxy_members(entry_name).is_some_and(|members| {
             members
                 .iter()
                 .any(|member| member.name == descriptor.selected_proxy)
         })
     {
+        if descriptor.public_base_url != service.root_url.as_str() {
+            if let Some(rebased) = crate::nuget::render::rebase_public_urls(
+                &body,
+                &descriptor.public_base_url,
+                service.root_url.as_str(),
+            )? {
+                atomic_write(&cache_path, &rebased)?;
+                body = rebased;
+            }
+            descriptor.public_base_url = service.root_url.to_string();
+            atomic_write(&descriptor_path, &serde_json::to_vec(&descriptor)?)?;
+        }
         service.record_object(
             "nuget_registration_read",
             NugetAuditDetails {
@@ -184,6 +199,7 @@ async fn serve_registration(
             &serde_json::to_vec(&RegistrationDescriptor {
                 selected_proxy: source_snapshot.selected_proxy.clone(),
                 upstream_url: upstream_url.to_string(),
+                public_base_url: service.root_url.to_string(),
             })?,
         )?;
         for binding in bindings.values() {

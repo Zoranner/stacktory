@@ -1,6 +1,7 @@
 mod package;
 mod path;
 mod registration;
+mod render;
 mod search;
 mod service_index;
 mod vulnerability;

@@ -77,6 +77,8 @@ pub enum NugetError {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct ServiceIndexDescriptor {
     pub(crate) selected_proxy: String,
+    #[serde(default)]
+    pub(crate) public_base_url: String,
     pub(crate) registration_url: Option<String>,
     #[serde(default)]
     pub(crate) registration_urls: Vec<String>,
@@ -185,16 +187,29 @@ impl NugetService {
             .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
         let cache_path = self.service_index_path(entry_name);
         let descriptor_path = self.service_index_descriptor_path(entry_name);
-        if let (Some(body), Some(descriptor)) = (
+        if let (Some(mut body), Some(mut descriptor)) = (
             read_if_present(&cache_path)?,
             read_descriptor(&descriptor_path)?,
-        ) && is_valid_cached_service_index(&body, &descriptor)
+        ) && !descriptor.public_base_url.is_empty()
+            && is_valid_cached_service_index(&body, &descriptor)
             && pool.proxy_members(entry_name).is_some_and(|configured| {
                 configured
                     .iter()
                     .any(|source| source.name == descriptor.selected_proxy)
             })
         {
+            if descriptor.public_base_url != self.root_url.as_str() {
+                if let Some(rebased) = crate::nuget::render::rebase_public_urls(
+                    &body,
+                    &descriptor.public_base_url,
+                    self.root_url.as_str(),
+                )? {
+                    atomic_write(&cache_path, &rebased)?;
+                    body = rebased;
+                }
+                descriptor.public_base_url = self.root_url.to_string();
+                atomic_write(&descriptor_path, &serde_json::to_vec(&descriptor)?)?;
+            }
             self.record(
                 "nuget_service_index_read",
                 entry_name,
@@ -256,6 +271,7 @@ impl NugetService {
                 Ok(rewritten) => {
                     let descriptor = ServiceIndexDescriptor {
                         selected_proxy: upstream.source_name.clone(),
+                        public_base_url: self.root_url.to_string(),
                         registration_url: rewritten.registration_url.as_ref().map(Url::to_string),
                         registration_urls: rewritten
                             .registration_urls
@@ -367,6 +383,7 @@ impl NugetService {
     ) -> Result<(), NugetError> {
         let descriptor = ServiceIndexDescriptor {
             selected_proxy: snapshot.selected_proxy.clone(),
+            public_base_url: self.root_url.to_string(),
             registration_url: snapshot.registration_url.as_ref().map(Url::to_string),
             registration_urls: snapshot
                 .registration_urls

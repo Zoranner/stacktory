@@ -135,6 +135,11 @@ service index、registration、package content、漏洞索引和漏洞数据分�
 package ID/version 在不同命名入口或不同 selected proxy 下不能共享没有来源绑定的
 文件。
 
+service index、registration 和漏洞索引的 sidecar 记录生成时的公开基地址。
+读取缓存时如果 `root_url` 已变化，adapter 只重写 JSON 中的客户端可见 URL 并更新
+sidecar，不访问上游，也不删除 package content。缺少公开基地址标记的旧缓存按
+未命中重新获取。
+
 本 MVP 不做隐式 stale-while-revalidate 或跨来源拼接。metadata 缓存只有在 JSON、
 restore 资源 sidecar 和 selected proxy 仍有效时命中；package content 缓存每次命中
 仍执行已声明摘要或本地 SHA-256 校验。需要强制重新获取时由管理员清理对应

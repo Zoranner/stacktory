@@ -1,6 +1,19 @@
-use std::{net::SocketAddr, path::Path, sync::Arc};
+use std::{
+    net::SocketAddr,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
-use axum::{Router, body::Body, http::Request, routing::get};
+use axum::{
+    Router,
+    body::Body,
+    http::{Request, StatusCode},
+    response::IntoResponse,
+    routing::get,
+};
 use stacktory::{
     SourceConfig, SourceGraph, SourcePool, SourceType, http::router_with_registry,
     nuget::NugetAdapter, sources::registry::AdapterRegistry,
@@ -97,6 +110,102 @@ async fn service_index_rewrites_restore_resources_and_omits_unsupported_resource
 }
 
 #[tokio::test]
+async fn service_index_rebases_cached_public_urls_without_refetching() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let body = format!(
+        r#"{{"version":"3.0.0","resources":[
+            {{"@id":"http://nuget.example:{}/v3/registration/","@type":"RegistrationsBaseUrl/3.6.0"}},
+            {{"@id":"http://nuget.example:{}/v3-flatcontainer/","@type":"PackageBaseAddress/3.0.0.0"}}
+        ]}}"#,
+        address.port(),
+        address.port()
+    );
+    let router = Router::new().route(
+        "/v3/index.json",
+        get(move || {
+            let body = body.clone();
+            let hits = hits.clone();
+            async move {
+                if hits.fetch_add(1, Ordering::SeqCst) == 0 {
+                    body.into_response()
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                }
+            }
+        }),
+    );
+    tokio::spawn(async move {
+        axum::serve(listener, router)
+            .await
+            .expect("service index server");
+    });
+    let upstream = Url::parse(&format!("http://{address}/v3/index.json")).expect("upstream URL");
+    let data_dir = tempdir().expect("data directory");
+
+    let first = nuget_router_with_root(
+        upstream.clone(),
+        data_dir.path(),
+        Url::parse("http://127.0.0.1:18761").expect("first root URL"),
+    )
+    .oneshot(get_request("/mirror/nuget/official/v3/index.json"))
+    .await
+    .expect("first service index response");
+    assert_eq!(first.status(), axum::http::StatusCode::OK);
+    let first: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(first.into_body(), usize::MAX)
+            .await
+            .expect("first service index body"),
+    )
+    .expect("first service index JSON");
+    let first_registration = first["resources"]
+        .as_array()
+        .expect("first resources")
+        .iter()
+        .find(|resource| {
+            resource["@type"]
+                .as_str()
+                .is_some_and(|kind| kind.starts_with("RegistrationsBaseUrl"))
+        })
+        .expect("first registration resource");
+    assert_eq!(
+        first_registration["@id"],
+        "http://127.0.0.1:18761/mirror/nuget/official/registration/"
+    );
+
+    let second = nuget_router_with_root(
+        upstream,
+        data_dir.path(),
+        Url::parse("https://pkg2.example").expect("second root URL"),
+    )
+    .oneshot(get_request("/mirror/nuget/official/v3/index.json"))
+    .await
+    .expect("second service index response");
+    assert_eq!(second.status(), axum::http::StatusCode::OK);
+    let second: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(second.into_body(), usize::MAX)
+            .await
+            .expect("second service index body"),
+    )
+    .expect("second service index JSON");
+    let second_registration = second["resources"]
+        .as_array()
+        .expect("second resources")
+        .iter()
+        .find(|resource| {
+            resource["@type"]
+                .as_str()
+                .is_some_and(|kind| kind.starts_with("RegistrationsBaseUrl"))
+        })
+        .expect("second registration resource");
+    assert_eq!(
+        second_registration["@id"],
+        "https://pkg2.example/mirror/nuget/official/registration/"
+    );
+}
+
+#[tokio::test]
 async fn service_index_rejects_unknown_resource_relationships() {
     let upstream = start_server(Router::new().route(
         "/v3/index.json",
@@ -166,7 +275,7 @@ async fn service_index_returns_internal_error_when_audit_storage_fails() {
     .expect("service index cache");
     std::fs::write(
         metadata_dir.join("service-index.source"),
-        br#"{"selected_proxy":"official","registration_url":"http://127.0.0.1:9/v3/registration/","package_base_url":"http://127.0.0.1:9/v3-flatcontainer/"}"#,
+        br#"{"selected_proxy":"official","public_base_url":"http://127.0.0.1:18761","registration_url":"http://127.0.0.1:9/v3/registration/","package_base_url":"http://127.0.0.1:9/v3-flatcontainer/"}"#,
     )
     .expect("service index sidecar");
     std::fs::write(data_dir.path().join("audit"), b"not a directory").expect("audit blocker");
@@ -380,6 +489,14 @@ fn proxy(name: &str, base_url: &str) -> SourceConfig {
 }
 
 fn nuget_router(upstream: Url, data_dir: &Path) -> axum::Router {
+    nuget_router_with_root(
+        upstream,
+        data_dir,
+        Url::parse("http://127.0.0.1:18761").expect("root URL"),
+    )
+}
+
+fn nuget_router_with_root(upstream: Url, data_dir: &Path, root_url: Url) -> axum::Router {
     let registry = AdapterRegistry::new()
         .with_adapter(
             "nuget",
@@ -391,10 +508,7 @@ fn nuget_router(upstream: Url, data_dir: &Path) -> axum::Router {
                 )
                 .expect("source pool"),
             ),
-            Arc::new(NugetAdapter::new(
-                Url::parse("http://127.0.0.1:18761").expect("root URL"),
-                data_dir,
-            )),
+            Arc::new(NugetAdapter::new(root_url, data_dir)),
         )
         .expect("registry");
     router_with_registry(registry)
