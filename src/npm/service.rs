@@ -556,7 +556,11 @@ impl NpmService {
                 ))
             })?;
             let response = match pool
-                .fetch_configured_url(&member.name, upstream_url, FetchOperation::Artifact)
+                .fetch_configured_url_following_safe_redirects(
+                    &member.name,
+                    upstream_url,
+                    FetchOperation::Artifact,
+                )
                 .await
             {
                 Ok(response) => response,

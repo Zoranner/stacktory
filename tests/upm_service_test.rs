@@ -4,7 +4,10 @@ use axum::{
     Router,
     body::Body,
     extract::OriginalUri,
-    http::{Request, StatusCode, header::CONTENT_TYPE},
+    http::{
+        Request, StatusCode,
+        header::{CONTENT_TYPE, LOCATION},
+    },
     response::IntoResponse,
     routing::get,
 };
@@ -125,6 +128,47 @@ async fn upm_supports_search_version_dist_tags_and_ping_reads() {
         .await
         .expect("UPM ping response");
     assert_eq!(ping.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn upm_follows_a_safe_tarball_redirect() {
+    let artifact = b"redirected UPM package".to_vec();
+    let (upstream, _) = start_redirecting_upm_server(artifact.clone()).await;
+    let data_dir = tempdir().expect("data directory");
+    let router = upm_router(upstream, data_dir.path());
+
+    let metadata = router
+        .clone()
+        .oneshot(get_request("/mirror/upm/group/com.company.package"))
+        .await
+        .expect("UPM metadata response");
+    assert_eq!(metadata.status(), StatusCode::OK);
+    let metadata: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(metadata.into_body(), usize::MAX)
+            .await
+            .expect("UPM metadata body"),
+    )
+    .expect("UPM metadata JSON");
+    let tarball_path = Url::parse(
+        metadata["versions"]["1.0.0"]["dist"]["tarball"]
+            .as_str()
+            .expect("UPM tarball URL"),
+    )
+    .expect("UPM tarball URL")
+    .path()
+    .to_owned();
+
+    let artifact_response = router
+        .oneshot(get_request(&tarball_path))
+        .await
+        .expect("UPM tarball response");
+    assert_eq!(artifact_response.status(), StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(artifact_response.into_body(), usize::MAX)
+            .await
+            .expect("UPM tarball body"),
+        artifact
+    );
 }
 
 fn upm_router(upstream: Url, data_dir: &Path) -> axum::Router {
@@ -268,6 +312,65 @@ async fn start_upm_read_server() -> (Url, SocketAddr) {
     });
     (
         Url::parse(&format!("http://{address}")).expect("UPM read upstream URL"),
+        address,
+    )
+}
+
+async fn start_redirecting_upm_server(artifact: Vec<u8>) -> (Url, SocketAddr) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let base_url = format!("http://{address}");
+    let tarball_url = format!("{base_url}/redirect.tgz");
+    let integrity = format!(
+        "sha512-{}",
+        STANDARD.encode(Sha512::digest(b"redirected UPM package"))
+    );
+    let upstream_url = base_url.clone();
+    let router = Router::new().fallback(move |OriginalUri(uri): OriginalUri| {
+        let base_url = base_url.clone();
+        let tarball_url = tarball_url.clone();
+        let integrity = integrity.clone();
+        let artifact = artifact.clone();
+        async move {
+            if uri.path() == "/redirect.tgz" {
+                return (
+                    StatusCode::TEMPORARY_REDIRECT,
+                    [(LOCATION, format!("{base_url}/artifact.tgz"))],
+                )
+                    .into_response();
+            }
+            if uri.path() == "/artifact.tgz" {
+                return ([(CONTENT_TYPE, "application/octet-stream")], artifact).into_response();
+            }
+            (
+                [(CONTENT_TYPE, "application/json")],
+                format!(
+                    r#"{{
+                            "name": "com.company.package",
+                            "dist-tags": {{"latest":"1.0.0"}},
+                            "versions": {{
+                                "1.0.0": {{
+                                    "name": "com.company.package",
+                                    "version": "1.0.0",
+                                    "dist": {{
+                                        "tarball": "{tarball_url}",
+                                        "integrity": "{integrity}"
+                                    }}
+                                }}
+                            }}
+                        }}"#
+                ),
+            )
+                .into_response()
+        }
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, router)
+            .await
+            .expect("redirecting UPM server");
+    });
+    (
+        Url::parse(&upstream_url).expect("UPM upstream URL"),
         address,
     )
 }
