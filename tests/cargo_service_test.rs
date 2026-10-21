@@ -5,12 +5,14 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    time::{Duration, SystemTime},
 };
 
 use axum::{
     Router,
     body::Body,
     http::{Request, StatusCode},
+    response::IntoResponse,
     routing::get,
 };
 use sha2::{Digest, Sha256};
@@ -854,6 +856,127 @@ async fn wrong_crate_index_cache_is_deleted_and_refetched() {
 
     assert_eq!(body, index_body.as_bytes());
     assert_eq!(std::fs::read(cache_path).expect("updated cache"), body);
+}
+
+#[tokio::test]
+async fn stale_index_is_revalidated_and_replaces_a_republished_record() {
+    let first_body = valid_index_body("first crate");
+    let second_body = format!(
+        "{}\n{}",
+        valid_index_body("second crate"),
+        valid_index_body("third crate")
+    );
+    let hits = Arc::new(AtomicUsize::new(0));
+    let upstream = start_server({
+        let first_body = first_body.clone();
+        let second_body = second_body.clone();
+        let hits = hits.clone();
+        Router::new().route(
+            "/se/rd/serde",
+            get(move || {
+                let first_body = first_body.clone();
+                let second_body = second_body.clone();
+                let hits = hits.clone();
+                async move {
+                    if hits.fetch_add(1, Ordering::SeqCst) == 0 {
+                        first_body
+                    } else {
+                        second_body
+                    }
+                }
+            }),
+        )
+    })
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = cargo_router(upstream, data_dir.path());
+
+    let first = router
+        .clone()
+        .oneshot(get_request("/mirror/cargo/primary/se/rd/serde"))
+        .await
+        .expect("first index response");
+    assert_eq!(first.status(), StatusCode::OK);
+    let cache_path = data_dir
+        .path()
+        .join("stores/cargo/metadata/primary/index/se/rd/serde");
+    let cache_file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&cache_path)
+        .expect("cache file");
+    cache_file
+        .set_times(
+            std::fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(3600)),
+        )
+        .expect("age index cache");
+
+    let second = router
+        .oneshot(get_request("/mirror/cargo/primary/se/rd/serde"))
+        .await
+        .expect("revalidated index response");
+
+    assert_eq!(second.status(), StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(second.into_body(), usize::MAX)
+            .await
+            .expect("revalidated body"),
+        second_body.as_bytes()
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn stale_index_removes_the_cache_when_upstream_deletes_the_crate() {
+    let first_body = valid_index_body("first crate");
+    let hits = Arc::new(AtomicUsize::new(0));
+    let upstream = start_server({
+        let first_body = first_body.clone();
+        let hits = hits.clone();
+        Router::new().route(
+            "/se/rd/serde",
+            get(move || {
+                let first_body = first_body.clone();
+                let hits = hits.clone();
+                async move {
+                    if hits.fetch_add(1, Ordering::SeqCst) == 0 {
+                        first_body.into_response()
+                    } else {
+                        StatusCode::NOT_FOUND.into_response()
+                    }
+                }
+            }),
+        )
+    })
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = cargo_router(upstream, data_dir.path());
+
+    let first = router
+        .clone()
+        .oneshot(get_request("/mirror/cargo/primary/se/rd/serde"))
+        .await
+        .expect("first index response");
+    assert_eq!(first.status(), StatusCode::OK);
+    let cache_path = data_dir
+        .path()
+        .join("stores/cargo/metadata/primary/index/se/rd/serde");
+    let cache_file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&cache_path)
+        .expect("cache file");
+    cache_file
+        .set_times(
+            std::fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(3600)),
+        )
+        .expect("age index cache");
+
+    let second = router
+        .oneshot(get_request("/mirror/cargo/primary/se/rd/serde"))
+        .await
+        .expect("deleted index response");
+
+    assert_eq!(second.status(), StatusCode::NOT_FOUND);
+    assert!(!cache_path.exists());
 }
 
 #[tokio::test]

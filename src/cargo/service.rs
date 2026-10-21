@@ -2,6 +2,7 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     sync::Arc,
+    time::{Duration, SystemTime},
 };
 
 use axum::{
@@ -30,6 +31,8 @@ use super::{
     path::{CargoPath, CargoPathError, normalize_crate_name, validate_version},
 };
 
+const INDEX_REVALIDATE_AFTER_SECS: u64 = 15 * 60;
+
 #[derive(Debug)]
 pub struct CargoAdapter {
     service: Arc<CargoService>,
@@ -46,6 +49,11 @@ pub struct CargoService {
 struct IndexSnapshot {
     body: Vec<u8>,
     selected_proxy: String,
+}
+
+struct FetchedIndex {
+    body: Vec<u8>,
+    source_name: String,
 }
 
 #[derive(Debug, Error)]
@@ -156,6 +164,80 @@ impl CargoService {
                     })
                 });
             if let Some(selected_proxy) = selected_proxy.filter(|_| valid_cache) {
+                if index_is_stale(&cache_path) {
+                    match self
+                        .fetch_index(
+                            entry_name,
+                            index_path,
+                            crate_name,
+                            pool,
+                            Some(&selected_proxy),
+                        )
+                        .await
+                    {
+                        Ok(fetched) if fetched.body == contents => {
+                            let _ = crate::retention::note_access(&cache_path);
+                            self.record_cargo(
+                                "cargo_index_revalidated",
+                                entry_name,
+                                index_path,
+                                CargoAuditDetails {
+                                    selected_proxy: Some(&selected_proxy),
+                                    object_type: "index",
+                                    cache_status: "hit",
+                                    failure_category: None,
+                                },
+                            );
+                        }
+                        Ok(fetched) => {
+                            self.publish_index_cache(
+                                &cache_path,
+                                &sidecar_path,
+                                entry_name,
+                                index_path,
+                                &fetched,
+                                "revalidated",
+                            )?;
+                            return Ok(IndexSnapshot {
+                                body: fetched.body,
+                                selected_proxy: fetched.source_name,
+                            });
+                        }
+                        Err(error) if is_not_found_cargo_error(&error) => {
+                            fs::remove_file(&cache_path)?;
+                            let _ = fs::remove_file(&sidecar_path);
+                            self.record_cargo(
+                                "cargo_index_stale",
+                                entry_name,
+                                index_path,
+                                CargoAuditDetails {
+                                    selected_proxy: Some(&selected_proxy),
+                                    object_type: "index",
+                                    cache_status: "failed",
+                                    failure_category: Some("not_found"),
+                                },
+                            );
+                            return Err(error);
+                        }
+                        Err(_) => {
+                            self.record_cargo(
+                                "cargo_index_stale",
+                                entry_name,
+                                index_path,
+                                CargoAuditDetails {
+                                    selected_proxy: Some(&selected_proxy),
+                                    object_type: "index",
+                                    cache_status: "stale",
+                                    failure_category: Some("source_failed"),
+                                },
+                            );
+                            return Ok(IndexSnapshot {
+                                body: contents,
+                                selected_proxy,
+                            });
+                        }
+                    }
+                }
                 self.record_cargo(
                     "cargo_index_read",
                     entry_name,
@@ -187,14 +269,47 @@ impl CargoService {
             );
         }
 
+        let fetched = self
+            .fetch_index(entry_name, index_path, crate_name, pool, None)
+            .await?;
+        self.publish_index_cache(
+            &cache_path,
+            &sidecar_path,
+            entry_name,
+            index_path,
+            &fetched,
+            "published",
+        )?;
+        Ok(IndexSnapshot {
+            body: fetched.body,
+            selected_proxy: fetched.source_name,
+        })
+    }
+
+    async fn fetch_index(
+        &self,
+        entry_name: &str,
+        index_path: &str,
+        crate_name: &str,
+        pool: &SourcePool,
+        preferred_source: Option<&str>,
+    ) -> Result<FetchedIndex, CargoError> {
         let request_key = index_path.to_owned();
+        let mut members = pool
+            .proxy_members(entry_name)
+            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
+        if let Some(preferred_source) = preferred_source
+            && let Some(index) = members
+                .iter()
+                .position(|member| member.name == preferred_source)
+        {
+            let preferred = members.remove(index);
+            members.insert(0, preferred);
+        }
         let mut failures = Vec::new();
         let mut saw_failure = false;
         let mut all_not_found = true;
-        for member in pool
-            .proxy_members(entry_name)
-            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?
-        {
+        for member in members {
             match pool
                 .fetch(&member.name, &request_key, FetchOperation::Metadata)
                 .await
@@ -229,25 +344,9 @@ impl CargoService {
                                 ));
                                 continue;
                             }
-                            atomic_write(&cache_path, &contents)?;
-                            atomic_write(
-                                &sidecar_path,
-                                format!("{}\n", response.source_name).as_bytes(),
-                            )?;
-                            self.record_cargo(
-                                "cargo_index_published",
-                                entry_name,
-                                index_path,
-                                CargoAuditDetails {
-                                    selected_proxy: Some(&response.source_name),
-                                    object_type: "index",
-                                    cache_status: "published",
-                                    failure_category: None,
-                                },
-                            );
-                            return Ok(IndexSnapshot {
+                            return Ok(FetchedIndex {
                                 body: contents,
-                                selected_proxy: response.source_name,
+                                source_name: response.source_name,
                             });
                         }
                         Err(error) => {
@@ -294,6 +393,34 @@ impl CargoService {
                 .then_some(404),
         }
         .into())
+    }
+
+    fn publish_index_cache(
+        &self,
+        cache_path: &Path,
+        sidecar_path: &Path,
+        entry_name: &str,
+        index_path: &str,
+        fetched: &FetchedIndex,
+        cache_status: &str,
+    ) -> Result<(), CargoError> {
+        atomic_write(cache_path, &fetched.body)?;
+        atomic_write(
+            sidecar_path,
+            format!("{}\n", fetched.source_name).as_bytes(),
+        )?;
+        self.record_cargo(
+            &format!("cargo_index_{cache_status}"),
+            entry_name,
+            index_path,
+            CargoAuditDetails {
+                selected_proxy: Some(&fetched.source_name),
+                object_type: "index",
+                cache_status,
+                failure_category: None,
+            },
+        );
+        Ok(())
     }
 
     async fn crate_file(
@@ -662,6 +789,26 @@ fn terminal_status(error: &SourcePoolError) -> Option<u16> {
         SourcePoolError::AllSourcesFailed { status, .. } => *status,
         _ => None,
     }
+}
+
+fn is_not_found_cargo_error(error: &CargoError) -> bool {
+    matches!(
+        error,
+        CargoError::Source(SourcePoolError::TerminalSourceError { status: 404, .. })
+            | CargoError::Source(SourcePoolError::AllSourcesFailed {
+                status: Some(404),
+                ..
+            })
+    )
+}
+
+fn index_is_stale(path: &Path) -> bool {
+    let Ok(modified) = fs::metadata(path).and_then(|metadata| metadata.modified()) else {
+        return false;
+    };
+    SystemTime::now()
+        .duration_since(modified)
+        .is_ok_and(|age| age >= Duration::from_secs(INDEX_REVALIDATE_AFTER_SECS))
 }
 
 fn is_group_entry(pool: &SourcePool, entry_name: &str) -> bool {

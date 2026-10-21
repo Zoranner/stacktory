@@ -94,10 +94,14 @@ crate 请求会先读取当前 proxy 的 `config.json`，按 `dl` 中的 `{crate
 `{version}`、`{prefix}`、`{lowerprefix}` 和 `{sha256-checksum}` marker 生成下载
 URL。上游响应只有在摘要匹配后才会原子写入 artifact 缓存并返回。
 
+index 命中超过 15 分钟后会从绑定来源优先重新请求。上游内容未变化时只刷新访问
+时间；内容变化时替换 index 和来源 sidecar；上游 404 时删除 index 缓存并返回
+404。重验证遇到网络或 5xx 失败时继续提供旧 index，并记录 stale 审计。
+
 group 的每个 proxy 独立尝试 index 和 crate。网络/5xx、非法 index 内容和 crate
 摘要不匹配都会阻止当前对象发布，并可继续尝试下一个成员；group 对象缺失 404
-也可回退，所有成员缺失时返回 404。401、403、408、429 等 terminal 状态不回退，
-直接保留对应 HTTP 状态。
+也可回退，所有成员缺失时返回 404。401、403、408、429 和 5xx 继续尝试下一个
+成员；其他 4xx 直接保留对应 HTTP 状态。
 
 ## 请求流程
 
