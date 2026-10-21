@@ -325,6 +325,46 @@ impl SourcePool {
         .await
     }
 
+    pub(crate) async fn post_json_to_source(
+        &self,
+        source_name: &str,
+        request_key: &str,
+        body: &[u8],
+    ) -> Result<SourceResponse, SourcePoolError> {
+        let source = self
+            .graph
+            .get(source_name)
+            .ok_or_else(|| SourcePoolError::UnknownEntry(source_name.to_owned()))?;
+        if source.source_type != crate::SourceType::Proxy {
+            return Err(SourcePoolError::UnknownEntry(source_name.to_owned()));
+        }
+        let request_key = normalize_proxy_path(request_key)?;
+        let url = source_url_raw(source, &request_key)?;
+        match self
+            .fetcher
+            .post_marketplace_query(url, body, FetchOperation::Metadata.timeout())
+            .await
+        {
+            Ok(response) => Ok(SourceResponse {
+                source_name: source_name.to_owned(),
+                body: response.body,
+                content_type: response.content_type,
+                headers: response.headers,
+            }),
+            Err(error) if error.is_retryable() => Err(SourcePoolError::AllSourcesFailed {
+                entry_name: source_name.to_owned(),
+                request_key,
+                failures: error.to_string(),
+                status: error.status_code(),
+            }),
+            Err(error) => Err(SourcePoolError::TerminalSourceError {
+                source_name: source_name.to_owned(),
+                status: error.status_code().unwrap_or_default(),
+                error: error.to_string(),
+            }),
+        }
+    }
+
     pub(crate) async fn fetch_proxy_registry_path_to_file(
         &self,
         source_name: &str,

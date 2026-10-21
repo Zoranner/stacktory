@@ -207,6 +207,46 @@ async fn marketplace_client_and_upstream_json_errors_use_distinct_statuses() {
 }
 
 #[tokio::test]
+async fn group_query_falls_back_after_an_invalid_gallery_response() {
+    let first_hits = Arc::new(AtomicUsize::new(0));
+    let second_hits = Arc::new(AtomicUsize::new(0));
+    let first = start_query_response_server(first_hits.clone(), StatusCode::OK, "not-json").await;
+    let second =
+        start_query_response_server(second_hits.clone(), StatusCode::OK, r#"{"results":[]}"#).await;
+    let data_dir = tempdir().expect("data directory");
+    let registry = AdapterRegistry::new()
+        .with_adapter(
+            "vscode",
+            Arc::new(
+                SourcePool::new(
+                    "vscode",
+                    SourceGraph::new(vec![
+                        proxy("first", first.as_str()),
+                        proxy("second", second.as_str()),
+                        group("group", &["first", "second"]),
+                    ])
+                    .expect("source graph"),
+                )
+                .expect("source pool"),
+            ),
+            Arc::new(VscodeAdapter::new(
+                Url::parse("http://127.0.0.1:18761").expect("root URL"),
+                data_dir.path(),
+            )),
+        )
+        .expect("registry");
+
+    let response = router_with_registry(registry)
+        .oneshot(query_request_for("group"))
+        .await
+        .expect("group query response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(first_hits.load(Ordering::SeqCst), 1);
+    assert_eq!(second_hits.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn marketplace_rejects_unbound_assets_and_unsupported_methods() {
     let (upstream, asset_address) = start_gallery_server(
         b"VSIX".to_vec(),
@@ -510,4 +550,27 @@ async fn start_gallery_server(
         Url::parse(&format!("http://{address}")).expect("gallery URL"),
         address,
     )
+}
+
+async fn start_query_response_server(
+    hits: Arc<AtomicUsize>,
+    status: StatusCode,
+    body: &'static str,
+) -> Url {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let router = Router::new().route(
+        "/extensionquery",
+        post(move || {
+            let hits = hits.clone();
+            async move {
+                hits.fetch_add(1, Ordering::SeqCst);
+                (status, body).into_response()
+            }
+        }),
+    );
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.expect("query server");
+    });
+    Url::parse(&format!("http://{address}")).expect("query URL")
 }

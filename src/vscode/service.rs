@@ -24,6 +24,7 @@ use crate::{
         FetchOperation, SourcePoolError,
         pool::is_safe_configured_url,
         registry::{Adapter, AdapterFuture, AdapterRequest},
+        source_error_is_group_fallback,
     },
 };
 
@@ -172,54 +173,89 @@ impl VscodeService {
         pool: &SourcePool,
     ) -> Result<Vec<u8>, VscodeError> {
         serde_json::from_slice::<Value>(request_body)?;
-        let response = pool
-            .post_json(entry_name, "extensionquery", request_body)
-            .await?;
-        let rewritten = rewrite_gallery_query(
-            &response.body,
-            &self.root_url,
-            entry_name,
-            &response.source_name,
-        )?;
-        for (asset_id, descriptor) in rewritten.asset_descriptors {
-            atomic_write(
-                &self.asset_descriptor_path(entry_name, &asset_id),
-                toml::to_string(&descriptor)?.as_bytes(),
-            )?;
+        let members = pool
+            .proxy_members(entry_name)
+            .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
+        let is_group = pool.is_group(entry_name);
+        let mut failures = Vec::new();
+        let mut all_not_found = true;
+
+        for member in members {
+            let response = match pool
+                .post_json_to_source(&member.name, "extensionquery", request_body)
+                .await
+            {
+                Ok(response) => response,
+                Err(error) if is_group && source_error_is_group_fallback(&error) => {
+                    if !is_not_found_source_error(&error) {
+                        all_not_found = false;
+                    }
+                    failures.push(format!("{}: {error}", member.name));
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let rewritten = match rewrite_gallery_query(
+                &response.body,
+                &self.root_url,
+                entry_name,
+                &response.source_name,
+            ) {
+                Ok(rewritten) => rewritten,
+                Err(error @ VscodeError::InvalidGalleryResponse(_)) if is_group => {
+                    all_not_found = false;
+                    failures.push(format!("{}: {error}", member.name));
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            for (asset_id, descriptor) in rewritten.asset_descriptors {
+                atomic_write(
+                    &self.asset_descriptor_path(entry_name, &asset_id),
+                    toml::to_string(&descriptor)?.as_bytes(),
+                )?;
+            }
+            for (key, descriptor) in rewritten.resource_descriptors {
+                atomic_write(
+                    &self.resource_descriptor_path(entry_name, &key),
+                    toml::to_string(&descriptor)?.as_bytes(),
+                )?;
+            }
+            for (key, descriptor) in rewritten.extension_descriptors {
+                atomic_write(
+                    &self.extension_descriptor_path(entry_name, &key),
+                    toml::to_string(&descriptor)?.as_bytes(),
+                )?;
+            }
+            for (key, descriptor) in rewritten.asset_base_descriptors {
+                atomic_write(
+                    &self.asset_base_descriptor_path(entry_name, &key),
+                    toml::to_string(&descriptor)?.as_bytes(),
+                )?;
+            }
+            atomic_write(&self.query_path(entry_name, request_body), &rewritten.body)?;
+            self.record(
+                "vscode_marketplace_query_published",
+                AuditDetails {
+                    ecosystem: Some("vscode"),
+                    entry_name: Some(entry_name),
+                    object_key: Some("extensionquery"),
+                    selected_proxy: Some(&response.source_name),
+                    object_type: Some("metadata"),
+                    cache_status: Some("published"),
+                    failure_category: None,
+                    count: None,
+                },
+            );
+            return Ok(rewritten.body);
         }
-        for (key, descriptor) in rewritten.resource_descriptors {
-            atomic_write(
-                &self.resource_descriptor_path(entry_name, &key),
-                toml::to_string(&descriptor)?.as_bytes(),
-            )?;
-        }
-        for (key, descriptor) in rewritten.extension_descriptors {
-            atomic_write(
-                &self.extension_descriptor_path(entry_name, &key),
-                toml::to_string(&descriptor)?.as_bytes(),
-            )?;
-        }
-        for (key, descriptor) in rewritten.asset_base_descriptors {
-            atomic_write(
-                &self.asset_base_descriptor_path(entry_name, &key),
-                toml::to_string(&descriptor)?.as_bytes(),
-            )?;
-        }
-        atomic_write(&self.query_path(entry_name, request_body), &rewritten.body)?;
-        self.record(
-            "vscode_marketplace_query_published",
-            AuditDetails {
-                ecosystem: Some("vscode"),
-                entry_name: Some(entry_name),
-                object_key: Some("extensionquery"),
-                selected_proxy: Some(&response.source_name),
-                object_type: Some("metadata"),
-                cache_status: Some("published"),
-                failure_category: None,
-                count: None,
-            },
-        );
-        Ok(rewritten.body)
+
+        Err(VscodeError::Source(SourcePoolError::AllSourcesFailed {
+            entry_name: entry_name.to_owned(),
+            request_key: "extensionquery".to_owned(),
+            failures: failures.join("; "),
+            status: (is_group && all_not_found && !failures.is_empty()).then_some(404),
+        }))
     }
 
     async fn asset(
@@ -949,6 +985,17 @@ fn append_asset_type(base_url: &str, asset_type: &str) -> Result<Url, VscodeErro
     let base_path = url.path().trim_end_matches('/');
     url.set_path(&format!("{base_path}/{asset_type}"));
     Ok(url)
+}
+
+fn is_not_found_source_error(error: &SourcePoolError) -> bool {
+    matches!(
+        error,
+        SourcePoolError::TerminalSourceError { status: 404, .. }
+            | SourcePoolError::AllSourcesFailed {
+                status: Some(404),
+                ..
+            }
+    )
 }
 
 fn vscode_error_response(error: &VscodeError) -> Response {
