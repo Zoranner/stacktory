@@ -1,4 +1,8 @@
-use std::{io, path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use axum::{
     body::Body,
@@ -6,6 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use url::Url;
 
@@ -23,8 +28,10 @@ use crate::{
 use super::{
     metadata::{NpmArtifactDescriptor, NpmMetadataError},
     path::{parse_artifact_path, parse_metadata_path},
-    storage::{IntegrityExpectation, NpmCacheKey, NpmStorage, StorageError},
+    storage::{IntegrityExpectation, NpmCacheKey, NpmStorage, StorageError, StoredMetadata},
 };
+
+const METADATA_REVALIDATE_AFTER_SECS: u64 = 15 * 60;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RegistryFlavor {
@@ -96,6 +103,15 @@ pub enum NpmError {
     InvalidSearchQuery(String),
     #[error("npm search response is invalid")]
     InvalidSearchResponse,
+}
+
+struct FetchedMetadata {
+    key: NpmCacheKey,
+    canonical_body: Vec<u8>,
+    content_digest: String,
+    source_fingerprint: String,
+    rendered_body: Vec<u8>,
+    descriptors: Vec<NpmArtifactDescriptor>,
 }
 
 impl NpmAdapter {
@@ -354,24 +370,123 @@ impl NpmService {
         package: &str,
         pool: &SourcePool,
     ) -> Result<Vec<u8>, NpmError> {
-        if let Some(snapshot) = self.storage.read_metadata(entry_name, package)?
-            && is_allowed_source(pool, entry_name, &snapshot.key.selected_proxy)
-        {
-            self.record(
-                &self.event("metadata_read"),
-                entry_name,
-                package,
-                Some(&snapshot.key.selected_proxy),
-                "hit",
-                None,
-            );
-            return Ok(snapshot.body);
+        if let Some(snapshot) = self.storage.read_metadata(entry_name, package)? {
+            if is_allowed_source(pool, entry_name, &snapshot.key.selected_proxy) {
+                if !metadata_is_stale(snapshot.validated_at_unix_secs) {
+                    if let Ok(body) =
+                        self.render_cached_metadata(entry_name, package, &snapshot, pool)
+                    {
+                        self.record(
+                            &self.event("metadata_read"),
+                            entry_name,
+                            package,
+                            Some(&snapshot.key.selected_proxy),
+                            "hit",
+                            None,
+                        );
+                        return Ok(body);
+                    }
+                    self.storage.remove_metadata(entry_name, package)?;
+                } else {
+                    match self
+                        .fetch_metadata(
+                            entry_name,
+                            package,
+                            pool,
+                            Some(&snapshot.key.selected_proxy),
+                        )
+                        .await
+                    {
+                        Ok(fetched) => {
+                            if fetched.content_digest == snapshot.content_digest
+                                && fetched.key.selected_proxy == snapshot.key.selected_proxy
+                                && fetched.source_fingerprint == snapshot.source_fingerprint
+                            {
+                                self.storage.touch_metadata(
+                                    entry_name,
+                                    package,
+                                    &snapshot.key,
+                                    &snapshot.content_digest,
+                                    &snapshot.source_fingerprint,
+                                )?;
+                                self.record(
+                                    &self.event("metadata_revalidated"),
+                                    entry_name,
+                                    package,
+                                    Some(&snapshot.key.selected_proxy),
+                                    "hit",
+                                    None,
+                                );
+                                if let Ok(body) = self
+                                    .render_cached_metadata(entry_name, package, &snapshot, pool)
+                                {
+                                    return Ok(body);
+                                }
+                                self.storage.remove_metadata(entry_name, package)?;
+                            } else {
+                                self.publish_fetched_metadata(entry_name, package, &fetched)?;
+                                return Ok(fetched.rendered_body);
+                            }
+                        }
+                        Err(error) if is_not_found_npm_error(&error) => {
+                            self.storage.remove_metadata(entry_name, package)?;
+                            self.record(
+                                &self.event("metadata_revalidate_failed"),
+                                entry_name,
+                                package,
+                                Some(&snapshot.key.selected_proxy),
+                                "failed",
+                                Some("not_found"),
+                            );
+                            return Err(error);
+                        }
+                        Err(_) => {
+                            self.record(
+                                &self.event("metadata_stale"),
+                                entry_name,
+                                package,
+                                Some(&snapshot.key.selected_proxy),
+                                "stale",
+                                Some("source_failed"),
+                            );
+                            if let Ok(body) =
+                                self.render_cached_metadata(entry_name, package, &snapshot, pool)
+                            {
+                                return Ok(body);
+                            }
+                            self.storage.remove_metadata(entry_name, package)?;
+                        }
+                    }
+                }
+            } else {
+                self.storage.remove_metadata(entry_name, package)?;
+            }
         }
 
+        let fetched = self.fetch_metadata(entry_name, package, pool, None).await?;
+        self.publish_fetched_metadata(entry_name, package, &fetched)?;
+        Ok(fetched.rendered_body)
+    }
+
+    async fn fetch_metadata(
+        &self,
+        entry_name: &str,
+        package: &str,
+        pool: &SourcePool,
+        preferred_source: Option<&str>,
+    ) -> Result<FetchedMetadata, NpmError> {
         let request_key = (self.flavor.upstream_package_path)(package);
-        let members = pool
+        let mut members = pool
             .proxy_members(entry_name)
             .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
+        if let Some(preferred_source) = preferred_source
+            && let Some(index) = members
+                .iter()
+                .position(|member| member.name == preferred_source)
+        {
+            let preferred = members.remove(index);
+            members.insert(0, preferred);
+        }
         let mut failures = Vec::new();
         let mut all_not_found = true;
         for member in members {
@@ -403,7 +518,7 @@ impl NpmService {
                     continue;
                 }
             };
-            let rewritten = match crate::npm::metadata::rewrite_compatible_metadata(
+            let mut rewritten = match crate::npm::metadata::rewrite_compatible_metadata(
                 &metadata,
                 &self.root_url,
                 self.flavor.ecosystem,
@@ -419,6 +534,9 @@ impl NpmService {
                     continue;
                 }
             };
+            for descriptor in &mut rewritten.descriptors {
+                descriptor.source_fingerprint = member.fingerprint();
+            }
             if !descriptors_match_source(&rewritten.descriptors, &member) {
                 all_not_found = false;
                 failures.push(format!(
@@ -427,28 +545,25 @@ impl NpmService {
                 ));
                 continue;
             }
-            let body = serde_json::to_vec(&rewritten.body)
-                .map_err(|error| StorageError::Io(io::Error::other(error)))?;
-            let key = NpmCacheKey {
-                ecosystem: self.flavor.ecosystem.to_owned(),
-                entry: entry_name.to_owned(),
-                protocol_variant: "npm-compatible-registry".to_owned(),
-                package: package.to_owned(),
-                version: "catalog".to_owned(),
-                representation: "metadata".to_owned(),
-                selected_proxy: response.source_name.clone(),
-            };
-            self.storage
-                .publish_metadata(&key, &body, &rewritten.descriptors)?;
-            self.record(
-                &self.event("metadata_published"),
-                entry_name,
-                package,
-                Some(&response.source_name),
-                "published",
-                None,
-            );
-            return Ok(body);
+            let rendered_body = serde_json::to_vec(&rewritten.body)
+                .map_err(|error| NpmError::Metadata(NpmMetadataError::InvalidJson(error)))?;
+            let content_digest = sha256(&response.body);
+            return Ok(FetchedMetadata {
+                key: NpmCacheKey {
+                    ecosystem: self.flavor.ecosystem.to_owned(),
+                    entry: entry_name.to_owned(),
+                    protocol_variant: "npm-compatible-registry".to_owned(),
+                    package: package.to_owned(),
+                    version: "catalog".to_owned(),
+                    representation: "metadata".to_owned(),
+                    selected_proxy: response.source_name,
+                },
+                canonical_body: response.body,
+                content_digest,
+                source_fingerprint: member.fingerprint(),
+                rendered_body,
+                descriptors: rewritten.descriptors,
+            });
         }
 
         self.record(
@@ -477,6 +592,79 @@ impl NpmService {
         })
     }
 
+    fn render_cached_metadata(
+        &self,
+        entry_name: &str,
+        package: &str,
+        snapshot: &StoredMetadata,
+        pool: &SourcePool,
+    ) -> Result<Vec<u8>, NpmError> {
+        let metadata = crate::npm::metadata::parse_compatible_metadata(
+            &snapshot.body,
+            package,
+            self.flavor.is_valid_package,
+        )?;
+        let mut rewritten = crate::npm::metadata::rewrite_compatible_metadata(
+            &metadata,
+            &self.root_url,
+            self.flavor.ecosystem,
+            self.flavor.route,
+            entry_name,
+            &snapshot.key.selected_proxy,
+            self.flavor.is_valid_package,
+        )?;
+        let member = pool
+            .proxy_members(entry_name)
+            .and_then(|members| {
+                members
+                    .into_iter()
+                    .find(|member| member.name == snapshot.key.selected_proxy)
+            })
+            .ok_or_else(|| {
+                NpmError::Source(SourcePoolError::UnknownEntry(
+                    snapshot.key.selected_proxy.clone(),
+                ))
+            })?;
+        for descriptor in &mut rewritten.descriptors {
+            descriptor.source_fingerprint = member.fingerprint();
+        }
+        if !descriptors_match_source(&rewritten.descriptors, &member) {
+            return Err(NpmError::Metadata(NpmMetadataError::InvalidTarballUrl(
+                package.to_owned(),
+            )));
+        }
+        if snapshot.source_fingerprint != member.fingerprint() {
+            return Err(NpmError::Metadata(NpmMetadataError::InvalidTarballUrl(
+                package.to_owned(),
+            )));
+        }
+        serde_json::to_vec(&rewritten.body)
+            .map_err(|error| NpmError::Metadata(NpmMetadataError::InvalidJson(error)))
+    }
+
+    fn publish_fetched_metadata(
+        &self,
+        entry_name: &str,
+        package: &str,
+        fetched: &FetchedMetadata,
+    ) -> Result<(), NpmError> {
+        self.storage.publish_metadata(
+            &fetched.key,
+            &fetched.canonical_body,
+            &fetched.descriptors,
+            &fetched.source_fingerprint,
+        )?;
+        self.record(
+            &self.event("metadata_published"),
+            entry_name,
+            package,
+            Some(&fetched.key.selected_proxy),
+            "published",
+            None,
+        );
+        Ok(())
+    }
+
     pub async fn tarball(
         &self,
         entry_name: &str,
@@ -488,6 +676,17 @@ impl NpmService {
             .read_descriptor(entry_name, artifact_key)?
             .ok_or_else(|| NpmError::MissingArtifact(artifact_key.to_owned()))?;
         if !is_allowed_source(pool, entry_name, &descriptor.selected_proxy) {
+            return Err(NpmError::MissingArtifact(artifact_key.to_owned()));
+        }
+        let selected_member = pool
+            .proxy_members(entry_name)
+            .and_then(|members| {
+                members
+                    .into_iter()
+                    .find(|member| member.name == descriptor.selected_proxy)
+            })
+            .ok_or_else(|| NpmError::MissingArtifact(artifact_key.to_owned()))?;
+        if descriptor.source_fingerprint != selected_member.fingerprint() {
             return Err(NpmError::MissingArtifact(artifact_key.to_owned()));
         }
 
@@ -629,7 +828,7 @@ impl NpmService {
             package,
             self.flavor.is_valid_package,
         )?;
-        let rewritten = crate::npm::metadata::rewrite_compatible_metadata(
+        let mut rewritten = crate::npm::metadata::rewrite_compatible_metadata(
             &metadata,
             &self.root_url,
             self.flavor.ecosystem,
@@ -638,6 +837,9 @@ impl NpmService {
             &member.name,
             self.flavor.is_valid_package,
         )?;
+        for descriptor in &mut rewritten.descriptors {
+            descriptor.source_fingerprint = member.fingerprint();
+        }
         if !descriptors_match_source(&rewritten.descriptors, member) {
             return Err(NpmError::Metadata(NpmMetadataError::InvalidTarballUrl(
                 package.to_owned(),
@@ -746,6 +948,29 @@ fn is_not_found(error: &SourcePoolError) -> bool {
                 ..
             }
     )
+}
+
+fn is_not_found_npm_error(error: &NpmError) -> bool {
+    matches!(
+        error,
+        NpmError::Source(SourcePoolError::TerminalSourceError { status: 404, .. })
+            | NpmError::Source(SourcePoolError::AllSourcesFailed {
+                status: Some(404),
+                ..
+            })
+    )
+}
+
+fn metadata_is_stale(validated_at_unix_secs: u64) -> bool {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    now.saturating_sub(validated_at_unix_secs) >= METADATA_REVALIDATE_AFTER_SECS
+}
+
+fn sha256(contents: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(contents))
 }
 
 fn is_retryable_npm(error: &NpmError, pool: &SourcePool, entry_name: &str) -> bool {

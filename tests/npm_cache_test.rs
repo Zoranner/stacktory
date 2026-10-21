@@ -1,4 +1,7 @@
+use std::path::Path;
+
 use sha2::{Digest, Sha256};
+use stacktory::npm::metadata::NpmArtifactDescriptor;
 use stacktory::npm::storage::{IntegrityExpectation, NpmCacheKey, NpmStorage, StorageError};
 use tempfile::tempdir;
 
@@ -103,6 +106,89 @@ fn cache_path_contains_all_npm_identity_dimensions() {
     assert!(path.contains("1.0.0"));
     assert!(path.contains("tarball"));
     assert!(path.contains("official"));
+}
+
+#[test]
+fn metadata_cache_is_canonical_and_removes_old_descriptors() {
+    let directory = tempdir().expect("data directory");
+    let storage = NpmStorage::new(directory.path());
+    let key = metadata_key();
+    let first = descriptor("artifact-a", "https://registry.example/left-pad-1.0.0.tgz");
+    storage
+        .publish_metadata(
+            &key,
+            b"canonical metadata",
+            std::slice::from_ref(&first),
+            "official|https://registry.example|false",
+        )
+        .expect("first metadata publication");
+
+    let stored = storage
+        .read_metadata("group", "left-pad")
+        .expect("metadata read")
+        .expect("metadata present");
+    assert_eq!(stored.body, b"canonical metadata");
+    assert_eq!(stored.descriptors, vec![first.clone()]);
+
+    let second = descriptor("artifact-b", "https://registry.example/left-pad-1.0.1.tgz");
+    storage
+        .publish_metadata(
+            &key,
+            b"new canonical metadata",
+            std::slice::from_ref(&second),
+            "official|https://registry.example|false",
+        )
+        .expect("second metadata publication");
+
+    assert!(!descriptor_path(directory.path(), "artifact-a").exists());
+    assert!(descriptor_path(directory.path(), "artifact-b").exists());
+
+    storage
+        .remove_metadata("group", "left-pad")
+        .expect("metadata removal");
+    assert!(!metadata_path(directory.path()).exists());
+    assert!(!descriptor_path(directory.path(), "artifact-b").exists());
+    assert!(
+        storage
+            .read_metadata("group", "left-pad")
+            .expect("metadata read after removal")
+            .is_none()
+    );
+}
+
+fn metadata_key() -> NpmCacheKey {
+    NpmCacheKey {
+        ecosystem: "npm".to_owned(),
+        entry: "group".to_owned(),
+        protocol_variant: "npm-compatible-registry".to_owned(),
+        package: "left-pad".to_owned(),
+        version: "catalog".to_owned(),
+        representation: "metadata".to_owned(),
+        selected_proxy: "official".to_owned(),
+    }
+}
+
+fn descriptor(artifact_key: &str, upstream_tarball: &str) -> NpmArtifactDescriptor {
+    NpmArtifactDescriptor {
+        artifact_key: artifact_key.to_owned(),
+        package: "left-pad".to_owned(),
+        version: "1.0.0".to_owned(),
+        selected_proxy: "official".to_owned(),
+        source_fingerprint: "official|https://registry.example|false".to_owned(),
+        upstream_tarball: upstream_tarball.to_owned(),
+        integrity: None,
+        shasum: None,
+    }
+}
+
+fn metadata_path(data_dir: &Path) -> std::path::PathBuf {
+    data_dir.join("stores/npm/metadata/group/left-pad/current.toml")
+}
+
+fn descriptor_path(data_dir: &Path, artifact_key: &str) -> std::path::PathBuf {
+    data_dir
+        .join("stores/npm/metadata/group/descriptors")
+        .join(format!("{artifact_key}.json"))
 }
 
 fn cache_key(selected_proxy: &str) -> NpmCacheKey {

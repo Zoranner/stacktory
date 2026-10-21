@@ -214,7 +214,380 @@ async fn falls_back_for_forbidden_upstream() {
     assert_eq!(second_hits.load(Ordering::SeqCst), 1);
 }
 
+#[tokio::test]
+async fn re_renders_metadata_for_a_new_public_root_without_upstream_refetch() {
+    let metadata_requests = Arc::new(AtomicUsize::new(0));
+    let artifact_requests = Arc::new(AtomicUsize::new(0));
+    let (upstream, _) = start_npm_server(
+        "left-pad",
+        b"verified npm tarball".to_vec(),
+        metadata_requests.clone(),
+        artifact_requests,
+    )
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let sources = vec![proxy("official", upstream.as_str())];
+    let first_router = npm_router_with_root(
+        Url::parse("http://127.0.0.1:18761").expect("first root URL"),
+        sources.clone(),
+        data_dir.path(),
+    );
+    let second_router = npm_router_with_root(
+        Url::parse("https://pkg2.example").expect("second root URL"),
+        sources,
+        data_dir.path(),
+    );
+
+    let first = first_router
+        .oneshot(get_request("/mirror/npm/official/left-pad"))
+        .await
+        .expect("first metadata response");
+    assert_eq!(first.status(), StatusCode::OK);
+    let first: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(first.into_body(), usize::MAX)
+            .await
+            .expect("first metadata body"),
+    )
+    .expect("first metadata JSON");
+    assert!(
+        first["versions"]["1.0.0"]["dist"]["tarball"]
+            .as_str()
+            .expect("first tarball URL")
+            .starts_with("http://127.0.0.1:18761/")
+    );
+
+    let second = second_router
+        .clone()
+        .oneshot(get_request("/mirror/npm/official/left-pad"))
+        .await
+        .expect("second metadata response");
+    assert_eq!(second.status(), StatusCode::OK);
+    let second: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(second.into_body(), usize::MAX)
+            .await
+            .expect("second metadata body"),
+    )
+    .expect("second metadata JSON");
+    assert!(
+        second["versions"]["1.0.0"]["dist"]["tarball"]
+            .as_str()
+            .expect("second tarball URL")
+            .starts_with("https://pkg2.example/")
+    );
+    assert_eq!(metadata_requests.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn corrupt_metadata_cache_is_removed_and_refetched() {
+    let metadata_requests = Arc::new(AtomicUsize::new(0));
+    let (upstream, _) = start_npm_server(
+        "left-pad",
+        b"verified npm tarball".to_vec(),
+        metadata_requests.clone(),
+        Arc::new(AtomicUsize::new(0)),
+    )
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = npm_router(vec![proxy("official", upstream.as_str())], data_dir.path());
+
+    let first = router
+        .clone()
+        .oneshot(get_request("/mirror/npm/official/left-pad"))
+        .await
+        .expect("first metadata response");
+    assert_eq!(first.status(), StatusCode::OK);
+
+    let body_path = data_dir
+        .path()
+        .join("stores/npm/metadata/official/left-pad/official/catalog-metadata.json");
+    std::fs::write(&body_path, b"not canonical metadata").expect("corrupt metadata cache");
+
+    let second = router
+        .oneshot(get_request("/mirror/npm/official/left-pad"))
+        .await
+        .expect("second metadata response");
+
+    assert_eq!(second.status(), StatusCode::OK);
+    assert_eq!(metadata_requests.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn stale_metadata_is_revalidated_before_being_served() {
+    let metadata_requests = Arc::new(AtomicUsize::new(0));
+    let (upstream, _) = start_npm_server(
+        "left-pad",
+        b"verified npm tarball".to_vec(),
+        metadata_requests.clone(),
+        Arc::new(AtomicUsize::new(0)),
+    )
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = npm_router(vec![proxy("official", upstream.as_str())], data_dir.path());
+
+    let first = router
+        .clone()
+        .oneshot(get_request("/mirror/npm/official/left-pad"))
+        .await
+        .expect("first metadata response");
+    assert_eq!(first.status(), StatusCode::OK);
+    age_metadata_pointer(data_dir.path(), "npm", "official", "left-pad");
+
+    let second = router
+        .oneshot(get_request("/mirror/npm/official/left-pad"))
+        .await
+        .expect("revalidated metadata response");
+
+    assert_eq!(second.status(), StatusCode::OK);
+    assert_eq!(metadata_requests.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn deleted_upstream_metadata_removes_the_cached_entry() {
+    let metadata_requests = Arc::new(AtomicUsize::new(0));
+    let upstream = start_metadata_then_not_found_server(metadata_requests.clone()).await;
+    let data_dir = tempdir().expect("data directory");
+    let router = npm_router(vec![proxy("official", upstream.as_str())], data_dir.path());
+
+    let first = router
+        .clone()
+        .oneshot(get_request("/mirror/npm/official/left-pad"))
+        .await
+        .expect("first metadata response");
+    assert_eq!(first.status(), StatusCode::OK);
+    age_metadata_pointer(data_dir.path(), "npm", "official", "left-pad");
+
+    let second = router
+        .oneshot(get_request("/mirror/npm/official/left-pad"))
+        .await
+        .expect("deleted metadata response");
+
+    assert_eq!(second.status(), StatusCode::NOT_FOUND);
+    assert_eq!(metadata_requests.load(Ordering::SeqCst), 2);
+    assert!(
+        !data_dir
+            .path()
+            .join("stores/npm/metadata/official/left-pad/current.toml")
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn revalidated_metadata_replaces_a_republished_version() {
+    let metadata_requests = Arc::new(AtomicUsize::new(0));
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let first_upstream_tarball = format!("http://{address}/left-pad/-/left-pad-1.0.0.tgz");
+    let second_upstream_tarball = format!("http://{address}/left-pad/-/left-pad-1.0.1.tgz");
+    let integrity = format!(
+        "sha512-{}",
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            Sha512::digest(b"verified npm tarball")
+        )
+    );
+    let first_body = metadata_body("left-pad", &first_upstream_tarball, &integrity);
+    let second_body = metadata_body("left-pad", &second_upstream_tarball, &integrity);
+    let router = Router::new().fallback(move || {
+        let metadata_requests = metadata_requests.clone();
+        let first_body = first_body.clone();
+        let second_body = second_body.clone();
+        async move {
+            let request = metadata_requests.fetch_add(1, Ordering::SeqCst);
+            let body = if request == 0 {
+                first_body
+            } else {
+                second_body
+            };
+            ([(CONTENT_TYPE, "application/json")], body).into_response()
+        }
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, router)
+            .await
+            .expect("republish server");
+    });
+    let upstream = Url::parse(&format!("http://{address}")).expect("upstream URL");
+    let data_dir = tempdir().expect("data directory");
+    let router = npm_router(vec![proxy("official", upstream.as_str())], data_dir.path());
+
+    let first = router
+        .clone()
+        .oneshot(get_request("/mirror/npm/official/left-pad"))
+        .await
+        .expect("first metadata response");
+    assert_eq!(first.status(), StatusCode::OK);
+    let first: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(first.into_body(), usize::MAX)
+            .await
+            .expect("first metadata body"),
+    )
+    .expect("first metadata JSON");
+    let first_tarball = first["versions"]["1.0.0"]["dist"]["tarball"]
+        .as_str()
+        .expect("first tarball URL")
+        .to_owned();
+    age_metadata_pointer(data_dir.path(), "npm", "official", "left-pad");
+
+    let second = router
+        .oneshot(get_request("/mirror/npm/official/left-pad"))
+        .await
+        .expect("republished metadata response");
+    assert_eq!(second.status(), StatusCode::OK);
+    let second: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(second.into_body(), usize::MAX)
+            .await
+            .expect("republished metadata body"),
+    )
+    .expect("republished metadata JSON");
+    let tarball = second["versions"]["1.0.0"]["dist"]["tarball"]
+        .as_str()
+        .expect("republished tarball URL");
+    assert!(tarball.contains("/tarballs/"));
+    assert_ne!(tarball, first_tarball);
+}
+
+#[tokio::test]
+async fn changed_source_base_url_does_not_reuse_canonical_metadata() {
+    let first_requests = Arc::new(AtomicUsize::new(0));
+    let second_requests = Arc::new(AtomicUsize::new(0));
+    let (first_upstream, _) = start_npm_server(
+        "left-pad",
+        b"verified npm tarball".to_vec(),
+        first_requests.clone(),
+        Arc::new(AtomicUsize::new(0)),
+    )
+    .await;
+    let (second_upstream, _) = start_npm_server(
+        "left-pad",
+        b"verified npm tarball".to_vec(),
+        second_requests.clone(),
+        Arc::new(AtomicUsize::new(0)),
+    )
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let first_router = npm_router(
+        vec![proxy("official", first_upstream.as_str())],
+        data_dir.path(),
+    );
+    let second_router = npm_router(
+        vec![proxy("official", second_upstream.as_str())],
+        data_dir.path(),
+    );
+
+    let first = first_router
+        .oneshot(get_request("/mirror/npm/official/left-pad"))
+        .await
+        .expect("first metadata response");
+    assert_eq!(first.status(), StatusCode::OK);
+    let first: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(first.into_body(), usize::MAX)
+            .await
+            .expect("first metadata body"),
+    )
+    .expect("first metadata JSON");
+    let first_tarball = first["versions"]["1.0.0"]["dist"]["tarball"]
+        .as_str()
+        .expect("first tarball URL")
+        .to_owned();
+
+    let second = second_router
+        .clone()
+        .oneshot(get_request("/mirror/npm/official/left-pad"))
+        .await
+        .expect("second metadata response");
+    assert_eq!(second.status(), StatusCode::OK);
+    let second: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(second.into_body(), usize::MAX)
+            .await
+            .expect("second metadata body"),
+    )
+    .expect("second metadata JSON");
+    let second_tarball = second["versions"]["1.0.0"]["dist"]["tarball"]
+        .as_str()
+        .expect("second tarball URL");
+
+    assert_ne!(first_tarball, second_tarball);
+    assert_eq!(first_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(second_requests.load(Ordering::SeqCst), 1);
+
+    let old_tarball_path = Url::parse(&first_tarball)
+        .expect("old tarball URL")
+        .path()
+        .to_owned();
+    let old_tarball = second_router
+        .oneshot(get_request(&old_tarball_path))
+        .await
+        .expect("old tarball response");
+    assert_eq!(old_tarball.status(), StatusCode::NOT_FOUND);
+}
+
+async fn start_metadata_then_not_found_server(metadata_requests: Arc<AtomicUsize>) -> Url {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let tarball = format!("http://{address}/left-pad/-/left-pad-1.0.0.tgz");
+    let router = Router::new().fallback(move || {
+        let metadata_requests = metadata_requests.clone();
+        let tarball = tarball.clone();
+        async move {
+            if metadata_requests.fetch_add(1, Ordering::SeqCst) > 0 {
+                return StatusCode::NOT_FOUND.into_response();
+            }
+            let integrity = format!(
+                "sha512-{}",
+                base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    Sha512::digest(b"verified npm tarball")
+                )
+            );
+            (
+                [(CONTENT_TYPE, "application/json")],
+                metadata_body("left-pad", &tarball, &integrity),
+            )
+                .into_response()
+        }
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, router)
+            .await
+            .expect("metadata sequence server");
+    });
+    Url::parse(&format!("http://{address}")).expect("metadata sequence URL")
+}
+
+fn age_metadata_pointer(data_dir: &Path, ecosystem: &str, entry: &str, package: &str) {
+    let path = data_dir
+        .join("stores")
+        .join(ecosystem)
+        .join("metadata")
+        .join(entry)
+        .join(package)
+        .join("current.toml");
+    let contents = std::fs::read_to_string(&path).expect("metadata pointer");
+    let mut updated = String::new();
+    for line in contents.lines() {
+        if line.trim_start().starts_with("validated_at_unix_secs =") {
+            updated.push_str("validated_at_unix_secs = 0\n");
+        } else {
+            updated.push_str(line);
+            updated.push('\n');
+        }
+    }
+    std::fs::write(path, updated).expect("age metadata pointer");
+}
+
 fn npm_router(sources: Vec<SourceConfig>, data_dir: &Path) -> axum::Router {
+    npm_router_with_root(
+        Url::parse("http://127.0.0.1:18761").expect("root URL"),
+        sources,
+        data_dir,
+    )
+}
+
+fn npm_router_with_root(
+    root_url: Url,
+    sources: Vec<SourceConfig>,
+    data_dir: &Path,
+) -> axum::Router {
     let registry = AdapterRegistry::new()
         .with_adapter(
             "npm",
@@ -222,10 +595,7 @@ fn npm_router(sources: Vec<SourceConfig>, data_dir: &Path) -> axum::Router {
                 SourcePool::new("npm", SourceGraph::new(sources).expect("source graph"))
                     .expect("source pool"),
             ),
-            Arc::new(NpmAdapter::new(
-                Url::parse("http://127.0.0.1:18761").expect("root URL"),
-                data_dir,
-            )),
+            Arc::new(NpmAdapter::new(root_url, data_dir)),
         )
         .expect("registry");
     router_with_registry(registry)

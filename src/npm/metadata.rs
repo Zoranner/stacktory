@@ -17,6 +17,8 @@ pub struct NpmArtifactDescriptor {
     pub package: String,
     pub version: String,
     pub selected_proxy: String,
+    #[serde(default)]
+    pub source_fingerprint: String,
     pub upstream_tarball: String,
     pub integrity: Option<String>,
     pub shasum: Option<String>,
@@ -192,6 +194,7 @@ pub fn rewrite_compatible_metadata(
             package: package.clone(),
             version: version.clone(),
             selected_proxy: selected_proxy.to_owned(),
+            source_fingerprint: String::new(),
             upstream_tarball: upstream_tarball.clone(),
             integrity: dist
                 .get("integrity")

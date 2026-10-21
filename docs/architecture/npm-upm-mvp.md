@@ -133,6 +133,14 @@ npm metadata 和 UPM metadata 是 metadata 缓存；tarball 是 artifact 缓存�
 （`representation`）
 和 selected proxy，避免 npm 与 UPM 或不同命名入口互相命中。
 
+npm/UPM metadata 缓存保存上游原始响应，不保存已经写入公开地址的最终响应。
+读取时按当前 `root_url` 重新解析并改写 tarball URL，因此修改公开地址只会影响
+渲染结果，不会让已有的 npm/UPM metadata 变成不可用。缓存同时记录来源指纹
+（proxy 名称、`base_url`、`require_https`）；来源目标变化时 canonical metadata
+和 tarball 描述符都会被重新验证。metadata 命中超过 15 分钟后会重新请求上游；
+上游 404 时删除该 entry 的 metadata 和 tarball 描述符，上游内容变化时发布新的
+canonical metadata 并清理不再被引用的描述符。
+
 非法 package path、未被 metadata 引用的 tarball 和未知入口返回 `404`。上游
 明确的客户端错误不无条件回退；上游不可用、metadata 无法解析或 tarball
 完整性失败允许 group 尝试下一个 proxy。所有来源失败返回 `502`，本地存储

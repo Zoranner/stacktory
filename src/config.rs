@@ -97,6 +97,21 @@ pub struct SourceConfig {
     pub members: Vec<String>,
 }
 
+impl SourceConfig {
+    /// Identity of the resolved upstream target, not just the source name.
+    ///
+    /// Metadata that stores absolute upstream URLs must be invalidated when
+    /// this value changes, even if the configured name stays the same.
+    pub fn fingerprint(&self) -> String {
+        format!(
+            "{}|{}|{}",
+            self.name,
+            self.base_url.as_ref().map(Url::as_str).unwrap_or_default(),
+            self.require_https
+        )
+    }
+}
+
 #[derive(Debug)]
 pub struct SourceGraph {
     entries: BTreeMap<String, SourceConfig>,
