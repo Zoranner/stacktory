@@ -1,15 +1,11 @@
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use thiserror::Error;
-use tokio::sync::Mutex;
 
 use crate::{
     Config,
     audit::AuditSink,
+    locks::ShardedLocks,
     rustup::{DistPath, ManifestPolicy, RustupError, rewrite_manifest},
     sources::{FetchOperation, SourcePool, SourcePoolError, source_error_is_group_fallback},
     storage::{ArtifactCache, SnapshotStore, StorageError, StoredSnapshot},
@@ -24,8 +20,8 @@ pub struct RustupService {
     snapshots: SnapshotStore,
     cache: ArtifactCache,
     audit: AuditSink,
-    refresh_locks: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
-    artifact_locks: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
+    refresh_locks: ShardedLocks,
+    artifact_locks: ShardedLocks,
 }
 
 #[derive(Debug, Error)]
@@ -60,8 +56,8 @@ impl RustupService {
             snapshots: SnapshotStore::new(config.data_dir.clone()),
             cache: ArtifactCache::new(config.data_dir.clone()),
             audit: AuditSink::new(config.data_dir),
-            refresh_locks: Mutex::new(BTreeMap::new()),
-            artifact_locks: Mutex::new(BTreeMap::new()),
+            refresh_locks: ShardedLocks::default(),
+            artifact_locks: ShardedLocks::default(),
         })
     }
 
@@ -123,8 +119,10 @@ impl RustupService {
         channel: &str,
     ) -> Result<StoredSnapshot, ServiceError> {
         self.ensure_channel(channel)?;
-        let refresh_lock = self.refresh_lock(source_name, channel).await;
-        let _guard = refresh_lock.lock().await;
+        let _guard = self
+            .refresh_locks
+            .lock(&format!("{source_name}\0{channel}"))
+            .await;
 
         match self.manifest(source_name, channel) {
             Ok(snapshot) if self.is_snapshot_stale(&snapshot) => {
@@ -143,22 +141,6 @@ impl RustupService {
             }
             Err(error) => Err(error),
         }
-    }
-
-    async fn refresh_lock(&self, source_name: &str, channel: &str) -> Arc<Mutex<()>> {
-        let mut locks = self.refresh_locks.lock().await;
-        locks
-            .entry(format!("{source_name}\0{channel}"))
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
-    }
-
-    async fn artifact_lock(&self, source_name: &str, path: &DistPath) -> Arc<Mutex<()>> {
-        let mut locks = self.artifact_locks.lock().await;
-        locks
-            .entry(format!("{source_name}\0{}", path.as_str()))
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
     }
 
     fn is_snapshot_stale(&self, snapshot: &StoredSnapshot) -> bool {
@@ -185,8 +167,14 @@ impl RustupService {
             .get(path)
             .cloned()
             .ok_or_else(|| ServiceError::UnknownArtifact(path.clone()))?;
-        let artifact_lock = self.artifact_lock(&artifact_source.source_name, path).await;
-        let _artifact_guard = artifact_lock.lock().await;
+        let _artifact_guard = self
+            .artifact_locks
+            .lock(&format!(
+                "{}\0{}",
+                artifact_source.source_name,
+                path.as_str()
+            ))
+            .await;
         let snapshot = self.snapshots.current(entry_name, channel)?;
         let artifact_source = snapshot
             .artifact_sources

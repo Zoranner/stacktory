@@ -1,7 +1,6 @@
 pub mod path;
 
 use std::{
-    collections::HashMap,
     fs, io,
     io::{Read, SeekFrom},
     path::{Path, PathBuf},
@@ -20,10 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use tokio::{
-    io::{AsyncReadExt, AsyncSeekExt},
-    sync::Mutex,
-};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 use url::Url;
 
@@ -31,6 +27,7 @@ use crate::{
     DockerConfig, SourcePool,
     audit::{AuditDetails, AuditSink},
     fsutil::atomic_write,
+    locks::ShardedLocks,
     sources::registry::{Adapter, AdapterFuture, AdapterRegistry, AdapterRequest, RegistryError},
     sources::{FetchOperation, SourcePoolError, source_error_is_group_fallback},
 };
@@ -49,7 +46,7 @@ pub struct DockerService {
     _root_url: Url,
     data_dir: PathBuf,
     audit: AuditSink,
-    blob_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    blob_locks: ShardedLocks,
 }
 
 #[derive(Debug, Error)]
@@ -208,7 +205,7 @@ impl DockerService {
             _root_url: root_url,
             audit: AuditSink::new(data_dir.clone()),
             data_dir,
-            blob_locks: Mutex::new(HashMap::new()),
+            blob_locks: ShardedLocks::default(),
         }
     }
 
@@ -872,8 +869,10 @@ impl DockerService {
         pool: &SourcePool,
         head: bool,
     ) -> Result<Response, DockerError> {
-        let blob_lock = self.blob_lock(repository, digest).await;
-        let _blob_guard = blob_lock.lock().await;
+        let _blob_guard = self
+            .blob_locks
+            .lock(&format!("{repository}\0{digest}"))
+            .await;
         let entry_metadata = read_blob_metadata(&self.data_dir, entry_name, repository, digest)?;
         let candidates = candidate_sources(
             pool,
@@ -1075,14 +1074,6 @@ impl DockerService {
             failures: failures.join("; "),
             status: (all_not_found && !failures.is_empty()).then_some(404),
         }))
-    }
-
-    async fn blob_lock(&self, repository: &str, digest: &str) -> Arc<Mutex<()>> {
-        let mut locks = self.blob_locks.lock().await;
-        locks
-            .entry(format!("{repository}\0{digest}"))
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
     }
 
     fn temporary_blob_path(&self) -> PathBuf {

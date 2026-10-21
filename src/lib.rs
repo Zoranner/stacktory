@@ -7,6 +7,7 @@ pub mod docker;
 mod fsutil;
 pub mod http;
 pub mod layout;
+mod locks;
 pub mod logging;
 pub mod npm;
 pub mod nuget;
