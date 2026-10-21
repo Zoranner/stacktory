@@ -15,6 +15,7 @@ use super::{fetcher::FetchError, pool::SourcePoolError};
 
 use super::pool::SourcePool;
 
+#[derive(Clone)]
 pub(crate) struct GroupRun {
     entry_name: String,
     is_group: bool,

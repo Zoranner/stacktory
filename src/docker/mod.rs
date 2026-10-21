@@ -29,7 +29,10 @@ use crate::{
     fsutil::atomic_write,
     locks::ShardedLocks,
     sources::registry::{Adapter, AdapterFuture, AdapterRegistry, AdapterRequest, RegistryError},
-    sources::{ArtifactBudget, FetchOperation, SourcePoolError, source_error_is_group_fallback},
+    sources::{
+        ArtifactBudget, FetchOperation, GroupRun, SourcePoolError, source_error_is_group_fallback,
+        source_error_is_not_found,
+    },
 };
 
 use self::path::{DockerRequest, ManifestReference, parse_request};
@@ -415,16 +418,15 @@ impl DockerService {
             });
         }
 
-        let candidates = candidate_sources(
+        let mut run = GroupRun::new(
             pool,
             entry_name,
             bound
                 .as_ref()
                 .map(|metadata| metadata.selected_proxy.as_str()),
         )?;
-        let mut failures = Vec::new();
-        let mut all_not_found = true;
-        for source_name in candidates {
+        while let Some(member) = run.next_member() {
+            let source_name = member.name;
             match pool
                 .fetch_proxy_registry_path_with_query(
                     &source_name,
@@ -443,9 +445,8 @@ impl DockerService {
                         })
                         .and_then(|value| validate_list_response(&value, object_type));
                     if let Err(error) = validation {
-                        if pool.is_group(entry_name) && is_fallback_search_error(&error) {
-                            all_not_found = false;
-                            failures.push(format!("{source_name}: {error}"));
+                        if run.is_group() && is_fallback_search_error(&error) {
+                            run.record_failure(&source_name, &error.to_string(), false);
                             continue;
                         }
                         return Err(error);
@@ -493,21 +494,19 @@ impl DockerService {
                         link: metadata.link,
                     });
                 }
-                Err(error) if pool.is_group(entry_name) && is_fallback_source_error(&error) => {
-                    if !is_not_found_source_error(&error) {
-                        all_not_found = false;
-                    }
-                    failures.push(format!("{source_name}: {error}"));
+                Err(error) if run.is_group() && is_fallback_source_error(&error) => {
+                    run.record_failure(
+                        &source_name,
+                        &error.to_string(),
+                        source_error_is_not_found(&error),
+                    );
                 }
                 Err(error) => return Err(error.into()),
             }
         }
-        Err(DockerError::Source(SourcePoolError::AllSourcesFailed {
-            entry_name: entry_name.to_owned(),
-            request_key: request_key.to_owned(),
-            failures: failures.join("; "),
-            status: (all_not_found && !failures.is_empty()).then_some(404),
-        }))
+        Err(DockerError::Source(
+            run.all_sources_failed(request_key.to_owned()),
+        ))
     }
 
     async fn search(
@@ -517,9 +516,9 @@ impl DockerService {
         pool: &SourcePool,
     ) -> Result<Response, DockerError> {
         let query = parse_search_query(query)?;
-        let candidates = candidate_sources(pool, entry_name, None)?;
-        let mut failures = Vec::new();
-        for source_name in candidates {
+        let mut run = GroupRun::new(pool, entry_name, None)?;
+        while let Some(member) = run.next_member() {
+            let source_name = member.name;
             match self.search_source(&source_name, &query, pool).await {
                 Ok(results) => {
                     let body = serde_json::to_vec(&json!({
@@ -528,8 +527,8 @@ impl DockerService {
                     }))?;
                     return Ok(json_response(body, Some("application/json"), None));
                 }
-                Err(error) if pool.is_group(entry_name) && is_fallback_search_error(&error) => {
-                    failures.push(format!("{source_name}: {error}"));
+                Err(error) if run.is_group() && is_fallback_search_error(&error) => {
+                    run.record_failure(&source_name, &error.to_string(), false);
                 }
                 Err(error) => return Err(error),
             }
@@ -537,7 +536,7 @@ impl DockerService {
         Err(DockerError::Source(SourcePoolError::AllSourcesFailed {
             entry_name: entry_name.to_owned(),
             request_key: "v2/_catalog".to_owned(),
-            failures: failures.join("; "),
+            failures: run.failure_summary(),
             status: None,
         }))
     }
@@ -649,7 +648,9 @@ impl DockerService {
         }
 
         if let ManifestReference::Digest(digest) = reference {
-            for source_name in candidate_sources(pool, entry_name, None)? {
+            let mut cached_run = GroupRun::new(pool, entry_name, None)?;
+            while let Some(member) = cached_run.next_member() {
+                let source_name = member.name;
                 if let Some(cached) = read_cached_manifest(&self.data_dir, &source_name, digest)? {
                     let source_fingerprint = pool
                         .source_fingerprint(entry_name, &source_name)
@@ -685,15 +686,14 @@ impl DockerService {
             }
         }
 
-        let candidates = candidate_sources(
+        let mut run = GroupRun::new(
             pool,
             entry_name,
             bound.as_ref().map(|value| value.selected_proxy.as_str()),
         )?;
         let request_key = format!("v2/{repository}/manifests/{}", reference.as_str());
-        let mut failures = Vec::new();
-        let mut all_not_found = true;
-        for source_name in candidates {
+        while let Some(member) = run.next_member() {
+            let source_name = member.name;
             let source_fingerprint = pool
                 .source_fingerprint(entry_name, &source_name)
                 .unwrap_or_default();
@@ -747,10 +747,7 @@ impl DockerService {
                             head,
                         ));
                     }
-                    Err(error)
-                        if pool.is_group(entry_name) && is_fallback_validation_error(&error) =>
-                    {
-                        all_not_found = false;
+                    Err(error) if run.is_group() && is_fallback_validation_error(&error) => {
                         let category = failure_category(&error);
                         self.record(
                             "docker_manifest_fetch_failed",
@@ -763,7 +760,7 @@ impl DockerService {
                                 failure_category: Some(category),
                             },
                         );
-                        failures.push(format!("{source_name}: {error}"));
+                        run.record_failure(&source_name, &error.to_string(), false);
                     }
                     Err(error) => {
                         self.record(
@@ -780,10 +777,12 @@ impl DockerService {
                         return Err(error);
                     }
                 },
-                Err(error) if pool.is_group(entry_name) && is_fallback_source_error(&error) => {
-                    if !is_not_found_source_error(&error) {
-                        all_not_found = false;
-                    }
+                Err(error) if run.is_group() && is_fallback_source_error(&error) => {
+                    run.record_failure(
+                        &source_name,
+                        &error.to_string(),
+                        source_error_is_not_found(&error),
+                    );
                     self.record(
                         "docker_manifest_fetch_failed",
                         DockerAuditDetails {
@@ -792,14 +791,13 @@ impl DockerService {
                             selected_proxy: &source_name,
                             object_type: "manifest",
                             cache_status: "miss",
-                            failure_category: Some(if is_not_found_source_error(&error) {
+                            failure_category: Some(if source_error_is_not_found(&error) {
                                 "not_found"
                             } else {
                                 "source_failed"
                             }),
                         },
                     );
-                    failures.push(format!("{source_name}: {error}"));
                 }
                 Err(error) => {
                     self.record(
@@ -810,7 +808,7 @@ impl DockerService {
                             selected_proxy: &source_name,
                             object_type: "manifest",
                             cache_status: "miss",
-                            failure_category: Some(if is_not_found_source_error(&error) {
+                            failure_category: Some(if source_error_is_not_found(&error) {
                                 "not_found"
                             } else {
                                 "source_failed"
@@ -821,12 +819,7 @@ impl DockerService {
                 }
             }
         }
-        Err(DockerError::Source(SourcePoolError::AllSourcesFailed {
-            entry_name: entry_name.to_owned(),
-            request_key,
-            failures: failures.join("; "),
-            status: (all_not_found && !failures.is_empty()).then_some(404),
-        }))
+        Err(DockerError::Source(run.all_sources_failed(request_key)))
     }
 
     fn write_manifest_metadata(
@@ -893,7 +886,7 @@ impl DockerService {
             .lock(&format!("{repository}\0{digest}"))
             .await;
         let entry_metadata = read_blob_metadata(&self.data_dir, entry_name, repository, digest)?;
-        let candidates = candidate_sources(
+        let mut run = GroupRun::new(
             pool,
             entry_name,
             entry_metadata
@@ -903,18 +896,17 @@ impl DockerService {
         let metadata = if let Some(metadata) = entry_metadata {
             metadata
         } else {
-            let metadata = candidates
-                .iter()
-                .find_map(|source_name| {
-                    match read_shared_blob_metadata(&self.data_dir, source_name, repository, digest)
-                    {
-                        Ok(Some(metadata)) => Some(Ok(metadata)),
-                        Ok(None) => None,
-                        Err(error) => Some(Err(error)),
-                    }
-                })
-                .transpose()?
-                .ok_or_else(|| DockerError::UnknownBlob(digest.to_owned()))?;
+            let mut lookup_run = run.clone();
+            let mut shared = None;
+            while let Some(member) = lookup_run.next_member() {
+                if let Some(metadata) =
+                    read_shared_blob_metadata(&self.data_dir, &member.name, repository, digest)?
+                {
+                    shared = Some(metadata);
+                    break;
+                }
+            }
+            let metadata = shared.ok_or_else(|| DockerError::UnknownBlob(digest.to_owned()))?;
             write_blob_metadata(&self.data_dir, entry_name, repository, &metadata)?;
             metadata
         };
@@ -958,9 +950,8 @@ impl DockerService {
             .get(header::RANGE)
             .and_then(|value| value.to_str().ok());
         let request_key = format!("v2/{repository}/blobs/{digest}");
-        let mut failures = Vec::new();
-        let mut all_not_found = true;
-        for source_name in candidates {
+        while let Some(member) = run.next_member() {
+            let source_name = member.name;
             let temporary_path = self.temporary_blob_path();
             match pool
                 .fetch_proxy_registry_path_to_file(
@@ -980,7 +971,7 @@ impl DockerService {
                             actual: upstream.sha256,
                         };
                         let _ = fs::remove_file(&upstream.path);
-                        if pool.is_group(entry_name) {
+                        if run.is_group() {
                             self.record(
                                 "docker_blob_fetch_failed",
                                 DockerAuditDetails {
@@ -992,8 +983,7 @@ impl DockerService {
                                     failure_category: Some("digest_mismatch"),
                                 },
                             );
-                            failures.push(format!("{source_name}: {error}"));
-                            all_not_found = false;
+                            run.record_failure(&source_name, &error.to_string(), false);
                             continue;
                         }
                         self.record(
@@ -1046,10 +1036,12 @@ impl DockerService {
                     )
                     .await;
                 }
-                Err(error) if pool.is_group(entry_name) && is_fallback_source_error(&error) => {
-                    if !is_not_found_source_error(&error) {
-                        all_not_found = false;
-                    }
+                Err(error) if run.is_group() && is_fallback_source_error(&error) => {
+                    run.record_failure(
+                        &source_name,
+                        &error.to_string(),
+                        source_error_is_not_found(&error),
+                    );
                     self.record(
                         "docker_blob_fetch_failed",
                         DockerAuditDetails {
@@ -1058,14 +1050,13 @@ impl DockerService {
                             selected_proxy: &source_name,
                             object_type: &metadata.object_type,
                             cache_status: "miss",
-                            failure_category: Some(if is_not_found_source_error(&error) {
+                            failure_category: Some(if source_error_is_not_found(&error) {
                                 "not_found"
                             } else {
                                 "source_failed"
                             }),
                         },
                     );
-                    failures.push(format!("{source_name}: {error}"));
                 }
                 Err(error) => {
                     self.record(
@@ -1076,7 +1067,7 @@ impl DockerService {
                             selected_proxy: &source_name,
                             object_type: &metadata.object_type,
                             cache_status: "miss",
-                            failure_category: Some(if is_not_found_source_error(&error) {
+                            failure_category: Some(if source_error_is_not_found(&error) {
                                 "not_found"
                             } else {
                                 "source_failed"
@@ -1087,12 +1078,7 @@ impl DockerService {
                 }
             }
         }
-        Err(DockerError::Source(SourcePoolError::AllSourcesFailed {
-            entry_name: entry_name.to_owned(),
-            request_key,
-            failures: failures.join("; "),
-            status: (all_not_found && !failures.is_empty()).then_some(404),
-        }))
+        Err(DockerError::Source(run.all_sources_failed(request_key)))
     }
 
     fn temporary_blob_path(&self) -> PathBuf {
@@ -1774,28 +1760,6 @@ fn source_is_current(
         .is_some_and(|fingerprint| fingerprint == source_fingerprint)
 }
 
-fn candidate_sources(
-    pool: &SourcePool,
-    entry_name: &str,
-    bound_source: Option<&str>,
-) -> Result<Vec<String>, DockerError> {
-    let members = pool
-        .proxy_members(entry_name)
-        .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()))?;
-    let mut candidates = Vec::with_capacity(members.len());
-    if let Some(bound_source) = bound_source
-        && members.iter().any(|member| member.name == bound_source)
-    {
-        candidates.push(bound_source.to_owned());
-    }
-    for member in members {
-        if !candidates.iter().any(|candidate| candidate == &member.name) {
-            candidates.push(member.name);
-        }
-    }
-    Ok(candidates)
-}
-
 fn is_fallback_source_error(error: &SourcePoolError) -> bool {
     source_error_is_group_fallback(error)
 }
@@ -1808,17 +1772,6 @@ fn is_fallback_search_error(error: &DockerError) -> bool {
         DockerError::Source(source) => is_fallback_source_error(source),
         _ => false,
     }
-}
-
-fn is_not_found_source_error(error: &SourcePoolError) -> bool {
-    matches!(
-        error,
-        SourcePoolError::TerminalSourceError { status: 404, .. }
-            | SourcePoolError::AllSourcesFailed {
-                status: Some(404),
-                ..
-            }
-    )
 }
 
 fn is_fallback_validation_error(error: &DockerError) -> bool {
