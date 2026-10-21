@@ -58,6 +58,8 @@ async fn refresh_publishes_a_rewritten_manifest_snapshot() {
         data_dir: PathBuf::from(directory.path()),
         log_dir: PathBuf::from("logs"),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
+        proxy_url: None,
+        proxy_no_proxy: None,
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -206,6 +208,8 @@ async fn artifact_cache_is_shared_by_group_and_its_proxy() {
         data_dir: data_dir.path().to_path_buf(),
         log_dir: PathBuf::from("logs"),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
+        proxy_url: None,
+        proxy_no_proxy: None,
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -319,6 +323,8 @@ async fn proxy_manifest_can_reference_another_configured_proxy() {
         data_dir: data_dir.path().to_path_buf(),
         log_dir: PathBuf::from("logs"),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
+        proxy_url: None,
+        proxy_no_proxy: None,
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -423,6 +429,8 @@ async fn artifact_request_uses_the_source_matched_by_manifest_url() {
         data_dir: data_dir.path().to_path_buf(),
         log_dir: PathBuf::from("logs"),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
+        proxy_url: None,
+        proxy_no_proxy: None,
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -636,6 +644,8 @@ async fn artifacts_follow_each_channel_snapshot_source_and_keep_separate_caches(
         data_dir: data_dir.path().to_path_buf(),
         log_dir: PathBuf::from("logs"),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
+        proxy_url: None,
+        proxy_no_proxy: None,
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -954,6 +964,8 @@ fn service_with_sources(sources: Vec<SourceConfig>, data_dir: PathBuf) -> Rustup
         data_dir,
         log_dir: PathBuf::from("logs"),
         root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
+        proxy_url: None,
+        proxy_no_proxy: None,
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,

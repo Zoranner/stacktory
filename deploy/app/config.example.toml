@@ -3,6 +3,9 @@ listen_port = 18761
 data_dir = "/app/data"
 log_dir = "/app/logs"
 root_url = "https://stacktory.example.internal"
+# Optional outbound HTTP/HTTPS proxy for upstream requests.
+# proxy_url = "http://proxy.example.internal:8080"
+# proxy_no_proxy = "localhost,127.0.0.1,.internal"
 
 [retention]
 # Ecosystem metadata files older than this are removed by the retention task.

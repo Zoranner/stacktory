@@ -159,9 +159,25 @@ pub fn register_adapter(
     root_url: Url,
     data_dir: impl Into<PathBuf>,
 ) -> Result<(), DockerRegistrationError> {
+    register_adapter_with_proxy(registry, config, root_url, data_dir, None, None)
+}
+
+pub fn register_adapter_with_proxy(
+    registry: &mut AdapterRegistry,
+    config: DockerConfig,
+    root_url: Url,
+    data_dir: impl Into<PathBuf>,
+    proxy_url: Option<&Url>,
+    proxy_no_proxy: Option<&str>,
+) -> Result<(), DockerRegistrationError> {
     registry.register(
         "docker",
-        Arc::new(SourcePool::new("docker", config.sources)?),
+        Arc::new(SourcePool::new_with_proxy(
+            "docker",
+            config.sources,
+            proxy_url,
+            proxy_no_proxy,
+        )?),
         Arc::new(DockerAdapter::new(root_url, data_dir)),
     )?;
     Ok(())

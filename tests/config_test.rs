@@ -330,6 +330,66 @@ fn accepts_public_production_configuration() {
 }
 
 #[test]
+fn accepts_outbound_proxy_configuration() {
+    let configuration = LOCAL_DEVELOPMENT.replace(
+        "root_url = \"http://127.0.0.1:18761\"",
+        "root_url = \"http://127.0.0.1:18761\"\n\
+proxy_url = \"http://proxy.example.internal:8080\"\n\
+proxy_no_proxy = \"localhost,127.0.0.1,.internal\"",
+    );
+
+    let config = Config::from_toml(&configuration).expect("proxy configuration");
+
+    assert_eq!(
+        config.proxy_url.as_ref().expect("proxy URL").as_str(),
+        "http://proxy.example.internal:8080/"
+    );
+    assert_eq!(
+        config.proxy_no_proxy.as_deref(),
+        Some("localhost,127.0.0.1,.internal")
+    );
+}
+
+#[test]
+fn rejects_unsupported_outbound_proxy_scheme() {
+    let configuration = LOCAL_DEVELOPMENT.replace(
+        "root_url = \"http://127.0.0.1:18761\"",
+        "root_url = \"http://127.0.0.1:18761\"\n\
+proxy_url = \"socks5://proxy.example.internal:1080\"",
+    );
+
+    let error = Config::from_toml(&configuration).expect_err("unsupported proxy scheme");
+
+    assert!(matches!(error, ConfigError::InvalidProxyScheme));
+}
+
+#[test]
+fn rejects_outbound_proxy_with_a_path() {
+    let configuration = LOCAL_DEVELOPMENT.replace(
+        "root_url = \"http://127.0.0.1:18761\"",
+        "root_url = \"http://127.0.0.1:18761\"\n\
+proxy_url = \"http://proxy.example.internal:8080/forward\"",
+    );
+
+    let error = Config::from_toml(&configuration).expect_err("proxy path");
+
+    assert!(matches!(error, ConfigError::InvalidProxyUrl));
+}
+
+#[test]
+fn rejects_no_proxy_without_a_proxy_url() {
+    let configuration = LOCAL_DEVELOPMENT.replace(
+        "root_url = \"http://127.0.0.1:18761\"",
+        "root_url = \"http://127.0.0.1:18761\"\n\
+proxy_no_proxy = \"localhost\"",
+    );
+
+    let error = Config::from_toml(&configuration).expect_err("no_proxy without proxy");
+
+    assert!(matches!(error, ConfigError::ProxyNoProxyWithoutProxy));
+}
+
+#[test]
 fn docker_sources_accept_optional_cli_listen_ports() {
     let configuration = format!(
         "{LOCAL_DEVELOPMENT}\n\

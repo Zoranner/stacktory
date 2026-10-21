@@ -39,17 +39,27 @@ pub(crate) struct HttpFetcher {
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-struct PublicResolver;
+struct PublicResolver {
+    allowed_proxy_host: Option<String>,
+}
+
+impl PublicResolver {
+    fn new(allowed_proxy_host: Option<String>) -> Self {
+        Self { allowed_proxy_host }
+    }
+}
 
 impl Resolve for PublicResolver {
     fn resolve(&self, name: Name) -> Resolving {
         let host = name.as_str().to_owned();
+        let allowed_proxy_host = self.allowed_proxy_host.clone();
         Box::pin(async move {
             let addresses = tokio::net::lookup_host((host.as_str(), 0))
                 .await
                 .map_err(|error| -> BoxError { Box::new(error) })?;
+            let allow_private = allowed_proxy_host.as_deref() == Some(host.as_str());
             let allowed = addresses
-                .filter(|address| !is_private_or_local_address(address.ip()))
+                .filter(|address| allow_private || !is_private_or_local_address(address.ip()))
                 .collect::<Vec<_>>();
             if allowed.is_empty() {
                 return Err(Box::new(std::io::Error::other(
@@ -81,11 +91,20 @@ pub(crate) enum FetchError {
     UnsafeRegistryRedirect(Url),
     #[error("upstream Registry redirect chain from `{0}` is too long")]
     RegistryRedirectLimit(Url),
+    #[error("outbound proxy cannot be configured: {0}")]
+    InvalidProxy(reqwest::Error),
 }
 
 impl HttpFetcher {
     pub(crate) fn new() -> Result<Self, FetchError> {
-        Self::build_clients(&[])
+        Self::build_clients(&[], None, None)
+    }
+
+    pub(crate) fn new_with_proxy(
+        proxy_url: Option<&Url>,
+        proxy_no_proxy: Option<&str>,
+    ) -> Result<Self, FetchError> {
+        Self::build_clients(&[], proxy_url, proxy_no_proxy)
     }
 
     pub(crate) fn new_with_resolver(host: &str, address: SocketAddr) -> Result<Self, FetchError> {
@@ -93,26 +112,47 @@ impl HttpFetcher {
     }
 
     pub(crate) fn new_with_resolvers(resolvers: &[(&str, SocketAddr)]) -> Result<Self, FetchError> {
-        Self::build_clients(resolvers)
+        Self::build_clients(resolvers, None, None)
     }
 
-    fn build_clients(resolvers: &[(&str, SocketAddr)]) -> Result<Self, FetchError> {
+    fn build_clients(
+        resolvers: &[(&str, SocketAddr)],
+        proxy_url: Option<&Url>,
+        proxy_no_proxy: Option<&str>,
+    ) -> Result<Self, FetchError> {
         Ok(Self {
-            client: Self::build_client(resolvers, false)?,
-            public_client: Self::build_client(resolvers, true)?,
+            client: Self::build_client(resolvers, false, proxy_url, proxy_no_proxy)?,
+            public_client: Self::build_client(resolvers, true, proxy_url, proxy_no_proxy)?,
         })
     }
 
     fn build_client(
         resolvers: &[(&str, SocketAddr)],
         public: bool,
+        proxy_url: Option<&Url>,
+        proxy_no_proxy: Option<&str>,
     ) -> Result<reqwest::Client, FetchError> {
         let mut builder = reqwest::Client::builder();
         for (host, address) in resolvers {
             builder = builder.resolve(host, *address);
         }
+        if let Some(proxy_url) = proxy_url {
+            let mut proxy =
+                reqwest::Proxy::all(proxy_url.as_str()).map_err(FetchError::InvalidProxy)?;
+            let no_proxy = proxy_no_proxy
+                .and_then(reqwest::NoProxy::from_string)
+                .or_else(reqwest::NoProxy::from_env);
+            if let Some(no_proxy) = no_proxy {
+                proxy = proxy.no_proxy(Some(no_proxy));
+            }
+            builder = builder.proxy(proxy);
+        }
         if public {
-            builder = builder.dns_resolver(Arc::new(PublicResolver));
+            builder = builder.dns_resolver(Arc::new(PublicResolver::new(
+                proxy_url
+                    .and_then(|url| url.host_str())
+                    .map(|host| host.to_ascii_lowercase()),
+            )));
         }
         Ok(builder
             .redirect(Policy::none())
@@ -534,15 +574,21 @@ impl FetchError {
             | Self::UnsafeRegistryRedirect(_)
             | Self::RegistryRedirectLimit(_) => true,
             Self::HttpStatus(_, status) => status.is_redirection() || status.is_server_error(),
-            Self::TempFile(_) => false,
+            Self::TempFile(_) | Self::InvalidProxy(_) => false,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::{PublicResolver, is_safe_registry_redirect, is_safe_registry_token_url};
     use reqwest::dns::Resolve;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
     use url::Url;
 
     #[test]
@@ -583,8 +629,56 @@ mod tests {
     #[tokio::test]
     async fn public_resolver_rejects_loopback_hostname() {
         let name = "localhost".parse().expect("DNS name");
-        let result = PublicResolver.resolve(name).await;
+        let result = PublicResolver::new(None).resolve(name).await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn public_resolver_allows_the_configured_proxy_hostname() {
+        let name = "localhost".parse().expect("DNS name");
+        let result = PublicResolver::new(Some("localhost".to_owned()))
+            .resolve(name)
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn public_client_uses_the_configured_proxy() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("proxy listener");
+        let address = listener.local_addr().expect("proxy address");
+        let proxy_task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("proxy connection");
+            let mut buffer = vec![0; 4096];
+            let read = stream.read(&mut buffer).await.expect("proxy request");
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            assert!(
+                request.starts_with("GET http://upstream.invalid/probe HTTP/1.1"),
+                "unexpected proxy request: {request}"
+            );
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nproxy",
+                )
+                .await
+                .expect("proxy response");
+        });
+
+        let proxy_url = Url::parse(&format!("http://{address}")).expect("proxy URL");
+        let fetcher = super::HttpFetcher::new_with_proxy(Some(&proxy_url), Some(""))
+            .expect("fetcher with proxy");
+        let response = fetcher
+            .fetch_public(
+                Url::parse("http://upstream.invalid/probe").expect("target URL"),
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("proxied response");
+
+        assert_eq!(response.body, b"proxy");
+        proxy_task.await.expect("proxy task");
     }
 }

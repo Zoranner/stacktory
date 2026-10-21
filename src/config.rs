@@ -11,6 +11,8 @@ pub struct Config {
     pub data_dir: PathBuf,
     pub log_dir: PathBuf,
     pub root_url: Url,
+    pub proxy_url: Option<Url>,
+    pub proxy_no_proxy: Option<String>,
     pub retention: RetentionConfig,
     pub rustup: RustupConfig,
     pub cargo: Option<CargoConfig>,
@@ -229,6 +231,12 @@ pub enum ConfigError {
     Parse(#[from] toml::de::Error),
     #[error("root_url must use https outside localhost")]
     RootUrlMustUseHttps,
+    #[error("proxy_url must use http or https")]
+    InvalidProxyScheme,
+    #[error("proxy_url must include a host and must not include a path, query or fragment")]
+    InvalidProxyUrl,
+    #[error("proxy_no_proxy requires proxy_url")]
+    ProxyNoProxyWithoutProxy,
     #[error("sources must contain at least one source")]
     MissingSource,
     #[error("source name `{0}` is invalid")]
@@ -290,6 +298,10 @@ struct RawConfig {
     #[serde(default = "default_log_dir")]
     log_dir: PathBuf,
     root_url: Url,
+    #[serde(default)]
+    proxy_url: Option<Url>,
+    #[serde(default)]
+    proxy_no_proxy: Option<String>,
     #[serde(default)]
     retention: RetentionConfig,
     rustup: RawRustupConfig,
@@ -370,6 +382,20 @@ impl Config {
         if !is_localhost(&raw.root_url) && raw.root_url.scheme() != "https" {
             return Err(ConfigError::RootUrlMustUseHttps);
         }
+        if let Some(proxy_url) = &raw.proxy_url {
+            if !matches!(proxy_url.scheme(), "http" | "https") {
+                return Err(ConfigError::InvalidProxyScheme);
+            }
+            if proxy_url.host_str().is_none()
+                || proxy_url.path() != "/"
+                || proxy_url.query().is_some()
+                || proxy_url.fragment().is_some()
+            {
+                return Err(ConfigError::InvalidProxyUrl);
+            }
+        } else if raw.proxy_no_proxy.is_some() {
+            return Err(ConfigError::ProxyNoProxyWithoutProxy);
+        }
         if raw.rustup.refresh_interval_secs == 0 {
             return Err(ConfigError::InvalidRustupRefreshInterval);
         }
@@ -411,6 +437,8 @@ impl Config {
             data_dir: raw.data_dir,
             log_dir: raw.log_dir,
             root_url: raw.root_url,
+            proxy_url: raw.proxy_url,
+            proxy_no_proxy: raw.proxy_no_proxy,
             retention: raw.retention,
             rustup: RustupConfig {
                 refresh_interval_secs: raw.rustup.refresh_interval_secs,

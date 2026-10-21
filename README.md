@@ -39,6 +39,20 @@ cargo run
 
 `config.toml` 只从当前工作目录读取；容器部署请使用 `deploy/app/config.example.toml`。
 
+## 出站代理
+
+如果服务所在网络访问上游制品库必须经过 HTTP/HTTPS 代理，在 `config.toml` 顶层增加：
+
+```toml
+proxy_url = "http://proxy.example.internal:8080"
+proxy_no_proxy = "localhost,127.0.0.1,.internal"
+```
+
+`proxy_url` 会应用于 Rustup、Cargo、npm、NuGet、UPM、VS Code 和 Docker 的所有上游请求。
+只支持 HTTP/HTTPS 代理地址；`proxy_no_proxy` 可选，用于指定不经过代理的主机或域名。
+未配置 `proxy_no_proxy` 时会读取 `NO_PROXY` 环境变量；如果两者都存在，`NO_PROXY` 优先。
+容器内配置时，`proxy_url` 必须是容器可访问的地址；宿主机的 `127.0.0.1` 在容器内通常无效。
+
 ## 容器部署
 
 在仓库根目录执行：

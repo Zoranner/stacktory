@@ -82,6 +82,19 @@ impl SourcePool {
         Self::with_fetcher(ecosystem, graph, HttpFetcher::new())
     }
 
+    pub fn new_with_proxy(
+        ecosystem: impl Into<String>,
+        graph: SourceGraph,
+        proxy_url: Option<&Url>,
+        proxy_no_proxy: Option<&str>,
+    ) -> Result<Self, SourcePoolError> {
+        Self::with_fetcher(
+            ecosystem,
+            graph,
+            HttpFetcher::new_with_proxy(proxy_url, proxy_no_proxy),
+        )
+    }
+
     pub fn new_with_resolver(
         ecosystem: impl Into<String>,
         graph: SourceGraph,

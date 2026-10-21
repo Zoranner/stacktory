@@ -44,7 +44,14 @@ pub enum ServiceError {
 
 impl RustupService {
     pub fn new(config: Config) -> Result<Self, ServiceError> {
-        let sources = SourcePool::new("rustup", config.rustup.sources)?;
+        let proxy_url = config.proxy_url.clone();
+        let proxy_no_proxy = config.proxy_no_proxy.clone();
+        let sources = SourcePool::new_with_proxy(
+            "rustup",
+            config.rustup.sources,
+            proxy_url.as_ref(),
+            proxy_no_proxy.as_deref(),
+        )?;
         Ok(Self {
             channels: config.rustup.channels,
             refresh_interval_secs: config.rustup.refresh_interval_secs,

@@ -4,7 +4,7 @@ use stacktory::{
     Config, SourcePool,
     audit::AuditSink,
     cargo::CargoAdapter,
-    docker::register_adapter,
+    docker::register_adapter_with_proxy,
     http::{router_with_docker_entry, router_with_rustup_and_registry},
     logging,
     npm::NpmAdapter,
@@ -155,10 +155,17 @@ fn configured_registry(
     docker_listeners: &mut Vec<DockerListener>,
 ) -> Result<AdapterRegistry, Box<dyn std::error::Error>> {
     let mut registry = AdapterRegistry::new();
+    let proxy_url = config.proxy_url.clone();
+    let proxy_no_proxy = config.proxy_no_proxy.clone();
     if let Some(cargo) = config.cargo.take() {
         registry.register(
             "cargo",
-            Arc::new(SourcePool::new("cargo", cargo.sources)?),
+            Arc::new(SourcePool::new_with_proxy(
+                "cargo",
+                cargo.sources,
+                proxy_url.as_ref(),
+                proxy_no_proxy.as_deref(),
+            )?),
             Arc::new(CargoAdapter::new(
                 config.root_url.clone(),
                 config.data_dir.clone(),
@@ -168,7 +175,12 @@ fn configured_registry(
     if let Some(npm) = config.npm.take() {
         registry.register(
             "npm",
-            Arc::new(SourcePool::new("npm", npm.sources)?),
+            Arc::new(SourcePool::new_with_proxy(
+                "npm",
+                npm.sources,
+                proxy_url.as_ref(),
+                proxy_no_proxy.as_deref(),
+            )?),
             Arc::new(NpmAdapter::new(
                 config.root_url.clone(),
                 config.data_dir.clone(),
@@ -178,7 +190,12 @@ fn configured_registry(
     if let Some(nuget) = config.nuget.take() {
         registry.register(
             "nuget",
-            Arc::new(SourcePool::new("nuget", nuget.sources)?),
+            Arc::new(SourcePool::new_with_proxy(
+                "nuget",
+                nuget.sources,
+                proxy_url.as_ref(),
+                proxy_no_proxy.as_deref(),
+            )?),
             Arc::new(NugetAdapter::new(
                 config.root_url.clone(),
                 config.data_dir.clone(),
@@ -188,7 +205,12 @@ fn configured_registry(
     if let Some(upm) = config.upm.take() {
         registry.register(
             "upm",
-            Arc::new(SourcePool::new("upm", upm.sources)?),
+            Arc::new(SourcePool::new_with_proxy(
+                "upm",
+                upm.sources,
+                proxy_url.as_ref(),
+                proxy_no_proxy.as_deref(),
+            )?),
             Arc::new(UpmAdapter::new(
                 config.root_url.clone(),
                 config.data_dir.clone(),
@@ -198,7 +220,12 @@ fn configured_registry(
     if let Some(vscode) = config.vscode.take() {
         registry.register(
             "vscode",
-            Arc::new(SourcePool::new("vscode", vscode.sources)?),
+            Arc::new(SourcePool::new_with_proxy(
+                "vscode",
+                vscode.sources,
+                proxy_url.as_ref(),
+                proxy_no_proxy.as_deref(),
+            )?),
             Arc::new(VscodeAdapter::new(
                 config.root_url.clone(),
                 config.data_dir.clone(),
@@ -213,11 +240,13 @@ fn configured_registry(
                 entry_name,
             },
         ));
-        register_adapter(
+        register_adapter_with_proxy(
             &mut registry,
             docker,
             config.root_url.clone(),
             config.data_dir.clone(),
+            proxy_url.as_ref(),
+            proxy_no_proxy.as_deref(),
         )?;
     }
     Ok(registry)
@@ -243,6 +272,8 @@ mod tests {
             data_dir: tempfile::tempdir().expect("data directory").keep(),
             log_dir: PathBuf::from("logs"),
             root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
+            proxy_url: None,
+            proxy_no_proxy: None,
             retention: RetentionConfig::default(),
             rustup: RustupConfig {
                 refresh_interval_secs: 60,
