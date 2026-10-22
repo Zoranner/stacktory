@@ -1,24 +1,32 @@
-listen_address = "0.0.0.0"
-listen_port = 18761
+# 进程级监听端点和客户端可见地址。
+[server]
+address = "0.0.0.0"
+port = 18761
+# 经反向代理发布时，这里的端口可以与监听端口不同。
+public_url = "https://stacktory.example.internal"
+
+# 持久化数据和运行日志目录。
+[storage]
 data_dir = "/app/data"
 log_dir = "/app/logs"
-root_url = "https://stacktory.example.internal"
-# Optional outbound HTTP/HTTPS proxy for upstream requests.
-# proxy_url = "http://proxy.example.internal:8080"
-# proxy_no_proxy = "localhost,127.0.0.1,.internal"
+
+# 可选：访问上游时使用的 HTTP/HTTPS 出站代理。
+# [proxy]
+# url = "http://proxy.example.internal:8080"
+# no_proxy = "localhost,127.0.0.1,.internal"
 
 [retention]
-# Ecosystem metadata files older than this are removed by the retention task.
-metadata_ttl_secs = 604800
-# Rotated audit files are kept for this many days.
+# 超过此时长的生态 metadata 文件会被保留清理任务删除。
+metadata_retention_secs = 604800
+# 轮转后的审计文件保留天数。
 audit_retention_days = 30
-# Retention task interval.
+# 保留清理任务的执行间隔。
 cleanup_interval_secs = 3600
-# Rustup snapshot revisions kept per entry and channel.
+# 每个入口和 channel 保留的 Rustup 快照版本数。
 rustup_snapshot_revisions = 3
-# Artifact objects idle for longer than this are removed; 0 disables idle eviction.
+# 制品对象空闲超过此时长后删除；设为 0 表示禁用空闲淘汰。
 artifact_idle_secs = 7776000
-# Rotated run logs are kept for this many days.
+# 轮转后的运行日志保留天数。
 log_retention_days = 30
 
 [rustup]
@@ -68,61 +76,60 @@ members = ["official", "ustc"]
 name = "official"
 type = "proxy"
 base_url = "https://registry-1.docker.io"
-# Optional standard Docker CLI listener for this source.
-# listen_port = 19001
+# 可选：为此来源启动标准 Docker CLI 监听端口。
+# cli_listen_port = 19001
 
 [[docker.sources]]
 name = "microsoft"
 type = "proxy"
 base_url = "https://mcr.microsoft.com"
-# listen_port = 19002
+# cli_listen_port = 19002
 
 [[docker.sources]]
 name = "ghcr"
 type = "proxy"
 base_url = "https://ghcr.io"
-# listen_port = 19003
+# cli_listen_port = 19003
 
 [[docker.sources]]
 name = "quay"
 type = "proxy"
 base_url = "https://quay.io"
-# listen_port = 19004
+# cli_listen_port = 19004
 
 [[docker.sources]]
 name = "aliyun"
 type = "proxy"
 base_url = "https://registry.cn-hangzhou.aliyuncs.com"
-# listen_port = 19005
+# cli_listen_port = 19005
 
 [[docker.sources]]
 name = "xuanyuan"
 type = "proxy"
 base_url = "https://docker.xuanyuan.me"
-# listen_port = 19006
+# cli_listen_port = 19006
 
 [[docker.sources]]
 name = "unstructured"
 type = "proxy"
 base_url = "https://downloads.unstructured.io"
-# listen_port = 19007
+# cli_listen_port = 19007
 
 [[docker.sources]]
 name = "group"
 type = "group"
-# Prefer the Docker Hub mirror first; some deployments cannot reach the
-# official registry directly, so keep it as a last-resort member.
+# 官方 Docker Hub 始终排在首位，备用来源按此顺序回退。
 members = [
-  "xuanyuan",
-  "microsoft",
+  "official",
   "ghcr",
   "quay",
+  "microsoft",
   "aliyun",
+  "xuanyuan",
   "unstructured",
-  "official",
 ]
-# Standard Docker CLI listener for the group entry.
-listen_port = 19000
+# group 入口的标准 Docker CLI 监听端口。
+cli_listen_port = 19000
 
 [npm]
 

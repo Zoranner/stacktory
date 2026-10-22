@@ -10,8 +10,8 @@ use std::{
 use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
 use sha2::{Digest, Sha256};
 use stacktory::{
-    Config, RetentionConfig, RustupConfig, SourceConfig, SourceGraph, SourceType, rustup::DistPath,
-    service::RustupService,
+    Config, ProxyConfig, RetentionConfig, RustupConfig, ServerConfig, SourceConfig, SourceGraph,
+    SourceType, StorageConfig, rustup::DistPath, service::RustupService,
 };
 use tempfile::tempdir;
 use tokio::net::TcpListener;
@@ -53,13 +53,16 @@ async fn refresh_publishes_a_rewritten_manifest_snapshot() {
 
     let directory = tempdir().expect("temporary directory");
     let service = RustupService::new(Config {
-        listen_address: "127.0.0.1".parse().expect("address"),
-        listen_port: 18761,
-        data_dir: PathBuf::from(directory.path()),
-        log_dir: PathBuf::from("logs"),
-        root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
-        proxy_url: None,
-        proxy_no_proxy: None,
+        server: ServerConfig {
+            address: "127.0.0.1".parse().expect("address"),
+            port: 18761,
+            public_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+        },
+        storage: StorageConfig {
+            data_dir: PathBuf::from(directory.path()),
+            log_dir: PathBuf::from("logs"),
+        },
+        proxy: ProxyConfig::default(),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -78,7 +81,6 @@ async fn refresh_publishes_a_rewritten_manifest_snapshot() {
         docker: None,
         npm: None,
         nuget: None,
-        pypi: None,
         upm: None,
     })
     .expect("service");
@@ -249,13 +251,16 @@ async fn artifact_cache_is_shared_by_group_and_its_proxy() {
         start_artifact_upstream(artifact.to_vec(), expected_hash, requests.clone()).await;
     let data_dir = tempdir().expect("temporary directory");
     let service = RustupService::new(Config {
-        listen_address: "127.0.0.1".parse().expect("address"),
-        listen_port: 18761,
-        data_dir: data_dir.path().to_path_buf(),
-        log_dir: PathBuf::from("logs"),
-        root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
-        proxy_url: None,
-        proxy_no_proxy: None,
+        server: ServerConfig {
+            address: "127.0.0.1".parse().expect("address"),
+            port: 18761,
+            public_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+        },
+        storage: StorageConfig {
+            data_dir: data_dir.path().to_path_buf(),
+            log_dir: PathBuf::from("logs"),
+        },
+        proxy: ProxyConfig::default(),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -271,7 +276,6 @@ async fn artifact_cache_is_shared_by_group_and_its_proxy() {
         docker: None,
         npm: None,
         nuget: None,
-        pypi: None,
         upm: None,
     })
     .expect("service");
@@ -364,13 +368,16 @@ async fn proxy_manifest_can_reference_another_configured_proxy() {
 
     let data_dir = tempdir().expect("temporary directory");
     let service = RustupService::new(Config {
-        listen_address: "127.0.0.1".parse().expect("address"),
-        listen_port: 18761,
-        data_dir: data_dir.path().to_path_buf(),
-        log_dir: PathBuf::from("logs"),
-        root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
-        proxy_url: None,
-        proxy_no_proxy: None,
+        server: ServerConfig {
+            address: "127.0.0.1".parse().expect("address"),
+            port: 18761,
+            public_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+        },
+        storage: StorageConfig {
+            data_dir: data_dir.path().to_path_buf(),
+            log_dir: PathBuf::from("logs"),
+        },
+        proxy: ProxyConfig::default(),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -386,7 +393,6 @@ async fn proxy_manifest_can_reference_another_configured_proxy() {
         docker: None,
         npm: None,
         nuget: None,
-        pypi: None,
         upm: None,
     })
     .expect("service");
@@ -470,13 +476,16 @@ async fn artifact_request_uses_the_source_matched_by_manifest_url() {
 
     let data_dir = tempdir().expect("temporary directory");
     let service = RustupService::new(Config {
-        listen_address: "127.0.0.1".parse().expect("address"),
-        listen_port: 18761,
-        data_dir: data_dir.path().to_path_buf(),
-        log_dir: PathBuf::from("logs"),
-        root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
-        proxy_url: None,
-        proxy_no_proxy: None,
+        server: ServerConfig {
+            address: "127.0.0.1".parse().expect("address"),
+            port: 18761,
+            public_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+        },
+        storage: StorageConfig {
+            data_dir: data_dir.path().to_path_buf(),
+            log_dir: PathBuf::from("logs"),
+        },
+        proxy: ProxyConfig::default(),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -493,7 +502,6 @@ async fn artifact_request_uses_the_source_matched_by_manifest_url() {
         docker: None,
         npm: None,
         nuget: None,
-        pypi: None,
         upm: None,
     })
     .expect("service");
@@ -685,13 +693,16 @@ async fn artifacts_follow_each_channel_snapshot_source_and_keep_separate_caches(
 
     let data_dir = tempdir().expect("temporary directory");
     let service = RustupService::new(Config {
-        listen_address: "127.0.0.1".parse().expect("address"),
-        listen_port: 18761,
-        data_dir: data_dir.path().to_path_buf(),
-        log_dir: PathBuf::from("logs"),
-        root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
-        proxy_url: None,
-        proxy_no_proxy: None,
+        server: ServerConfig {
+            address: "127.0.0.1".parse().expect("address"),
+            port: 18761,
+            public_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+        },
+        storage: StorageConfig {
+            data_dir: data_dir.path().to_path_buf(),
+            log_dir: PathBuf::from("logs"),
+        },
+        proxy: ProxyConfig::default(),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -708,7 +719,6 @@ async fn artifacts_follow_each_channel_snapshot_source_and_keep_separate_caches(
         docker: None,
         npm: None,
         nuget: None,
-        pypi: None,
         upm: None,
     })
     .expect("service");
@@ -1017,13 +1027,16 @@ fn service_with_sources_and_root(
     root_url: Url,
 ) -> RustupService {
     RustupService::new(Config {
-        listen_address: "127.0.0.1".parse().expect("address"),
-        listen_port: 18761,
-        data_dir,
-        log_dir: PathBuf::from("logs"),
-        root_url,
-        proxy_url: None,
-        proxy_no_proxy: None,
+        server: ServerConfig {
+            address: "127.0.0.1".parse().expect("address"),
+            port: 18761,
+            public_url: root_url,
+        },
+        storage: StorageConfig {
+            data_dir,
+            log_dir: PathBuf::from("logs"),
+        },
+        proxy: ProxyConfig::default(),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -1035,7 +1048,6 @@ fn service_with_sources_and_root(
         docker: None,
         npm: None,
         nuget: None,
-        pypi: None,
         upm: None,
     })
     .expect("service")

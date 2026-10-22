@@ -1,10 +1,13 @@
 use stacktory::{Config, SourceType};
 
 const CONFIGURATION: &str = r#"
-listen_address = "127.0.0.1"
-listen_port = 18761
+[server]
+address = "127.0.0.1"
+port = 18761
+public_url = "http://127.0.0.1:18761"
+
+[storage]
 data_dir = "./var/stacktory"
-root_url = "http://127.0.0.1:18761"
 
 [rustup]
 refresh_interval_secs = 3600
@@ -109,15 +112,15 @@ fn rejects_duplicate_source_name() {
 }
 
 #[test]
-fn rejects_group_with_require_https() {
+fn rejects_group_with_allow_http() {
     let configuration = CONFIGURATION.replace(
         "type = \"group\"\nmembers = [\"company-nexus\", \"rust-lang\"]",
-        "type = \"group\"\nrequire_https = false\nmembers = [\"company-nexus\", \"rust-lang\"]",
+        "type = \"group\"\nallow_http = true\nmembers = [\"company-nexus\", \"rust-lang\"]",
     );
 
-    let error = Config::from_toml(&configuration).expect_err("group require_https must fail");
+    let error = Config::from_toml(&configuration).expect_err("group allow_http must fail");
 
-    assert!(error.to_string().contains("require_https"));
+    assert!(error.to_string().contains("allow_http"));
 }
 
 #[test]

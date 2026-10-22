@@ -56,10 +56,10 @@ impl RustupService {
         config: Config,
         artifact_budget: ArtifactBudget,
     ) -> Result<Self, ServiceError> {
-        let proxy_url = config.proxy_url.clone();
-        let proxy_no_proxy = config.proxy_no_proxy.clone();
-        let data_dir = config.data_dir.clone();
-        let log_dir = config.log_dir.clone();
+        let proxy_url = config.proxy.url.clone();
+        let proxy_no_proxy = config.proxy.no_proxy.clone();
+        let data_dir = config.storage.data_dir.clone();
+        let log_dir = config.storage.log_dir.clone();
         cleanup_temporary_artifacts(&data_dir);
         let sources = SourcePool::new_with_proxy(
             "rustup",
@@ -71,7 +71,7 @@ impl RustupService {
         Ok(Self {
             channels: config.rustup.channels,
             refresh_interval_secs: config.rustup.refresh_interval_secs,
-            root_url: config.root_url,
+            root_url: config.server.public_url,
             sources,
             snapshots: SnapshotStore::new(data_dir.clone()),
             cache: ArtifactCache::new(data_dir.clone()),

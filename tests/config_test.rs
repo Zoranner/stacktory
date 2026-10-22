@@ -3,10 +3,13 @@ use std::path::PathBuf;
 use stacktory::{Config, ConfigError, RetentionConfig};
 
 const LOCAL_DEVELOPMENT: &str = r#"
-listen_address = "127.0.0.1"
-listen_port = 18761
+[server]
+address = "127.0.0.1"
+port = 18761
+public_url = "http://127.0.0.1:18761"
+
+[storage]
 data_dir = "./var/stacktory"
-root_url = "http://127.0.0.1:18761"
 
 [rustup]
 refresh_interval_secs = 3600
@@ -19,10 +22,13 @@ base_url = "https://pkg.example.internal/repository/rustup-group"
 "#;
 
 const PUBLIC_PRODUCTION: &str = r#"
-listen_address = "0.0.0.0"
-listen_port = 18761
+[server]
+address = "0.0.0.0"
+port = 18761
+public_url = "https://rustup.stacktory.internal"
+
+[storage]
 data_dir = "./var/stacktory"
-root_url = "https://rustup.stacktory.internal"
 
 [rustup]
 refresh_interval_secs = 3600
@@ -40,8 +46,9 @@ const DEPLOYMENT_CONFIG: &str = include_str!("../deploy/app/config.example.toml"
 fn accepts_local_development_configuration() {
     let config = Config::from_toml(LOCAL_DEVELOPMENT).expect("local development configuration");
 
-    assert_eq!(config.listen_address.to_string(), "127.0.0.1");
-    assert_eq!(config.listen_port, 18761);
+    assert_eq!(config.server.address.to_string(), "127.0.0.1");
+    assert_eq!(config.server.port, 18761);
+    assert_eq!(config.server.public_url.as_str(), "http://127.0.0.1:18761/");
     assert_eq!(config.rustup.refresh_interval_secs, 3600);
     assert_eq!(config.rustup.channels, ["stable", "beta"]);
     assert_eq!(
@@ -64,7 +71,7 @@ fn applies_default_retention_configuration() {
     let config = Config::from_toml(LOCAL_DEVELOPMENT).expect("local development configuration");
 
     assert_eq!(config.retention, RetentionConfig::default());
-    assert_eq!(config.retention.metadata_ttl_secs, 604_800);
+    assert_eq!(config.retention.metadata_retention_secs, 604_800);
     assert_eq!(config.retention.audit_retention_days, 30);
     assert_eq!(config.retention.cleanup_interval_secs, 3_600);
     assert_eq!(config.retention.rustup_snapshot_revisions, 3);
@@ -74,11 +81,11 @@ fn applies_default_retention_configuration() {
 #[test]
 fn accepts_explicit_retention_configuration() {
     let configuration = LOCAL_DEVELOPMENT.to_owned()
-        + "\n[retention]\nmetadata_ttl_secs = 86_400\naudit_retention_days = 7\ncleanup_interval_secs = 600\nrustup_snapshot_revisions = 4\nartifact_idle_secs = 0\n";
+        + "\n[retention]\nmetadata_retention_secs = 86_400\naudit_retention_days = 7\ncleanup_interval_secs = 600\nrustup_snapshot_revisions = 4\nartifact_idle_secs = 0\n";
 
     let config = Config::from_toml(&configuration).expect("explicit retention configuration");
 
-    assert_eq!(config.retention.metadata_ttl_secs, 86_400);
+    assert_eq!(config.retention.metadata_retention_secs, 86_400);
     assert_eq!(config.retention.audit_retention_days, 7);
     assert_eq!(config.retention.cleanup_interval_secs, 600);
     assert_eq!(config.retention.rustup_snapshot_revisions, 4);
@@ -89,7 +96,7 @@ fn accepts_explicit_retention_configuration() {
 fn applies_default_log_configuration() {
     let config = Config::from_toml(LOCAL_DEVELOPMENT).expect("local development configuration");
 
-    assert_eq!(config.log_dir, PathBuf::from("logs"));
+    assert_eq!(config.storage.log_dir, PathBuf::from("logs"));
     assert_eq!(config.retention.log_retention_days, 30);
 }
 
@@ -102,7 +109,7 @@ fn accepts_explicit_log_configuration() {
 
     let config = Config::from_toml(&configuration).expect("explicit log configuration");
 
-    assert_eq!(config.log_dir, PathBuf::from("/var/log/stacktory"));
+    assert_eq!(config.storage.log_dir, PathBuf::from("/var/log/stacktory"));
     assert_eq!(config.retention.log_retention_days, 7);
 }
 
@@ -110,8 +117,8 @@ fn accepts_explicit_log_configuration() {
 fn rejects_zero_retention_values() {
     let cases = [
         (
-            "[retention]\nmetadata_ttl_secs = 0\n",
-            ConfigError::InvalidMetadataTtl,
+            "[retention]\nmetadata_retention_secs = 0\n",
+            ConfigError::InvalidMetadataRetention,
         ),
         (
             "[retention]\naudit_retention_days = 0\n",
@@ -147,7 +154,7 @@ fn accepts_explicit_http_source() {
         )
         .replace(
             "base_url = \"http://nexus.internal/repository/rustup-group\"",
-            "base_url = \"http://nexus.internal/repository/rustup-group\"\nrequire_https = false",
+            "base_url = \"http://nexus.internal/repository/rustup-group\"\nallow_http = true",
         );
 
     let config = Config::from_toml(&configuration).expect("configured HTTP source");
@@ -175,7 +182,7 @@ fn rejects_http_source_without_explicit_opt_in() {
 
     let error = Config::from_toml(&configuration).expect_err("HTTP must require opt-in");
 
-    assert!(error.to_string().contains("require_https"));
+    assert!(error.to_string().contains("allow_http"));
 }
 
 #[test]
@@ -213,24 +220,127 @@ fn rejects_dot_rustup_channels() {
 #[test]
 fn rejects_unknown_configuration_fields() {
     let top_level = format!("unknown_key = 1\n{LOCAL_DEVELOPMENT}");
-    let retention = format!("{LOCAL_DEVELOPMENT}\n[retention]\nmetadata_ttl_sec = 1\n");
+    let retention = format!("{LOCAL_DEVELOPMENT}\n[retention]\nmetadata_retention_sec = 1\n");
+    let source = format!(
+        "{LOCAL_DEVELOPMENT}\n\
+         [[rustup.sources]]\n\
+         name = \"legacy\"\n\
+         type = \"proxy\"\n\
+         base_url = \"https://legacy.example\"\n\
+         require_https = true\n"
+    );
 
     assert!(Config::from_toml(&top_level).is_err());
     assert!(Config::from_toml(&retention).is_err());
+    assert!(Config::from_toml(&source).is_err());
+}
+
+#[test]
+fn rejects_legacy_flat_server_configuration() {
+    let configuration = LOCAL_DEVELOPMENT.replace(
+        "[server]",
+        "listen_address = \"127.0.0.1\"\n\
+         listen_port = 18761\n\
+         root_url = \"http://127.0.0.1:18761\"\n\
+         \n\
+         [server]",
+    );
+
+    let error = Config::from_toml(&configuration).expect_err("legacy flat configuration");
+
+    assert!(matches!(error, ConfigError::Parse(_)));
+}
+
+#[test]
+fn rejects_invalid_public_urls() {
+    let cases = [
+        (
+            "ftp://127.0.0.1:18761",
+            ConfigError::PublicUrlUnsupportedScheme,
+        ),
+        (
+            "http://user:pass@127.0.0.1:18761",
+            ConfigError::InvalidPublicUrl,
+        ),
+        (
+            "http://127.0.0.1:18761/?source=test",
+            ConfigError::InvalidPublicUrl,
+        ),
+        (
+            "http://127.0.0.1:18761/#section",
+            ConfigError::InvalidPublicUrl,
+        ),
+    ];
+
+    for (public_url, expected) in cases {
+        let configuration = LOCAL_DEVELOPMENT.replace(
+            "public_url = \"http://127.0.0.1:18761\"",
+            &format!("public_url = \"{public_url}\""),
+        );
+        let error = Config::from_toml(&configuration).expect_err("invalid public URL");
+        assert_eq!(error.to_string(), expected.to_string());
+    }
+}
+
+#[test]
+fn accepts_public_url_with_a_reverse_proxy_path_prefix() {
+    let configuration = LOCAL_DEVELOPMENT.replace(
+        "public_url = \"http://127.0.0.1:18761\"",
+        "public_url = \"https://stacktory.example.internal/artifacts\"",
+    );
+
+    let config = Config::from_toml(&configuration).expect("public URL path prefix");
+
+    assert_eq!(
+        config.server.public_url.as_str(),
+        "https://stacktory.example.internal/artifacts"
+    );
+}
+
+#[test]
+fn rejects_http_public_url_outside_localhost() {
+    let configuration = LOCAL_DEVELOPMENT.replace(
+        "public_url = \"http://127.0.0.1:18761\"",
+        "public_url = \"http://stacktory.example.internal\"",
+    );
+
+    let error = Config::from_toml(&configuration).expect_err("public HTTP URL");
+
+    assert!(matches!(error, ConfigError::PublicUrlMustUseHttps));
+}
+
+#[test]
+fn rejects_unimplemented_pypi_configuration() {
+    let configuration = format!(
+        "{LOCAL_DEVELOPMENT}\n\
+         [pypi]\n\
+         \n\
+         [[pypi.sources]]\n\
+         name = \"official\"\n\
+         type = \"proxy\"\n\
+         base_url = \"https://pypi.example\"\n"
+    );
+
+    let error = Config::from_toml(&configuration).expect_err("PyPI is not implemented");
+
+    assert!(matches!(error, ConfigError::Parse(_)));
 }
 
 #[test]
 fn deployment_config_matches_the_runtime_schema() {
     let config = Config::from_toml(DEPLOYMENT_CONFIG).expect("deployment config");
 
-    assert_eq!(config.data_dir, std::path::PathBuf::from("/app/data"));
-    assert_eq!(config.listen_port, 18761);
+    assert_eq!(
+        config.storage.data_dir,
+        std::path::PathBuf::from("/app/data")
+    );
+    assert_eq!(config.server.port, 18761);
     assert_eq!(
         config
             .docker
             .as_ref()
             .expect("docker configuration")
-            .listen_ports["group"],
+            .cli_listen_ports["group"],
         19000
     );
     assert_eq!(
@@ -293,7 +403,6 @@ fn deployment_config_retains_all_configured_ecosystem_source_graphs() {
         &config.nuget.expect("nuget configuration").sources,
         &["group", "official"],
     );
-    assert!(config.pypi.is_none());
     assert_source_names(
         &config.upm.expect("upm configuration").sources,
         &["cesium", "group", "openupm", "unity"],
@@ -326,36 +435,52 @@ fn deployment_config_retains_all_configured_ecosystem_source_graphs() {
 fn accepts_public_production_configuration() {
     let config = Config::from_toml(PUBLIC_PRODUCTION).expect("public production configuration");
 
-    assert_eq!(config.listen_address.to_string(), "0.0.0.0");
+    assert_eq!(config.server.address.to_string(), "0.0.0.0");
 }
 
 #[test]
 fn accepts_outbound_proxy_configuration() {
     let configuration = LOCAL_DEVELOPMENT.replace(
-        "root_url = \"http://127.0.0.1:18761\"",
-        "root_url = \"http://127.0.0.1:18761\"\n\
-proxy_url = \"http://proxy.example.internal:8080\"\n\
-proxy_no_proxy = \"localhost,127.0.0.1,.internal\"",
+        "public_url = \"http://127.0.0.1:18761\"",
+        "public_url = \"http://127.0.0.1:18761\"\n\
+\n\
+[proxy]\n\
+url = \"http://proxy.example.internal:8080\"\n\
+no_proxy = \"localhost,127.0.0.1,.internal\"",
     );
 
     let config = Config::from_toml(&configuration).expect("proxy configuration");
 
     assert_eq!(
-        config.proxy_url.as_ref().expect("proxy URL").as_str(),
+        config.proxy.url.as_ref().expect("proxy URL").as_str(),
         "http://proxy.example.internal:8080/"
     );
     assert_eq!(
-        config.proxy_no_proxy.as_deref(),
+        config.proxy.no_proxy.as_deref(),
         Some("localhost,127.0.0.1,.internal")
     );
 }
 
 #[test]
+fn rejects_legacy_top_level_proxy_configuration() {
+    let configuration = LOCAL_DEVELOPMENT.replace(
+        "[server]",
+        "proxy_url = \"http://proxy.example.internal:8080\"\n\n[server]",
+    );
+
+    let error = Config::from_toml(&configuration).expect_err("legacy proxy configuration");
+
+    assert!(matches!(error, ConfigError::Parse(_)));
+}
+
+#[test]
 fn rejects_unsupported_outbound_proxy_scheme() {
     let configuration = LOCAL_DEVELOPMENT.replace(
-        "root_url = \"http://127.0.0.1:18761\"",
-        "root_url = \"http://127.0.0.1:18761\"\n\
-proxy_url = \"socks5://proxy.example.internal:1080\"",
+        "public_url = \"http://127.0.0.1:18761\"",
+        "public_url = \"http://127.0.0.1:18761\"\n\
+\n\
+[proxy]\n\
+url = \"socks5://proxy.example.internal:1080\"",
     );
 
     let error = Config::from_toml(&configuration).expect_err("unsupported proxy scheme");
@@ -366,9 +491,11 @@ proxy_url = \"socks5://proxy.example.internal:1080\"",
 #[test]
 fn rejects_outbound_proxy_with_a_path() {
     let configuration = LOCAL_DEVELOPMENT.replace(
-        "root_url = \"http://127.0.0.1:18761\"",
-        "root_url = \"http://127.0.0.1:18761\"\n\
-proxy_url = \"http://proxy.example.internal:8080/forward\"",
+        "public_url = \"http://127.0.0.1:18761\"",
+        "public_url = \"http://127.0.0.1:18761\"\n\
+\n\
+[proxy]\n\
+url = \"http://proxy.example.internal:8080/forward\"",
     );
 
     let error = Config::from_toml(&configuration).expect_err("proxy path");
@@ -379,9 +506,11 @@ proxy_url = \"http://proxy.example.internal:8080/forward\"",
 #[test]
 fn rejects_no_proxy_without_a_proxy_url() {
     let configuration = LOCAL_DEVELOPMENT.replace(
-        "root_url = \"http://127.0.0.1:18761\"",
-        "root_url = \"http://127.0.0.1:18761\"\n\
-proxy_no_proxy = \"localhost\"",
+        "public_url = \"http://127.0.0.1:18761\"",
+        "public_url = \"http://127.0.0.1:18761\"\n\
+\n\
+[proxy]\n\
+no_proxy = \"localhost\"",
     );
 
     let error = Config::from_toml(&configuration).expect_err("no_proxy without proxy");
@@ -400,20 +529,39 @@ fn docker_sources_accept_optional_cli_listen_ports() {
 name = \"official\"\n\
 type = \"proxy\"\n\
 base_url = \"https://registry.example\"\n\
-listen_port = 19001\n\
+cli_listen_port = 19001\n\
 \n\
 [[docker.sources]]\n\
 name = \"group\"\n\
 type = \"group\"\n\
 members = [\"official\"]\n\
-listen_port = 19000\n"
+cli_listen_port = 19000\n"
     );
 
     let config = Config::from_toml(&configuration).expect("Docker CLI port configuration");
     let docker = config.docker.expect("Docker configuration");
 
-    assert_eq!(docker.listen_ports["official"], 19001);
-    assert_eq!(docker.listen_ports["group"], 19000);
+    assert_eq!(docker.cli_listen_ports["official"], 19001);
+    assert_eq!(docker.cli_listen_ports["group"], 19000);
+}
+
+#[test]
+fn rejects_legacy_docker_listen_port() {
+    let configuration = format!(
+        "{LOCAL_DEVELOPMENT}\n\
+         \n\
+         [docker]\n\
+         \n\
+         [[docker.sources]]\n\
+         name = \"official\"\n\
+         type = \"proxy\"\n\
+         base_url = \"https://registry.example\"\n\
+         listen_port = 19001\n"
+    );
+
+    let error = Config::from_toml(&configuration).expect_err("legacy Docker listen_port");
+
+    assert!(matches!(error, ConfigError::Parse(_)));
 }
 
 #[test]
@@ -427,13 +575,13 @@ fn docker_cli_listen_ports_must_be_unique() {
 name = \"first\"\n\
 type = \"proxy\"\n\
 base_url = \"https://first.example\"\n\
-listen_port = 19000\n\
+cli_listen_port = 19000\n\
 \n\
 [[docker.sources]]\n\
 name = \"second\"\n\
 type = \"proxy\"\n\
 base_url = \"https://second.example\"\n\
-listen_port = 19000\n"
+cli_listen_port = 19000\n"
     );
 
     let error = Config::from_toml(&configuration).expect_err("duplicate Docker port");
@@ -451,7 +599,7 @@ fn docker_cli_listen_port_cannot_use_the_main_port() {
 name = \"official\"\n\
 type = \"proxy\"\n\
 base_url = \"https://official.example\"\n\
-listen_port = 18761\n"
+cli_listen_port = 18761\n"
     );
 
     let error = Config::from_toml(&configuration).expect_err("main port conflict");

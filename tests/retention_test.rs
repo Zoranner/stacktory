@@ -20,7 +20,7 @@ fn log_file(data_dir: &Path) -> LogFile {
 
 fn retention_config() -> RetentionConfig {
     RetentionConfig {
-        metadata_ttl_secs: 7 * DAY,
+        metadata_retention_secs: 7 * DAY,
         audit_retention_days: 30,
         cleanup_interval_secs: 3_600,
         rustup_snapshot_revisions: 2,

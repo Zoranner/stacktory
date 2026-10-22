@@ -17,7 +17,7 @@ use stacktory::{
 };
 use tokio::net::TcpListener;
 
-const ROOT_URL_MARKER: &str = ".root-url";
+const PUBLIC_URL_MARKER: &str = ".public-url";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -39,28 +39,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = read_config()?;
     let (log_file, rotated_log) =
-        logging::init(config.log_dir.clone(), std::time::SystemTime::now())?;
-    if record_root_url(&config.data_dir, config.root_url.as_str())? {
-        logging::info("recorded the configured root_url; cached metadata will render lazily");
-    }
-    if config.pypi.is_some() {
-        logging::warn("pypi is configured but the PyPI adapter is not registered");
+        logging::init(config.storage.log_dir.clone(), std::time::SystemTime::now())?;
+    if record_public_url(&config.storage.data_dir, config.server.public_url.as_str())? {
+        logging::info("recorded the configured public_url; cached metadata will render lazily");
     }
     let mut docker_listeners = Vec::new();
     let artifact_budget = ArtifactBudget::default();
     let registry =
         configured_registry_with_budget(&mut config, &mut docker_listeners, &artifact_budget)?;
-    let listener = TcpListener::bind((config.listen_address, config.listen_port)).await?;
-    retention::spawn(config.data_dir.clone(), log_file.clone(), config.retention);
+    let listener = TcpListener::bind((config.server.address, config.server.port)).await?;
+    retention::spawn(
+        config.storage.data_dir.clone(),
+        log_file.clone(),
+        config.retention,
+    );
     if let Some(rotated) = rotated_log {
         logging::info(format!("rotated stale log file to {rotated}"));
     }
     logging::info(format!(
         "listening on {}:{}; data_dir={}; log_dir={}; log_file={}",
-        config.listen_address,
-        config.listen_port,
-        config.data_dir.display(),
-        config.log_dir.display(),
+        config.server.address,
+        config.server.port,
+        config.storage.data_dir.display(),
+        config.storage.log_dir.display(),
         log_file.path().display()
     ));
     let service = Arc::new(RustupService::new_with_artifact_budget(
@@ -91,17 +92,17 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn record_root_url(data_dir: &std::path::Path, root_url: &str) -> Result<bool, std::io::Error> {
+fn record_public_url(data_dir: &std::path::Path, public_url: &str) -> Result<bool, std::io::Error> {
     fs::create_dir_all(data_dir)?;
-    let marker_path = data_dir.join(ROOT_URL_MARKER);
+    let marker_path = data_dir.join(PUBLIC_URL_MARKER);
     match fs::read_to_string(&marker_path) {
-        Ok(current) if current == root_url => return Ok(false),
+        Ok(current) if current == public_url => return Ok(false),
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
 
-    fs::write(marker_path, root_url)?;
+    fs::write(marker_path, public_url)?;
     Ok(true)
 }
 
@@ -160,9 +161,9 @@ fn prune_legacy_layout(
     }
     let config = read_config()?;
     let report = retention::prune_legacy_layout(
-        &config.data_dir,
+        &config.storage.data_dir,
         dry_run,
-        &AuditSink::new(config.data_dir.clone()),
+        &AuditSink::new(config.storage.data_dir.clone()),
     );
     println!(
         "Stacktory: {} {} legacy layout entries ({:.1} MiB)",
@@ -207,7 +208,7 @@ fn invalidate_nuget_metadata(
     }
 
     let metadata_path =
-        stacktory::layout::metadata_root(&config.data_dir, "nuget").join(&entry_name);
+        stacktory::layout::metadata_root(&config.storage.data_dir, "nuget").join(&entry_name);
     if dry_run {
         println!("Stacktory: would remove {}", metadata_path.display());
         return Ok(());
@@ -217,7 +218,11 @@ fn invalidate_nuget_metadata(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    AuditSink::new(config.data_dir).record("nuget_metadata_invalidated", &entry_name, "success")?;
+    AuditSink::new(config.storage.data_dir).record(
+        "nuget_metadata_invalidated",
+        &entry_name,
+        "success",
+    )?;
     println!("Stacktory: removed NuGet metadata for `{entry_name}`");
     Ok(())
 }
@@ -243,8 +248,8 @@ fn configured_registry_with_budget(
     artifact_budget: &ArtifactBudget,
 ) -> Result<AdapterRegistry, Box<dyn std::error::Error>> {
     let mut registry = AdapterRegistry::new();
-    let proxy_url = config.proxy_url.clone();
-    let proxy_no_proxy = config.proxy_no_proxy.clone();
+    let proxy_url = config.proxy.url.clone();
+    let proxy_no_proxy = config.proxy.no_proxy.clone();
     if let Some(cargo) = config.cargo.take() {
         registry.register(
             "cargo",
@@ -258,8 +263,8 @@ fn configured_registry_with_budget(
                 .with_artifact_budget(artifact_budget.clone()),
             ),
             Arc::new(CargoAdapter::new(
-                config.root_url.clone(),
-                config.data_dir.clone(),
+                config.server.public_url.clone(),
+                config.storage.data_dir.clone(),
             )),
         )?;
     }
@@ -276,8 +281,8 @@ fn configured_registry_with_budget(
                 .with_artifact_budget(artifact_budget.clone()),
             ),
             Arc::new(NpmAdapter::new(
-                config.root_url.clone(),
-                config.data_dir.clone(),
+                config.server.public_url.clone(),
+                config.storage.data_dir.clone(),
             )),
         )?;
     }
@@ -294,8 +299,8 @@ fn configured_registry_with_budget(
                 .with_artifact_budget(artifact_budget.clone()),
             ),
             Arc::new(NugetAdapter::new(
-                config.root_url.clone(),
-                config.data_dir.clone(),
+                config.server.public_url.clone(),
+                config.storage.data_dir.clone(),
             )),
         )?;
     }
@@ -312,8 +317,8 @@ fn configured_registry_with_budget(
                 .with_artifact_budget(artifact_budget.clone()),
             ),
             Arc::new(UpmAdapter::new(
-                config.root_url.clone(),
-                config.data_dir.clone(),
+                config.server.public_url.clone(),
+                config.storage.data_dir.clone(),
             )),
         )?;
     }
@@ -330,15 +335,15 @@ fn configured_registry_with_budget(
                 .with_artifact_budget(artifact_budget.clone()),
             ),
             Arc::new(VscodeAdapter::new(
-                config.root_url.clone(),
-                config.data_dir.clone(),
+                config.server.public_url.clone(),
+                config.storage.data_dir.clone(),
             )),
         )?;
     }
     if let Some(docker) = config.docker.take() {
-        docker_listeners.extend(docker.listen_ports.clone().into_iter().map(
+        docker_listeners.extend(docker.cli_listen_ports.clone().into_iter().map(
             |(entry_name, port)| DockerListener {
-                address: config.listen_address,
+                address: config.server.address,
                 port,
                 entry_name,
             },
@@ -346,8 +351,8 @@ fn configured_registry_with_budget(
         register_adapter_with_proxy_and_budget(
             &mut registry,
             docker,
-            config.root_url.clone(),
-            config.data_dir.clone(),
+            config.server.public_url.clone(),
+            config.storage.data_dir.clone(),
             proxy_url.as_ref(),
             proxy_no_proxy.as_deref(),
             artifact_budget,
@@ -362,8 +367,9 @@ mod tests {
 
     use axum::{body::Body, http::Request};
     use stacktory::{
-        Config, EcosystemConfig, NugetConfig, RetentionConfig, RustupConfig, SourceConfig,
-        SourceGraph, SourceType, UpmConfig, http::router_with_registry,
+        Config, EcosystemConfig, NugetConfig, ProxyConfig, RetentionConfig, RustupConfig,
+        ServerConfig, SourceConfig, SourceGraph, SourceType, StorageConfig, UpmConfig,
+        http::router_with_registry,
     };
     use tower::ServiceExt;
     use url::Url;
@@ -371,13 +377,16 @@ mod tests {
     #[tokio::test]
     async fn configured_npm_and_upm_are_registered_separately() {
         let mut config = Config {
-            listen_address: "127.0.0.1".parse::<IpAddr>().expect("address"),
-            listen_port: 18761,
-            data_dir: tempfile::tempdir().expect("data directory").keep(),
-            log_dir: PathBuf::from("logs"),
-            root_url: Url::parse("http://127.0.0.1:18761").expect("root URL"),
-            proxy_url: None,
-            proxy_no_proxy: None,
+            server: ServerConfig {
+                address: "127.0.0.1".parse::<IpAddr>().expect("address"),
+                port: 18761,
+                public_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+            },
+            storage: StorageConfig {
+                data_dir: tempfile::tempdir().expect("data directory").keep(),
+                log_dir: PathBuf::from("logs"),
+            },
+            proxy: ProxyConfig::default(),
             retention: RetentionConfig::default(),
             rustup: RustupConfig {
                 refresh_interval_secs: 60,
@@ -399,7 +408,6 @@ mod tests {
                 )])
                 .expect("NuGet sources"),
             }),
-            pypi: None,
             upm: Some(UpmConfig {
                 sources: SourceGraph::new(vec![proxy("unity", "http://127.0.0.1:9")])
                     .expect("upm sources"),
@@ -443,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn records_root_url_change_without_removing_caches() {
+    fn records_public_url_change_without_removing_caches() {
         let directory = tempfile::tempdir().expect("data directory");
         let data_dir = directory.path();
         let rewritten_metadata = data_dir.join("stores/nuget/metadata/group/v3/index.json");
@@ -469,7 +477,9 @@ mod tests {
             fs::write(path, contents).expect("cache file");
         }
 
-        assert!(super::record_root_url(data_dir, "https://old.example").expect("initial root URL"));
+        assert!(
+            super::record_public_url(data_dir, "https://old.example").expect("initial public URL")
+        );
         assert!(rewritten_metadata.exists());
         assert!(canonical_metadata.exists());
         assert!(cargo_metadata.exists());
@@ -480,15 +490,18 @@ mod tests {
         assert!(audit.exists());
 
         assert!(
-            !super::record_root_url(data_dir, "https://old.example").expect("unchanged root URL")
+            !super::record_public_url(data_dir, "https://old.example")
+                .expect("unchanged public URL")
         );
         assert!(rewritten_metadata.exists());
 
-        assert!(super::record_root_url(data_dir, "https://new.example").expect("changed root URL"));
+        assert!(
+            super::record_public_url(data_dir, "https://new.example").expect("changed public URL")
+        );
         assert!(rewritten_metadata.exists());
         assert!(canonical_metadata.exists());
         assert_eq!(
-            fs::read_to_string(data_dir.join(super::ROOT_URL_MARKER)).expect("root URL marker"),
+            fs::read_to_string(data_dir.join(super::PUBLIC_URL_MARKER)).expect("public URL marker"),
             "https://new.example"
         );
     }

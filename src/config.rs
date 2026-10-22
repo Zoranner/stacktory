@@ -6,13 +6,9 @@ use url::Url;
 
 #[derive(Debug)]
 pub struct Config {
-    pub listen_address: IpAddr,
-    pub listen_port: u16,
-    pub data_dir: PathBuf,
-    pub log_dir: PathBuf,
-    pub root_url: Url,
-    pub proxy_url: Option<Url>,
-    pub proxy_no_proxy: Option<String>,
+    pub server: ServerConfig,
+    pub storage: StorageConfig,
+    pub proxy: ProxyConfig,
     pub retention: RetentionConfig,
     pub rustup: RustupConfig,
     pub cargo: Option<CargoConfig>,
@@ -20,11 +16,42 @@ pub struct Config {
     pub docker: Option<DockerConfig>,
     pub npm: Option<NpmConfig>,
     pub nuget: Option<NugetConfig>,
-    pub pypi: Option<PypiConfig>,
     pub upm: Option<UpmConfig>,
 }
 
-pub const DEFAULT_METADATA_TTL_SECS: u64 = 604_800;
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerConfig {
+    /// Address the process binds to, not the address clients use.
+    pub address: IpAddr,
+    /// Port the process binds to, not necessarily the port in `public_url`.
+    pub port: u16,
+    /// Client-visible base URL used when rewriting protocol responses.
+    pub public_url: Url,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageConfig {
+    /// Root directory for metadata, artifacts, snapshots and audit data.
+    pub data_dir: PathBuf,
+    /// Directory for rotating runtime logs.
+    #[serde(default = "default_log_dir")]
+    pub log_dir: PathBuf,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProxyConfig {
+    /// Outbound HTTP/HTTPS proxy used for upstream requests.
+    #[serde(default)]
+    pub url: Option<Url>,
+    /// Comma-separated hosts that bypass the outbound proxy.
+    #[serde(default)]
+    pub no_proxy: Option<String>,
+}
+
+pub const DEFAULT_METADATA_RETENTION_SECS: u64 = 604_800;
 pub const DEFAULT_AUDIT_RETENTION_DAYS: u64 = 30;
 pub const DEFAULT_CLEANUP_INTERVAL_SECS: u64 = 3_600;
 pub const DEFAULT_RUSTUP_SNAPSHOT_REVISIONS: u64 = 3;
@@ -36,7 +63,7 @@ pub const DEFAULT_LOG_DIR: &str = "logs";
 #[serde(deny_unknown_fields)]
 #[serde(default)]
 pub struct RetentionConfig {
-    pub metadata_ttl_secs: u64,
+    pub metadata_retention_secs: u64,
     pub audit_retention_days: u64,
     pub cleanup_interval_secs: u64,
     pub rustup_snapshot_revisions: u64,
@@ -47,7 +74,7 @@ pub struct RetentionConfig {
 impl Default for RetentionConfig {
     fn default() -> Self {
         Self {
-            metadata_ttl_secs: DEFAULT_METADATA_TTL_SECS,
+            metadata_retention_secs: DEFAULT_METADATA_RETENTION_SECS,
             audit_retention_days: DEFAULT_AUDIT_RETENTION_DAYS,
             cleanup_interval_secs: DEFAULT_CLEANUP_INTERVAL_SECS,
             rustup_snapshot_revisions: DEFAULT_RUSTUP_SNAPSHOT_REVISIONS,
@@ -74,11 +101,10 @@ pub type VscodeConfig = EcosystemConfig;
 #[derive(Debug)]
 pub struct DockerConfig {
     pub sources: SourceGraph,
-    pub listen_ports: BTreeMap<String, u16>,
+    pub cli_listen_ports: BTreeMap<String, u16>,
 }
 pub type NpmConfig = EcosystemConfig;
 pub type NugetConfig = EcosystemConfig;
-pub type PypiConfig = EcosystemConfig;
 pub type UpmConfig = EcosystemConfig;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -129,16 +155,19 @@ impl SourceGraph {
     fn from_raw_docker(
         sources: Vec<RawDockerSourceConfig>,
     ) -> Result<(Self, BTreeMap<String, u16>), ConfigError> {
-        let listen_ports = sources
-            .iter()
-            .filter_map(|source| {
+        let mut cli_listen_ports = BTreeMap::new();
+        let sources = sources
+            .into_iter()
+            .map(|source| {
+                let (source, port) = source.into_parts();
+                if let Some(port) = port {
+                    cli_listen_ports.insert(source.name.clone(), port);
+                }
                 source
-                    .listen_port
-                    .map(|port| (source.source.name.clone(), port))
             })
-            .collect::<BTreeMap<_, _>>();
-        let graph = Self::from_raw(sources.into_iter().map(|source| source.source).collect())?;
-        Ok((graph, listen_ports))
+            .collect();
+        let graph = Self::from_raw(sources)?;
+        Ok((graph, cli_listen_ports))
     }
 
     pub fn new(sources: Vec<SourceConfig>) -> Result<Self, ConfigError> {
@@ -179,7 +208,7 @@ impl SourceGraph {
                         return Err(ConfigError::GroupWithBaseUrl(source.name.clone()));
                     }
                     if source.require_https {
-                        return Err(ConfigError::GroupWithRequireHttps(source.name.clone()));
+                        return Err(ConfigError::GroupWithAllowHttp(source.name.clone()));
                     }
                     if !source.members.is_empty() {
                         let mut members = BTreeMap::new();
@@ -244,13 +273,21 @@ impl SourceGraph {
 pub enum ConfigError {
     #[error("configuration TOML is invalid: {0}")]
     Parse(#[from] toml::de::Error),
-    #[error("root_url must use https outside localhost")]
-    RootUrlMustUseHttps,
-    #[error("proxy_url must use http or https")]
+    #[error("server.public_url must use http or https")]
+    PublicUrlUnsupportedScheme,
+    #[error(
+        "server.public_url must include a host and must not include credentials, query or fragment"
+    )]
+    InvalidPublicUrl,
+    #[error("server.public_url must use https outside localhost")]
+    PublicUrlMustUseHttps,
+    #[error("outbound proxy URL must use http or https")]
     InvalidProxyScheme,
-    #[error("proxy_url must include a host and must not include a path, query or fragment")]
+    #[error(
+        "outbound proxy URL must include a host and must not include a path, query or fragment"
+    )]
     InvalidProxyUrl,
-    #[error("proxy_no_proxy requires proxy_url")]
+    #[error("proxy.no_proxy requires proxy.url")]
     ProxyNoProxyWithoutProxy,
     #[error("sources must contain at least one source")]
     MissingSource,
@@ -262,8 +299,8 @@ pub enum ConfigError {
     ProxyMissingBaseUrl(String),
     #[error("group source `{0}` must not define base_url")]
     GroupWithBaseUrl(String),
-    #[error("group source `{0}` must not define require_https")]
-    GroupWithRequireHttps(String),
+    #[error("group source `{0}` must not define allow_http")]
+    GroupWithAllowHttp(String),
     #[error("proxy source `{0}` must not define members")]
     ProxyWithMembers(String),
     #[error("group source `{0}` must contain at least one member")]
@@ -276,24 +313,24 @@ pub enum ConfigError {
     NestedGroup(String, String),
     #[error("source `{0}` has an invalid base_url")]
     InvalidSourceUrl(String),
-    #[error("source `{0}` uses http; set require_https = false to opt in")]
+    #[error("source `{0}` uses http; set allow_http = true to opt in")]
     InsecureHttpSource(String),
     #[error("NuGet source `{0}` base_url must be an actual `/v3/index.json` service index")]
     InvalidNugetServiceIndexUrl(String),
-    #[error("Docker source `{0}` has an invalid listen_port")]
-    InvalidDockerListenPort(String),
-    #[error("Docker source `{source_name}` uses duplicate listen_port {port}")]
-    DuplicateDockerListenPort { source_name: String, port: u16 },
-    #[error("Docker source `{source_name}` listen_port {port} conflicts with the main listen_port")]
-    DockerListenPortConflictsWithMain { source_name: String, port: u16 },
+    #[error("Docker source `{0}` has an invalid cli_listen_port")]
+    InvalidDockerCliPort(String),
+    #[error("Docker source `{source_name}` uses duplicate cli_listen_port {port}")]
+    DuplicateDockerCliPort { source_name: String, port: u16 },
+    #[error("Docker source `{source_name}` cli_listen_port {port} conflicts with server.port")]
+    DockerCliPortConflictsWithServer { source_name: String, port: u16 },
     #[error("rustup.channels must contain at least one channel")]
     MissingRustupChannel,
     #[error("rustup channel `{0}` is invalid")]
     InvalidRustupChannel(String),
     #[error("rustup.refresh_interval_secs must be greater than zero")]
     InvalidRustupRefreshInterval,
-    #[error("retention.metadata_ttl_secs must be greater than zero")]
-    InvalidMetadataTtl,
+    #[error("retention.metadata_retention_secs must be greater than zero")]
+    InvalidMetadataRetention,
     #[error("retention.audit_retention_days must be greater than zero")]
     InvalidAuditRetentionDays,
     #[error("retention.cleanup_interval_secs must be greater than zero")]
@@ -307,16 +344,10 @@ pub enum ConfigError {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawConfig {
-    listen_address: IpAddr,
-    listen_port: u16,
-    data_dir: PathBuf,
-    #[serde(default = "default_log_dir")]
-    log_dir: PathBuf,
-    root_url: Url,
+    server: ServerConfig,
+    storage: StorageConfig,
     #[serde(default)]
-    proxy_url: Option<Url>,
-    #[serde(default)]
-    proxy_no_proxy: Option<String>,
+    proxy: ProxyConfig,
     #[serde(default)]
     retention: RetentionConfig,
     rustup: RawRustupConfig,
@@ -325,7 +356,6 @@ struct RawConfig {
     docker: Option<RawDockerConfig>,
     npm: Option<RawEcosystemConfig>,
     nuget: Option<RawEcosystemConfig>,
-    pypi: Option<RawEcosystemConfig>,
     upm: Option<RawEcosystemConfig>,
 }
 
@@ -350,14 +380,39 @@ struct RawDockerConfig {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawDockerSourceConfig {
-    #[serde(flatten)]
-    source: RawSourceConfig,
+    // Keep these fields explicit. serde(flatten) would bypass deny_unknown_fields.
+    name: String,
+    #[serde(rename = "type")]
+    source_type: SourceType,
     #[serde(default)]
-    listen_port: Option<u16>,
+    base_url: Option<Url>,
+    #[serde(default)]
+    allow_http: Option<bool>,
+    #[serde(default)]
+    members: Vec<String>,
+    #[serde(default)]
+    cli_listen_port: Option<u16>,
+}
+
+impl RawDockerSourceConfig {
+    fn into_parts(self) -> (RawSourceConfig, Option<u16>) {
+        (
+            RawSourceConfig {
+                name: self.name,
+                source_type: self.source_type,
+                base_url: self.base_url,
+                allow_http: self.allow_http,
+                members: self.members,
+            },
+            self.cli_listen_port,
+        )
+    }
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawSourceConfig {
     name: String,
     #[serde(rename = "type")]
@@ -365,18 +420,18 @@ struct RawSourceConfig {
     #[serde(default)]
     base_url: Option<Url>,
     #[serde(default)]
-    require_https: Option<bool>,
+    allow_http: Option<bool>,
     #[serde(default)]
     members: Vec<String>,
 }
 
 impl RawSourceConfig {
     fn into_source_config(self) -> Result<SourceConfig, ConfigError> {
-        if self.source_type == SourceType::Group && self.require_https.is_some() {
-            return Err(ConfigError::GroupWithRequireHttps(self.name));
+        if self.source_type == SourceType::Group && self.allow_http.is_some() {
+            return Err(ConfigError::GroupWithAllowHttp(self.name));
         }
         let require_https = match self.source_type {
-            SourceType::Proxy => self.require_https.unwrap_or_else(requires_https),
+            SourceType::Proxy => !self.allow_http.unwrap_or(false),
             SourceType::Group => false,
         };
 
@@ -394,10 +449,8 @@ impl Config {
     pub fn from_toml(input: &str) -> Result<Self, ConfigError> {
         let raw: RawConfig = toml::from_str(input)?;
 
-        if !is_localhost(&raw.root_url) && raw.root_url.scheme() != "https" {
-            return Err(ConfigError::RootUrlMustUseHttps);
-        }
-        if let Some(proxy_url) = &raw.proxy_url {
+        validate_public_url(&raw.server.public_url)?;
+        if let Some(proxy_url) = &raw.proxy.url {
             if !matches!(proxy_url.scheme(), "http" | "https") {
                 return Err(ConfigError::InvalidProxyScheme);
             }
@@ -408,14 +461,14 @@ impl Config {
             {
                 return Err(ConfigError::InvalidProxyUrl);
             }
-        } else if raw.proxy_no_proxy.is_some() {
+        } else if raw.proxy.no_proxy.is_some() {
             return Err(ConfigError::ProxyNoProxyWithoutProxy);
         }
         if raw.rustup.refresh_interval_secs == 0 {
             return Err(ConfigError::InvalidRustupRefreshInterval);
         }
-        if raw.retention.metadata_ttl_secs == 0 {
-            return Err(ConfigError::InvalidMetadataTtl);
+        if raw.retention.metadata_retention_secs == 0 {
+            return Err(ConfigError::InvalidMetadataRetention);
         }
         if raw.retention.audit_retention_days == 0 {
             return Err(ConfigError::InvalidAuditRetentionDays);
@@ -440,20 +493,15 @@ impl Config {
         let rustup_sources = SourceGraph::from_raw(raw.rustup.sources)?;
         let cargo = ecosystem_config(raw.cargo)?;
         let vscode = ecosystem_config(raw.vscode)?;
-        let docker = docker_config(raw.docker, raw.listen_port)?;
+        let docker = docker_config(raw.docker, raw.server.port)?;
         let npm = ecosystem_config(raw.npm)?;
         let nuget = nuget_config(raw.nuget)?;
-        let pypi = ecosystem_config(raw.pypi)?;
         let upm = ecosystem_config(raw.upm)?;
 
         Ok(Self {
-            listen_address: raw.listen_address,
-            listen_port: raw.listen_port,
-            data_dir: raw.data_dir,
-            log_dir: raw.log_dir,
-            root_url: raw.root_url,
-            proxy_url: raw.proxy_url,
-            proxy_no_proxy: raw.proxy_no_proxy,
+            server: raw.server,
+            storage: raw.storage,
+            proxy: raw.proxy,
             retention: raw.retention,
             rustup: RustupConfig {
                 refresh_interval_secs: raw.rustup.refresh_interval_secs,
@@ -465,7 +513,6 @@ impl Config {
             docker,
             npm,
             nuget,
-            pypi,
             upm,
         })
     }
@@ -481,28 +528,28 @@ fn ecosystem_config(
 
 fn docker_config(
     raw: Option<RawDockerConfig>,
-    main_listen_port: u16,
+    server_port: u16,
 ) -> Result<Option<DockerConfig>, ConfigError> {
     let Some(raw) = raw else {
         return Ok(None);
     };
-    let (sources, listen_ports) = SourceGraph::from_raw_docker(raw.sources)?;
+    let (sources, cli_listen_ports) = SourceGraph::from_raw_docker(raw.sources)?;
     let mut used_ports = BTreeMap::new();
     for source in sources.entries.values() {
-        let Some(port) = listen_ports.get(&source.name).copied() else {
+        let Some(port) = cli_listen_ports.get(&source.name).copied() else {
             continue;
         };
         if port == 0 {
-            return Err(ConfigError::InvalidDockerListenPort(source.name.clone()));
+            return Err(ConfigError::InvalidDockerCliPort(source.name.clone()));
         }
-        if port == main_listen_port {
-            return Err(ConfigError::DockerListenPortConflictsWithMain {
+        if port == server_port {
+            return Err(ConfigError::DockerCliPortConflictsWithServer {
                 source_name: source.name.clone(),
                 port,
             });
         }
         if used_ports.insert(port, source.name.clone()).is_some() {
-            return Err(ConfigError::DuplicateDockerListenPort {
+            return Err(ConfigError::DuplicateDockerCliPort {
                 source_name: source.name.clone(),
                 port,
             });
@@ -510,7 +557,7 @@ fn docker_config(
     }
     Ok(Some(DockerConfig {
         sources,
-        listen_ports,
+        cli_listen_ports,
     }))
 }
 
@@ -533,12 +580,26 @@ fn nuget_config(raw: Option<RawEcosystemConfig>) -> Result<Option<EcosystemConfi
     Ok(Some(EcosystemConfig { sources }))
 }
 
-const fn requires_https() -> bool {
-    true
-}
-
 fn default_log_dir() -> PathBuf {
     PathBuf::from(DEFAULT_LOG_DIR)
+}
+
+fn validate_public_url(url: &Url) -> Result<(), ConfigError> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(ConfigError::PublicUrlUnsupportedScheme);
+    }
+    if url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(ConfigError::InvalidPublicUrl);
+    }
+    if url.scheme() != "https" && !is_localhost(url) {
+        return Err(ConfigError::PublicUrlMustUseHttps);
+    }
+    Ok(())
 }
 
 fn is_valid_channel(channel: &str) -> bool {

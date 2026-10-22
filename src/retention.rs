@@ -71,7 +71,7 @@ pub fn spawn(data_dir: PathBuf, log_file: std::sync::Arc<LogFile>, config: Reten
 
 /// 按保留窗口清理生态存储、审计文件和运行日志。
 ///
-/// metadata 按 `metadata_ttl_secs` 过期，制品按 `artifact_idle_secs` 淘汰，Rustup
+/// metadata 按 `metadata_retention_secs` 过期，制品按 `artifact_idle_secs` 淘汰，Rustup
 /// 快照按 `rustup_snapshot_revisions` 保留，审计事件按天轮转并保留
 /// `audit_retention_days` 天，运行日志按天轮转并保留 `log_retention_days` 天。
 pub fn sweep(
@@ -291,7 +291,7 @@ fn clean_metadata(
     let Ok(entries) = fs::read_dir(layout::stores_root(data_dir)) else {
         return;
     };
-    let Some(cutoff) = now.checked_sub(Duration::from_secs(config.metadata_ttl_secs)) else {
+    let Some(cutoff) = now.checked_sub(Duration::from_secs(config.metadata_retention_secs)) else {
         return;
     };
     for entry in entries.flatten() {
