@@ -43,7 +43,7 @@ Gallery query 必须返回 `results[].extensions[].versions[].files[]`。每个 
 `assetType` 和安全的 HTTP(S) `source` URL。Stacktory 将 source URL 改写为：
 
 ```text
-{root_url}/mirror/vscode/{name}/asset/{asset-id}
+{public_url}/mirror/vscode/{name}/asset/{asset-id}
 ```
 
 并保存：

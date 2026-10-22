@@ -52,7 +52,7 @@ Sparse Index 和 `dl` 资源布局。
 Stacktory 对外的 `config.json` 不转发上游配置，而是生成唯一的 `dl` 模板：
 
 ```text
-{root_url}/mirror/cargo/{name}/crates/{crate}/{version}.crate
+{public_url}/mirror/cargo/{name}/crates/{crate}/{version}.crate
 ```
 
 因此 Cargo 客户端只会继续请求当前 Stacktory 命名入口。

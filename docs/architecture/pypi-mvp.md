@@ -15,19 +15,20 @@ PyPI 每个 proxy 只配置一个上游 registry 根 `base_url`。Simple API 项
 地址或第二上游地址。
 
 ```toml
-[pypi]
-
 [[pypi.sources]]
 name = "official"
 type = "proxy"
 base_url = "https://pypi.example"
-require_https = true
+allow_http = false
 
 [[pypi.sources]]
 name = "group"
 type = "group"
 members = ["internal", "official"]
 ```
+
+PyPI 适配器尚未注册，当前运行时配置不接受 `[pypi]`；上面的来源结构是后续实现
+时需要接入的统一 source graph 契约。
 
 没有 group 时，多个 proxy 彼此独立；group 只按 `members` 顺序回退。group
 不配置 `base_url`，不合并不同 proxy 的项目版本集合，也不引用其他 group。

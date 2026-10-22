@@ -25,7 +25,7 @@ registration URL、nupkg URL 或 search URL 配置。不能把 registry root 或
 name = "official"
 type = "proxy"
 base_url = "https://nuget.example/v3/index.json"
-require_https = true
+allow_http = false
 
 [[nuget.sources]]
 name = "group"
@@ -138,9 +138,9 @@ package ID/version 在不同命名入口或不同 selected proxy 下不能共享
 文件。
 
 service index、registration、package binding 和漏洞索引/数据的 sidecar 记录
-来源指纹，由 proxy 名称、`base_url` 和 `require_https` 组成。同名 proxy 修改上游
+来源指纹，由 proxy 名称、`base_url` 和 `allow_http` 组成。同名 proxy 修改上游
 目标后，旧 metadata 按未命中重新获取；内容寻址且摘要仍匹配的 package content
-可以继续复用。`root_url` 不进入来源指纹，公开地址变化时 adapter 只重写 JSON 中的
+可以继续复用。`public_url` 不进入来源指纹，公开地址变化时 adapter 只重写 JSON 中的
 客户端可见 URL 并更新 sidecar，不访问上游，也不删除 package content。缺少来源
 指纹或公开基地址标记的旧缓存按未命中重新获取。
 

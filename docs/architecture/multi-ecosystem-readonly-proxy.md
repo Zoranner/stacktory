@@ -49,6 +49,23 @@ restore、Docker Registry V2 和 Unity UPM 只读代理；PyPI 和 Winget
 - 管理后台、动态修改配置、远程配置中心和数据库。
 - 任意 URL 代理、客户端指定上游、未验证的跨来源重定向。
 
+## 配置分层
+
+配置文件按职责分为四层，每层只有一个含义：
+
+| 层级 | 配置节 | 职责 |
+| --- | --- | --- |
+| 进程端点 | `[server]` | 绑定地址、绑定端口和客户端可见的 `public_url` |
+| 存储路径 | `[storage]` | 数据目录和运行日志目录 |
+| 横切策略 | `[proxy]`、`[retention]` | 出站代理和保留清理 |
+| 生态来源 | `[rustup]`、`[cargo]`、`[docker]`、`[npm]`、`[nuget]`、`[upm]`、`[vscode]` | 各生态的 `sources` source graph |
+
+`server.address`、`server.port` 只负责进程监听，`server.public_url` 负责生成
+客户端可见地址，两者可以因反向代理而不同。`public_url` 可包含路径前缀，
+但不能包含凭据、query 或 fragment；非 localhost 地址必须使用 HTTPS。
+所有配置节都拒绝未知字段，旧的扁平键、旧字段名和未实现的生态配置不会被
+静默接受。
+
 ## 公共来源契约
 
 ### Proxy 与 group
@@ -62,7 +79,7 @@ restore、Docker Registry V2 和 Unity UPM 只读代理；PyPI 和 Winget
 name = "official"
 type = "proxy"
 base_url = "https://registry.example"
-require_https = true
+allow_http = false
 ```
 
 `group` 是显式组合入口，不配置 `base_url`，只按 `members` 顺序引用同一生态
@@ -118,7 +135,7 @@ artifact 请求只有在绑定来源不可用、响应无法使用或完整性�
 ### 单一 Base URL 与安全
 
 proxy 的 `base_url` 是服务端配置事实，不是客户端可覆盖的转发目标。它必须
-通过 scheme、host、凭据、query、fragment、路径和 `require_https` 校验。适配器
+通过 scheme、host、凭据、query、fragment、路径和 `allow_http` 校验。适配器
 只能用协议对象键拼接该根地址；上游响应中的链接也必须经过协议范围和地址
 校验后才能访问。禁止 loopback、private、link-local、unspecified 和明显内部
 域名的外部跳转，除非后续安全设计明确允许并增加独立验证。
@@ -222,7 +239,7 @@ Rustup manifest/artifact 和 Docker blob 的单飞（single-flight）锁按对�
 上游制品请求。预算只约束制品传输，metadata 请求不占用该预算；单个生态不能再
 通过增加 `SourcePool` 扩大全局并发。
 
-`metadata_ttl_secs` 是 metadata 文件的清理窗口，不是请求路径的缓存 TTL；配置
+`metadata_retention_secs` 是 metadata 文件的清理窗口，不是请求路径的缓存 TTL；配置
 值必须为正整数，当前没有 `0` 或 `-1` 的特殊语义。请求路径的重新验证窗口由
 各适配器契约固定，例如 npm/UPM、Cargo 和 NuGet 当前都使用 15 分钟。旧缓存是否
 允许 stale serving 必须由适配器契约明确，不能在实现中隐式决定。
@@ -255,7 +272,7 @@ metadata 和审计文件按配置的保留窗口清理，配置由 `[retention]`
 
 ```toml
 [retention]
-metadata_ttl_secs = 604800
+metadata_retention_secs = 604800
 audit_retention_days = 30
 cleanup_interval_secs = 3600
 rustup_snapshot_revisions = 3
@@ -264,7 +281,7 @@ log_retention_days = 30
 ```
 
 - 服务启动后立即执行一次清理，之后按 `cleanup_interval_secs` 周期执行。
-- `<data_dir>/stores/<ecosystem>/metadata/**` 中修改时间早于 `metadata_ttl_secs` 的
+- `<data_dir>/stores/<ecosystem>/metadata/**` 中修改时间早于 `metadata_retention_secs` 的
   文件会被删除，客户端下次请求时重新获取并重建缓存与来源绑定。该值是 metadata
   的保留上限，是否按时间复用缓存仍由各适配器的命中策略决定。
 - `<data_dir>/audit/events.jsonl` 跨天后轮转为 `events.<UTC 日期>.jsonl`，超过
@@ -359,10 +376,10 @@ Docker source 的 `base_url` 是一个 Registry V2 根地址。Stacktory 对外�
 等协议路径由适配器生成，不增加 `/mirror/docker/v2/...` 内部命名空间，也不向
 Docker 客户端返回上游 Registry host。
 
-为兼容标准 Docker CLI，Docker source 可以配置可选的 `listen_port`。Stacktory
+为兼容标准 Docker CLI，Docker source 可以配置可选的 `cli_listen_port`。Stacktory
 为每个配置端口启动独立 listener，并将该 listener 的根 `/v2/...` 固定绑定到
 对应 source；未配置端口的 source 不增加根 Registry 入口。多个 source 的端口
-必须唯一且不能占用主服务 `listen_port`。域名绑定由外部 DNS、端口映射或反向
+必须唯一且不能占用 `server.port`。域名绑定由外部 DNS、端口映射或反向
 代理完成。
 Docker listener 与主监听共享关闭信号；主监听退出后，服务会等待 Docker listener
 完成在途请求再结束进程。
@@ -374,7 +391,7 @@ manifest、image config 和 layer blob 分别记录 object type。group 只按�
 入口与其实际选中的 direct proxy 可以复用同一内容对象。
 
 Docker manifest/tag 和 catalog/tags query metadata 记录来源指纹，由 proxy 名称、
-`base_url` 和 `require_https` 组成。同名 proxy 修改上游目标后，旧的 tag 映射和
+`base_url` 和 `allow_http` 组成。同名 proxy 修改上游目标后，旧的 tag 映射和
 查询结果按未命中重新获取；digest 校验通过的内容对象仍可按内容地址复用。
 
 Docker 适配器首期不实现 push、delete、账号管理、私有凭据、签名管理、构建服务

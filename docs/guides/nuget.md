@@ -67,4 +67,4 @@ resource；适配器已按客户端偏好选择信息最完整的 `Registrations
 
 明文 HTTP 入口只用于内网联调和本地验证，需要在 `NuGet.Config` 的
 `packageSources` 中显式打开 `allowInsecureConnections`；生产入口应使用
-HTTPS，并让 `require_https` 保持生效。
+HTTPS，并保持 `allow_http = false`。

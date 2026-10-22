@@ -61,10 +61,13 @@ Rustup MVP 只保留这些路由空间，不实现官网或文档站。
 配置使用 TOML，运行时仅加载一个本地文件：
 
 ```toml
-listen_address = "127.0.0.1"
-listen_port = 18761
+[server]
+address = "127.0.0.1"
+port = 18761
+public_url = "http://127.0.0.1:18761"
+
+[storage]
 data_dir = "./var/stacktory"
-root_url = "http://127.0.0.1:18761"
 
 [rustup]
 refresh_interval_secs = 3600
@@ -96,8 +99,8 @@ base_url = "https://crates.io"
 上游顺序就是回退顺序。`channels` 是服务允许刷新并可供给制品哈希的唯一 channel
 集合，必须至少包含一项；`refresh_interval_secs` 是 manifest 重新校验间隔，必须为
 正整数。上游 URL 只能使用 `https` 或 `http`，且不能包含
-凭据、查询或片段；上游默认 `require_https = true`，HTTP 上游必须在该条目显式
-设置 `require_https = false`。这个开关不接受客户端输入，也不允许服务访问未在
+凭据、查询或片段；上游默认 `allow_http = false`，HTTP 上游必须在该条目显式
+设置 `allow_http = true`。这个开关不接受客户端输入，也不允许服务访问未在
 配置中声明的地址。Rustup manifest 和制品只允许解析为相对 `dist/**` 路径。生产
 Stacktory 对内网公开提供镜像响应，不要求客户端凭据。
 
@@ -133,7 +136,7 @@ manifest 可以为不同制品绑定不同 proxy，不按每次 artifact 请求�
 属于 snapshot，不属于二进制制品缓存键。
 
 快照保存的是上游 canonical manifest 和它的 checksum，不保存已经写入公开地址的
-最终 manifest。读取时按当前 `root_url` 重新生成 manifest 和对应的 `.sha256`，
+最终 manifest。读取时按当前 `public_url` 重新生成 manifest 和对应的 `.sha256`，
 因此修改公开地址不需要重新下载或删除快照。旧格式快照在读取时被识别为不兼容，
 由首次请求触发一次刷新；制品缓存仍然保留。
 

@@ -31,7 +31,7 @@ Stacktory 为公司内网开发机提供统一的工具链和软件包下载入�
 ## 本地运行
 
 复制 `deploy/app/config.example.toml` 为仓库根目录的 `config.toml`（该文件已被忽略，不会提交），
-按本机情况修改监听地址、`root_url`、数据目录和日志目录，然后在仓库根目录启动服务：
+按本机情况修改 `[server]`、`[storage]`，然后在仓库根目录启动服务：
 
 ```text
 cargo run
@@ -39,19 +39,24 @@ cargo run
 
 `config.toml` 只从当前工作目录读取；容器部署请使用 `deploy/app/config.example.toml`。
 
+`server.address` 和 `server.port` 是进程监听地址，`server.public_url` 是客户端实际访问的
+地址。反向代理只改变外部域名或路径时，修改 `server.public_url` 即可；缓存不需要重建。
+配置 schema 不保留旧键兼容，旧配置会因未知字段在启动时被拒绝。
+
 ## 出站代理
 
-如果服务所在网络访问上游制品库必须经过 HTTP/HTTPS 代理，在 `config.toml` 顶层增加：
+如果服务所在网络访问上游制品库必须经过 HTTP/HTTPS 代理，在 `config.toml` 中增加：
 
 ```toml
-proxy_url = "http://proxy.example.internal:8080"
-proxy_no_proxy = "localhost,127.0.0.1,.internal"
+[proxy]
+url = "http://proxy.example.internal:8080"
+no_proxy = "localhost,127.0.0.1,.internal"
 ```
 
-`proxy_url` 会应用于 Rustup、Cargo、npm、NuGet、UPM、VS Code 和 Docker 的所有上游请求。
-只支持 HTTP/HTTPS 代理地址；`proxy_no_proxy` 可选，用于指定不经过代理的主机或域名。
-配置了 `proxy_no_proxy` 时以配置为准；未配置时才读取 `NO_PROXY` 环境变量。
-容器内配置时，`proxy_url` 必须是容器可访问的地址；宿主机的 `127.0.0.1` 在容器内通常无效。
+`proxy.url` 会应用于 Rustup、Cargo、npm、NuGet、UPM、VS Code 和 Docker 的所有上游请求。
+只支持 HTTP/HTTPS 代理地址；`proxy.no_proxy` 可选，用于指定不经过代理的主机或域名。
+配置了 `proxy.no_proxy` 时以配置为准；未配置时才读取 `NO_PROXY` 环境变量。
+容器内配置时，`proxy.url` 必须是容器可访问的地址；宿主机的 `127.0.0.1` 在容器内通常无效。
 
 ## 容器部署
 
@@ -66,23 +71,23 @@ docker compose -f deploy/docker-compose.yml up -d
 ```
 
 `chown` 在 Linux 宿主机上可能需要 `sudo`；容器以 UID 1000 运行，`deploy/app/data` 和
-`deploy/app/logs` 必须对该用户可写。`deploy/app/config.toml` 中的 `data_dir`、
-`log_dir` 应分别保持为 `/app/data`、`/app/logs`。
+`deploy/app/logs` 必须对该用户可写。`deploy/app/config.toml` 中的
+`storage.data_dir`、`storage.log_dir` 应分别保持为 `/app/data`、`/app/logs`。
 
 compose 默认发布主服务端口 `18761` 和 Docker `group` 入口的 `19000`。如果需要为其他
 Docker source 开放标准 CLI 端口，在 `deploy/app/config.toml` 中设置对应
-`listen_port`，并在 `deploy/docker-compose.yml` 中增加相同的端口映射。
+`cli_listen_port`，并在 `deploy/docker-compose.yml` 中增加相同的端口映射。
 compose 会通过容器内 `127.0.0.1:18761` 的 TCP 连接检查服务是否在监听。
 需要区分存活和就绪时，`/healthz` 只报告进程可响应，`/readyz` 会检查数据目录和
 日志目录可写；就绪检查失败返回 `503`。
 
 ## 缓存失效
 
-修改 `root_url` 后，服务只更新本地标记，不删除 metadata、快照或制品缓存。
+修改 `server.public_url` 后，服务只更新本地标记，不删除 metadata、快照或制品缓存。
 npm/UPM metadata、Rustup manifest 和 NuGet JSON metadata 会在读取时按当前
 地址重新渲染或重写；缺少公开地址标记的旧缓存按未命中重建。
 
-修改同名 proxy 的 `base_url` 或 `require_https` 后，NuGet 和 Docker 中保存上游
+修改同名 proxy 的 `base_url` 或 `allow_http` 后，NuGet 和 Docker 中保存上游
 绝对地址或可变引用的 metadata 与来源绑定会按未命中重建；按 digest 或摘要校验的
 制品内容仍可继续复用。
 
