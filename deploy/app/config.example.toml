@@ -12,7 +12,7 @@ log_dir = "/app/logs"
 
 # 可选：访问上游时使用的 HTTP/HTTPS 出站代理。
 # [proxy]
-# url = "http://proxy.example.internal:8080"
+# url = "http://127.0.0.1:7890"
 # no_proxy = "localhost,127.0.0.1,.internal"
 
 [retention]
