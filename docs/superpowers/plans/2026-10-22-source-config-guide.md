@@ -27,10 +27,10 @@
 | 文件 | 职责 |
 | --- | --- |
 | `src/lib.rs` | 注册内部 `docs` 模块，不扩大公共 API |
-| `src/docs/mod.rs` | 暴露内部 `source_config_guide` 模块 |
-| `src/docs/source_config_guide/mod.rs` | 定义 `GuideSection`、`Target`、内容入口和渲染入口 |
-| `src/docs/source_config_guide/content.rs` | 所有技术栈的静态内容、提示词、验证命令和注意事项 |
-| `src/docs/source_config_guide/render.rs` | 索引/详情页的 Markdown 与 HTML 渲染、HTML 转义、复制脚本和 CSS |
+| `src/docs/mod.rs` | 暴露内部 `source_config` 模块 |
+| `src/docs/source_config/mod.rs` | 定义 `GuideSection`、`Target`、内容入口和渲染入口 |
+| `src/docs/source_config/content.rs` | 所有技术栈的静态内容、提示词、验证命令和注意事项 |
+| `src/docs/source_config/render.rs` | 索引/详情页的 Markdown 与 HTML 渲染、HTML 转义、复制脚本和 CSS |
 | `src/http.rs` | `/docs`、`/docs.md`、`/docs/{stack}`、`/docs/{stack}/index.md` 路由、请求 Host 到公开地址的转换、旧脚本路由保持 404 |
 | `tests/http_test.rs` | 索引/详情路由、标题、请求 Host、Markdown、未知 stack 和旧脚本 404 的集成测试 |
 | `docs/guides/vscode.md` | 增加源配置页面入口；旧脚本说明已经删除 |
@@ -42,11 +42,11 @@
 
 **Files:**
 - Create: `src/docs/mod.rs`
-- Create: `src/docs/source_config_guide/mod.rs`
-- Create: `src/docs/source_config_guide/content.rs`
-- Create: `src/docs/source_config_guide/render.rs`
+- Create: `src/docs/source_config/mod.rs`
+- Create: `src/docs/source_config/content.rs`
+- Create: `src/docs/source_config/render.rs`
 - Modify: `src/lib.rs`
-- Test: `src/docs/source_config_guide/mod.rs`（单元测试）
+- Test: `src/docs/source_config/mod.rs`（单元测试）
 
 **Interfaces:**
 - Consumes: 无。
@@ -63,7 +63,7 @@ pub(crate) fn render_section_markdown(section: &GuideSection, base_url: &str) ->
 
 - [ ] **Step 1: 写失败测试，固定页面内容契约**
 
-在 `src/docs/source_config_guide/mod.rs` 中加入：
+在 `src/docs/source_config/mod.rs` 中加入：
 
 ```rust
 #[cfg(test)]
@@ -104,7 +104,7 @@ mod tests {
 Run:
 
 ```text
-cargo test --all-targets --all-features source_config_guide
+cargo test --all-targets --all-features source_config
 ```
 
 Expected: 编译失败，提示 `render_index_markdown`、`render_section_markdown` 或
@@ -112,7 +112,7 @@ Expected: 编译失败，提示 `render_index_markdown`、`render_section_markdo
 
 - [ ] **Step 3: 定义内容模型和静态 section 列表**
 
-在 `src/docs/source_config_guide/mod.rs` 中定义：
+在 `src/docs/source_config/mod.rs` 中定义：
 
 ```rust
 mod content;
@@ -145,7 +145,7 @@ pub(crate) enum Target {
 }
 ```
 
-在 `src/docs/source_config_guide/content.rs` 中放入 8 个 section，顺序固定为
+在 `src/docs/source_config/content.rs` 中放入 8 个 section，顺序固定为
 `Rustup`、`Cargo`、`npm`、`Bun`、`NuGet`、`UPM`、`VS Code`、`Docker`。
 每个 section 必须填满以下内容，不允许留空或 TODO：
 
@@ -176,14 +176,14 @@ pub(crate) enum Target {
 
 - [ ] **Step 4: 实现 Markdown 渲染**
 
-在 `src/docs/source_config_guide/render.rs` 中实现：
+在 `src/docs/source_config/render.rs` 中实现：
 
 ```rust
 pub(crate) fn render_index_markdown(base_url: &str) -> String {
     let mut out = String::from("# Stacktory | 使用说明\n\n");
     out.push_str("可以直接按手动步骤配置，也可以把提示词复制给智能体。所有操作先备份，失败时停止。\n\n");
     out.push_str("## 技术栈\n\n");
-    for section in crate::docs::source_config_guide::sections() {
+    for section in crate::docs::source_config::sections() {
         out.push_str(&format!(
             "- [{}](/docs/{}/index.md)：{}\n",
             section.title, section.id, section.summary
@@ -225,13 +225,13 @@ mod docs;
 在 `src/docs/mod.rs` 中加入：
 
 ```rust
-pub(crate) mod source_config_guide;
+pub(crate) mod source_config;
 ```
 
 Run:
 
 ```text
-cargo test --all-targets --all-features source_config_guide
+cargo test --all-targets --all-features source_config
 ```
 
 Expected: 2 个单元测试通过。
@@ -239,7 +239,7 @@ Expected: 2 个单元测试通过。
 - [ ] **Step 6: 提交内容模型和 Markdown**
 
 ```text
-git add -- src/lib.rs src/docs/mod.rs src/docs/source_config_guide/mod.rs src/docs/source_config_guide/content.rs src/docs/source_config_guide/render.rs
+git add -- src/lib.rs src/docs/mod.rs src/docs/source_config/mod.rs src/docs/source_config/content.rs src/docs/source_config/render.rs
 git diff --cached --check
 git commit -m "增加客户端源配置指南内容模型"
 ```
@@ -247,8 +247,8 @@ git commit -m "增加客户端源配置指南内容模型"
 ## Task: 实现人看的 HTML 页面
 
 **Files:**
-- Modify: `src/docs/source_config_guide/render.rs`
-- Test: `src/docs/source_config_guide/mod.rs`
+- Modify: `src/docs/source_config/render.rs`
+- Test: `src/docs/source_config/mod.rs`
 
 **Interfaces:**
 - Consumes: `sections()`, `GuideSection`, `Target`。
@@ -435,15 +435,15 @@ document.querySelectorAll("[data-copy-target]").forEach((button) => {
 Run:
 
 ```text
-cargo test --all-targets --all-features source_config_guide
+cargo test --all-targets --all-features source_config
 ```
 
-Expected: 所有 `source_config_guide` 单元测试通过。
+Expected: 所有 `source_config` 单元测试通过。
 
 - [ ] **Step 7: 提交 HTML 页面**
 
 ```text
-git add -- src/docs/source_config_guide/render.rs
+git add -- src/docs/source_config/render.rs
 git diff --cached --check
 git commit -m "实现客户端源配置页面"
 ```
@@ -602,7 +602,7 @@ async fn source_config_index_page(
     headers: HeaderMap,
 ) -> axum::response::Response {
     let base_url = public_base_url_for_request(&headers, service.public_url());
-    html_response(crate::docs::source_config_guide::render_index_html(
+    html_response(crate::docs::source_config::render_index_html(
         base_url.as_str(),
     ))
 }
@@ -612,11 +612,11 @@ async fn source_config_section_page(
     Path(stack): Path<String>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    let Some(section) = crate::docs::source_config_guide::section_by_id(&stack) else {
+    let Some(section) = crate::docs::source_config::section_by_id(&stack) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let base_url = public_base_url_for_request(&headers, service.public_url());
-    html_response(crate::docs::source_config_guide::render_section_html(
+    html_response(crate::docs::source_config::render_section_html(
         section,
         base_url.as_str(),
     ))
@@ -629,7 +629,7 @@ async fn source_config_index_markdown(
     let base_url = public_base_url_for_request(&headers, service.public_url());
     text_response(
         "text/markdown; charset=utf-8",
-        crate::docs::source_config_guide::render_index_markdown(base_url.as_str()),
+        crate::docs::source_config::render_index_markdown(base_url.as_str()),
     )
 }
 
@@ -638,13 +638,13 @@ async fn source_config_section_markdown(
     Path(stack): Path<String>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    let Some(section) = crate::docs::source_config_guide::section_by_id(&stack) else {
+    let Some(section) = crate::docs::source_config::section_by_id(&stack) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let base_url = public_base_url_for_request(&headers, service.public_url());
     text_response(
         "text/markdown; charset=utf-8",
-        crate::docs::source_config_guide::render_section_markdown(
+        crate::docs::source_config::render_section_markdown(
             section,
             base_url.as_str(),
         ),

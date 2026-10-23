@@ -130,7 +130,7 @@ GET /docs/{stack}/index.md
 
 ## 技术设计
 
-新增 `src/docs/source_config_guide/`，定义稳定的内容结构：
+新增 `src/docs/source_config/`，定义稳定的内容结构：
 
 ```rust
 pub(crate) struct GuideSection {
