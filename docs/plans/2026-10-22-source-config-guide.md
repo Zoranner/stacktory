@@ -3,7 +3,8 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 > **历史记录：** `docs/guides/` 已在后续清理中移除；当前产品内容统一位于
-> `web/docs/content/`，本文中的旧路径只用于记录当时的实施步骤。
+> `web/docs/content/`，本文中的旧路径只用于记录当时的实施步骤。页面结构、页头和
+> 入口选择器以 `docs/specs/2026-10-22-source-config-guide-design.md` 为准。
 
 **Goal:** 提供一个只读的 `/docs` 索引页、`/docs/{stack}` 详情页和对应的 Markdown 文档，覆盖各技术栈的手动源配置和智能体提示词；生产页面不依赖远程脚本，旧脚本入口保持 404。
 

@@ -1,5 +1,6 @@
 use super::{GuideSection, SourceCatalog, SourceEntry};
 use crate::SourceType;
+use std::sync::OnceLock;
 use url::Url;
 
 const PAGE_TEMPLATE: &str = include_str!("../../../web/docs/index.html");
@@ -87,7 +88,6 @@ pub(crate) fn render_index_html(base_url: &str, catalog: &SourceCatalog) -> Stri
         "Stacktory | 文档",
         base_url,
         None,
-        None,
         render_directory_body(base_url, catalog),
     )
 }
@@ -101,51 +101,68 @@ pub(crate) fn render_section_html(
         &format!("Stacktory | 文档 | {}", section.title),
         base_url,
         Some(section.id.as_str()),
-        Some(section.title.as_str()),
         render_section_body(section, base_url, catalog),
     )
 }
 
-fn render_page(
-    title: &str,
-    base_url: &str,
-    current_id: Option<&str>,
-    current_title: Option<&str>,
-    content: String,
-) -> String {
+fn render_page(title: &str, base_url: &str, current_id: Option<&str>, content: String) -> String {
     let nav = render_navigation(current_id.unwrap_or_default(), base_url);
-    let header_suffix = current_title
-        .map(|title| {
-            format!(
-                r#"<span class="docs-separator" aria-hidden="true">|</span><span class="docs-current">{}</span>"#,
-                escape_html(title)
-            )
-        })
-        .unwrap_or_default();
+    let version = docs_asset_version();
     PAGE_TEMPLATE
         .replace("{{TITLE}}", &escape_html(title))
         .replace("{{HOME}}", &escape_html(&site_href(base_url, "/")))
         .replace("{{SERVICE_URL}}", &escape_html(base_url))
-        .replace("{{HEADER_SUFFIX}}", &header_suffix)
         .replace("{{LAYOUT_CLASS}}", "docs-shell")
         .replace("{{NAV}}", &nav)
         .replace("{{CONTENT}}", &content)
         .replace(
             "{{THEME}}",
-            &escape_html(&site_href(base_url, "/theme.css")),
+            &escape_html(&asset_href(base_url, "/theme.css", version)),
         )
         .replace(
             "{{STYLESHEET}}",
-            &escape_html(&site_href(base_url, "/docs/index.css")),
+            &escape_html(&asset_href(base_url, "/docs/index.css", version)),
         )
         .replace(
             "{{SCRIPT}}",
-            &escape_html(&site_href(base_url, "/docs/index.js")),
+            &escape_html(&asset_href(base_url, "/docs/index.js", version)),
         )
 }
 
+fn docs_asset_version() -> u64 {
+    static VERSION: OnceLock<u64> = OnceLock::new();
+    *VERSION.get_or_init(|| {
+        let mut hash = 0xcbf29ce484222325u64;
+        for source in [
+            include_str!("../../../web/theme.css"),
+            include_str!("../../../web/docs/index.css"),
+            include_str!("../../../web/docs/index.js"),
+        ] {
+            for byte in source.bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(0x100000001b3);
+            }
+        }
+        hash
+    })
+}
+
+fn asset_href(base_url: &str, path: &str, version: u64) -> String {
+    format!("{}?v={version:016x}", site_href(base_url, path))
+}
+
 fn render_navigation(current_id: &str, base_url: &str) -> String {
-    let mut links = String::new();
+    let home_current = if current_id.is_empty() {
+        r#" aria-current="page""#
+    } else {
+        ""
+    };
+    let mut links = format!(
+        r#"<a class="docs-nav-link docs-nav-link--home" href="{}"{}>文档首页</a>"#,
+        escape_html(&site_href(base_url, "/docs")),
+        home_current,
+    );
+    links.push_str(r#"<div class="docs-nav-divider" aria-hidden="true"></div>"#);
     let mut group: Option<&str> = None;
     for section in super::sections() {
         let group_title = section.group_title.as_str();
@@ -169,7 +186,7 @@ fn render_navigation(current_id: &str, base_url: &str) -> String {
         ));
     }
     format!(
-        r#"<aside class="sidebar" aria-label="文档导航"><div class="side-head">文档</div><nav class="stack-nav">{links}</nav></aside>"#
+        r#"<aside class="sidebar" aria-label="文档导航"><nav class="stack-nav">{links}</nav></aside>"#
     )
 }
 
@@ -179,7 +196,10 @@ fn render_directory_body(base_url: &str, catalog: &SourceCatalog) -> String {
         let source_count = catalog.sources(&section.ecosystem).len();
         cards.push_str(&format!(
             r#"<a class="doc-card" href="{href}">
-  <span class="doc-card-group">{group_title}</span>
+  <span class="doc-card-top">
+    <span class="doc-card-group">{group_title}</span>
+    <span class="doc-card-arrow" aria-hidden="true">→</span>
+  </span>
   <span class="doc-card-title">{title}</span>
   <span class="doc-card-summary">{summary}</span>
   <span class="doc-card-meta">{source_count} 个入口</span>
@@ -204,9 +224,7 @@ fn render_section_body(section: &GuideSection, base_url: &str, catalog: &SourceC
     let sources = render_sources_html(section, base_url, catalog);
     let config = render_config_html(section, base_url, catalog);
     format!(
-        r#"<nav class="breadcrumb" aria-label="面包屑"><a href="{docs_home}">文档</a><span class="breadcrumb-separator" aria-hidden="true">/</span><span>{group_title}</span><span class="breadcrumb-separator" aria-hidden="true">/</span><span>{title}</span></nav>
-<header class="article-header">
-  <p class="eyebrow">{group_title}</p>
+        r#"<header class="article-header">
   <h1>{title}</h1>
   <p class="article-summary">{summary}</p>
 </header>
@@ -214,9 +232,7 @@ fn render_section_body(section: &GuideSection, base_url: &str, catalog: &SourceC
   <div class="section-heading"><h2 id="sources-title">入口</h2></div>
   {sources}
 </section>
-{config}"#,
-        docs_home = escape_html(&site_href(base_url, "/docs")),
-        group_title = escape_html(&section.group_title),
+  {config}"#,
         title = escape_html(&section.title),
         summary = escape_html(&section.summary),
         sources = sources,
@@ -263,7 +279,13 @@ fn render_config_html(section: &GuideSection, base_url: &str, catalog: &SourceCa
     <button class="mode-tab" id="tab-manual" type="button" role="tab" aria-selected="false" aria-controls="panel-manual" tabindex="-1">手动配置</button>
   </div>
   <div class="tab-panel prompt-panel" id="panel-auto" role="tabpanel" aria-labelledby="tab-auto" tabindex="0">
-    <div class="panel-head"><h2>提示词</h2><button class="copy-button" type="button" data-copy-target="prompt-{id}"><span class="copy-icon" aria-hidden="true"></span><span class="button-label">复制提示词</span></button></div>
+    <div class="panel-head">
+      <h2>提示词</h2>
+      <div class="panel-actions">
+        <span class="copy-status" id="copy-status" role="status" aria-live="polite"></span>
+        <button class="copy-button" type="button" data-copy-target="prompt-{id}"><span class="copy-icon" aria-hidden="true"></span><span class="button-label">复制提示词</span></button>
+      </div>
+    </div>
     <pre id="prompt-{id}"><code data-endpoint-scope>{prompt}</code></pre>
   </div>
   <div class="tab-panel" id="panel-manual" role="tabpanel" aria-labelledby="tab-manual" tabindex="0" hidden>
@@ -513,32 +535,39 @@ fn render_entry_picker(section: &GuideSection, base_url: &str, catalog: &SourceC
         );
     }
 
-    let mut options = String::new();
-    for (label, entries) in [("Group 入口", groups), ("Proxy 入口", proxies)] {
+    let mut option_groups = String::new();
+    for (label, type_label, entries) in [
+        ("Group 入口", "Group", groups),
+        ("Proxy 入口", "Proxy", proxies),
+    ] {
         if entries.is_empty() {
             continue;
         }
-        options.push_str(&format!(r#"<optgroup label="{label}">"#));
+        let mut options = String::new();
         for (source, endpoint) in entries {
             let selected = if source.name == initial.name {
-                " selected"
+                r#" aria-selected="true""#
             } else {
-                ""
+                r#" aria-selected="false""#
             };
             options.push_str(&format!(
-                r#"<option value="{}"{}>{}</option>"#,
+                r#"<div class="entry-select-option" role="option" tabindex="-1" data-endpoint="{}" data-entry-name="{}"{}><span class="entry-select-option-name">{}</span><span class="entry-select-option-type">{type_label}</span></div>"#,
                 escape_html(&endpoint),
+                escape_html(&source.name),
                 selected,
                 escape_html(&source.name),
             ));
         }
-        options.push_str("</optgroup>");
+        option_groups.push_str(&format!(
+            r#"<div class="entry-select-group" role="group" aria-label="{label}"><div class="entry-select-group-label" aria-hidden="true">{label}</div>{options}</div>"#
+        ));
     }
 
     format!(
-        r#"<div class="entry-picker"><label class="entry-picker-label" for="entry-select">当前入口</label><select id="entry-select" class="entry-select" data-entry-select data-current-endpoint="{}">{}</select><code class="entry-url" data-entry-url>{}</code></div>"#,
+        r#"<div class="entry-picker"><span class="entry-picker-label" id="entry-picker-label">当前入口</span><div class="entry-select" data-entry-select data-current-endpoint="{}"><button class="entry-select-trigger" id="entry-select" type="button" data-entry-trigger role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-controls="entry-listbox" aria-labelledby="entry-picker-label entry-select-value"><span class="entry-select-value" id="entry-select-value" data-entry-label>{}</span><span class="entry-select-chevron" aria-hidden="true"></span></button><div class="entry-select-popup" id="entry-listbox" data-entry-listbox role="listbox" aria-labelledby="entry-picker-label" hidden>{}</div></div><code class="entry-url" data-entry-url>{}</code></div>"#,
         escape_html(&initial_endpoint),
-        options,
+        escape_html(&initial.name),
+        option_groups,
         escape_html(&initial_endpoint),
     )
 }

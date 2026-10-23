@@ -34,8 +34,11 @@
   --text-3xl: 34px;
 
   --radius: 2px;
+  --layout-width: 1240px;
+  --layout-gutter: clamp(24px, 4.2vw, 68px);
+  --header-height: 82px;
   --docs-content: 820px;
-  --docs-sidebar: 196px;
-  --docs-gap: 48px;
+  --docs-sidebar: 220px;
+  --docs-gap: 64px;
   --docs-gutter: clamp(20px, 4vw, 52px);
 }

@@ -124,9 +124,9 @@ async fn source_config_page_serves_external_assets() {
         .await
         .expect("docs page body");
     let html = String::from_utf8(body.to_vec()).expect("docs page UTF-8");
-    assert!(html.contains("href=\"/theme.css\""));
-    assert!(html.contains("href=\"/docs/index.css\""));
-    assert!(html.contains("src=\"/docs/index.js\""));
+    assert!(html.contains("href=\"/theme.css?v="));
+    assert!(html.contains("href=\"/docs/index.css?v="));
+    assert!(html.contains("src=\"/docs/index.js?v="));
 
     for (path, content_type) in [
         ("/theme.css", "text/css; charset=utf-8"),
@@ -149,6 +149,14 @@ async fn source_config_page_serves_external_assets() {
                 .get("content-type")
                 .and_then(|value| value.to_str().ok()),
             Some(content_type),
+            "{path}"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("cache-control")
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store"),
             "{path}"
         );
     }

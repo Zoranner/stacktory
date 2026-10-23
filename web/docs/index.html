@@ -12,15 +12,16 @@
   <a class="skip-link" href="#main">跳到主要内容</a>
 
   <header class="site-header">
-    <div class="brandline">
-      <a class="brand" href="{{HOME}}" aria-label="Stacktory 首页">
-        <span class="brand__mark" aria-hidden="true">S</span>
-        <span class="brand__name">Stacktory</span>
-      </a>
-      <span class="docs-path">文档</span>
-      {{HEADER_SUFFIX}}
+    <div class="site-header__inner">
+      <div class="brandline">
+        <a class="brand" href="{{HOME}}" aria-label="Stacktory 首页">
+          <span class="brand__mark" aria-hidden="true">S</span>
+          <span class="brand__name">Stacktory</span>
+        </a>
+        <span class="docs-path">文档</span>
+      </div>
+      <span class="site-service">{{SERVICE_URL}}</span>
     </div>
-    <span class="site-service">{{SERVICE_URL}}</span>
   </header>
 
   <div class="{{LAYOUT_CLASS}}">
@@ -30,7 +31,6 @@
     </main>
   </div>
 
-  <div id="copy-status" class="copy-status" aria-live="polite"></div>
   <noscript><style>.mode-switch{display:none}.tab-panel[hidden]{display:block}</style></noscript>
   <script src="{{SCRIPT}}" defer></script>
 </body>

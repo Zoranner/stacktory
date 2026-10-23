@@ -88,11 +88,14 @@ mod tests {
         assert!(html.contains("href=\"/docs/cargo\""));
         assert!(html.contains(">技术栈</h2>"));
         assert!(html.contains("class=\"doc-card\""));
+        assert!(html.contains("docs-nav-link--home"));
+        assert!(html.contains(">文档首页</a>"));
+        assert!(!html.contains("breadcrumb"));
         assert!(!html.contains("使用说明"));
         assert!(!html.contains("docs-nav-link\" href=\"/docs/guide\""));
-        assert!(html.contains("href=\"/theme.css\""));
-        assert!(html.contains("href=\"/docs/index.css\""));
-        assert!(html.contains("src=\"/docs/index.js\""));
+        assert!(html.contains("href=\"/theme.css?v="));
+        assert!(html.contains("href=\"/docs/index.css?v="));
+        assert!(html.contains("src=\"/docs/index.js?v="));
         assert!(!html.contains("{base_url}"));
         assert!(!html.contains("{{"));
     }
@@ -103,7 +106,9 @@ mod tests {
         let section = section_by_id("cargo").expect("cargo section");
         let html = render_section_html(section, "https://pkg.example.test/artifacts", &catalog);
         assert!(html.contains("<title>Stacktory | 文档 | Cargo</title>"));
-        assert!(html.contains("<a href=\"/artifacts/docs\">文档</a>"));
+        assert!(html.contains("<span class=\"docs-path\">文档</span>"));
+        assert!(!html.contains("breadcrumb"));
+        assert!(!html.contains("docs-current"));
         assert!(html.contains("data-copy-target=\"prompt-cargo\""));
         assert!(html.contains(">入口</h2>"));
         assert!(html.contains("source-name\">official</code>"));
@@ -112,12 +117,16 @@ mod tests {
         assert!(html.contains("https://pkg.example.test/artifacts/mirror/cargo/group/"));
         assert!(html.contains("当前入口"));
         assert!(html.contains("id=\"entry-select\""));
+        assert!(html.contains("role=\"combobox\""));
+        assert!(html.contains("role=\"listbox\""));
+        assert!(html.contains("data-entry-name=\"group\""));
+        assert!(!html.contains("<select"));
         assert!(html.contains("data-endpoint-scope"));
         assert!(!html.contains("推荐入口"));
         assert!(!html.contains("示例入口"));
-        assert!(html.contains("href=\"/artifacts/theme.css\""));
-        assert!(html.contains("href=\"/artifacts/docs/index.css\""));
-        assert!(html.contains("src=\"/artifacts/docs/index.js\""));
+        assert!(html.contains("href=\"/artifacts/theme.css?v="));
+        assert!(html.contains("href=\"/artifacts/docs/index.css?v="));
+        assert!(html.contains("src=\"/artifacts/docs/index.js?v="));
         assert!(html.contains("请把本机 Cargo"));
         assert!(html.contains("aria-live=\"polite\""));
         assert!(html.contains("role=\"tab\""));

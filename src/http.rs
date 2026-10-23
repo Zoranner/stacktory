@@ -152,7 +152,7 @@ async fn landing_css() -> axum::response::Response {
 }
 
 async fn theme_css() -> axum::response::Response {
-    asset_response("text/css; charset=utf-8", THEME_CSS)
+    text_response("text/css; charset=utf-8", THEME_CSS.to_owned())
 }
 
 async fn landing_js() -> axum::response::Response {
@@ -164,11 +164,11 @@ async fn three_js() -> axum::response::Response {
 }
 
 async fn docs_css() -> axum::response::Response {
-    asset_response("text/css; charset=utf-8", DOCS_CSS)
+    text_response("text/css; charset=utf-8", DOCS_CSS.to_owned())
 }
 
 async fn docs_js() -> axum::response::Response {
-    asset_response("text/javascript; charset=utf-8", DOCS_JS)
+    text_response("text/javascript; charset=utf-8", DOCS_JS.to_owned())
 }
 
 async fn source_config_index_page(
