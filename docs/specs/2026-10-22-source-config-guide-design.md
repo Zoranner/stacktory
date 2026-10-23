@@ -74,10 +74,13 @@ GET /docs/{stack}/index.md
 | VS Code | VS Code | 修改 VS Code `product.json` 的 Gallery 三项 | 必须备份；升级后可能被覆盖 |
 | Docker | Docker | 修改 Docker `registry-mirrors` | 需要管理员权限和重启；不猜测地址 |
 
-入口不是写死的 `group`。每个详情页从当前服务配置读取对应生态的全部 source，展示
-入口名、`Group`/`Proxy` 类型、Group 成员、解析后的地址和 Docker 客户端地址。Proxy 和
-Group 分开展示；页面初始选择第一个 Group，没有 Group 时选择第一个 Proxy。该初始值
-只用于生成首屏配置步骤，用户可以在详情页切换当前入口，不表示推荐。
+入口不是写死的 `group`。每个详情页从当前服务配置读取对应生态中
+`visible` 为 `true` 的 source，展示入口名、`Group`/`Proxy` 类型、Group 成员、
+解析后的地址和 Docker 客户端地址。`visible` 默认为 `true`；设为 `false` 的 source
+不再出现在文档页的入口表、当前入口选择器或 Group 成员说明中，但仍可被 Group 引用
+并参与回退；如果 Group 的成员全部隐藏，成员说明显示“已隐藏”。
+Proxy 和 Group 分开展示；页面初始选择第一个可见 Group，没有可见 Group 时选择第一个
+可见 Proxy。该初始值只用于生成首屏配置步骤，用户可以在详情页切换当前入口，不表示推荐。
 Docker 的独立 Registry 入口用 `listen_port` 和 `public_url` 成对配置，
 页面只展示客户端可访问的完整地址，不单独展示监听端口。
 
@@ -234,6 +237,8 @@ Docker listener 不提供这些文档页面。页面不增加运行时配置；�
 - npm 和 Bun 位于同一个 Node.js 分组，共用当前 npm 生态的入口列表。
 - 详情页列出当前生态配置的全部 Group/Proxy 入口、成员、地址和 Docker 客户端地址，
   不再只显示一个写死的 `group`。
+- `visible = false` 的 source 不出现在入口表、当前入口选择器或 Group 成员说明中，
+  但仍可作为 Group 成员参与解析和回退。
 - Unity 页面的入口列表来自 UPM 配置，而不是单一的 `group` 字符串。
 - 用户修改 `web/docs/content/*.md` 后，页面文案和提示词随构建更新。
 - 通过 `pkg.rd.kim` 访问时，未替换的 `{base_url}` 不出现，地址指向 `pkg.rd.kim`。

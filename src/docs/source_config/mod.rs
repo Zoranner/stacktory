@@ -27,6 +27,8 @@ pub(crate) struct GuideSection {
 
 #[cfg(test)]
 mod tests {
+    use crate::Config;
+
     use super::{
         SourceCatalog, render_index_html, render_index_markdown, render_section_html,
         render_section_markdown, section_by_id, sections,
@@ -133,6 +135,69 @@ mod tests {
         assert!(html.contains("aria-controls=\"panel-manual\""));
         assert!(html.contains("<noscript>"));
         assert!(!html.contains("{base_url}"));
+    }
+
+    #[test]
+    fn hidden_sources_are_omitted_from_docs_but_remain_in_graph() {
+        let config = Config::from_toml(
+            r#"
+[server]
+address = "127.0.0.1"
+port = 18000
+public_url = "http://127.0.0.1:18000"
+
+[storage]
+data_dir = "./var/stacktory"
+
+[rustup]
+refresh_interval_secs = 3600
+channels = ["stable"]
+
+[[rustup.sources]]
+name = "official"
+type = "proxy"
+base_url = "https://static.rust-lang.org"
+
+[cargo]
+
+[[cargo.sources]]
+name = "hidden-official"
+type = "proxy"
+visible = false
+base_url = "https://index.crates.io"
+
+[[cargo.sources]]
+name = "group"
+type = "group"
+members = ["hidden-official"]
+"#,
+        )
+        .expect("docs visibility config");
+        let catalog = SourceCatalog::from_config(&config);
+        let cargo = catalog.sources("cargo");
+
+        assert_eq!(
+            cargo
+                .iter()
+                .map(|source| source.name.as_str())
+                .collect::<Vec<_>>(),
+            ["group"]
+        );
+        assert_eq!(
+            catalog.initial("cargo").expect("initial cargo source").name,
+            "group"
+        );
+
+        let section = section_by_id("cargo").expect("cargo section");
+        let html = render_section_html(section, "https://pkg.example.test", &catalog);
+        let markdown = render_section_markdown(section, "https://pkg.example.test", &catalog);
+
+        assert!(!html.contains("source-name\">hidden-official</code>"));
+        assert!(!html.contains("data-entry-name=\"hidden-official\""));
+        assert!(!html.contains("<code>hidden-official</code>"));
+        assert!(html.contains("成员：已隐藏"));
+        assert!(!markdown.contains("| `hidden-official` |"));
+        assert!(markdown.contains("| `group` | 已隐藏 |"));
     }
 
     #[test]

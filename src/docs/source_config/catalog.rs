@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{Config, DockerRegistryEndpoint, SourceGraph, SourceType};
 
@@ -7,6 +7,7 @@ pub(crate) struct SourceEntry {
     pub(crate) name: String,
     pub(crate) source_type: SourceType,
     pub(crate) members: Vec<String>,
+    pub(crate) members_hidden: bool,
     pub(crate) registry_public_url: Option<String>,
 }
 
@@ -46,23 +47,36 @@ impl SourceCatalog {
         graph: &SourceGraph,
         endpoints: Option<&BTreeMap<String, DockerRegistryEndpoint>>,
     ) {
+        let visible_names = graph
+            .docs_visible_entries()
+            .map(|source| source.name.as_str())
+            .collect::<BTreeSet<_>>();
         self.ecosystems.insert(
             ecosystem,
             graph
-                .entries()
-                .map(|source| SourceEntry {
-                    name: source.name.clone(),
-                    source_type: source.source_type,
-                    members: source.members.clone(),
-                    registry_public_url: endpoints
-                        .and_then(|endpoints| endpoints.get(&source.name))
-                        .map(|endpoint| {
-                            endpoint
-                                .public_url
-                                .as_str()
-                                .trim_end_matches('/')
-                                .to_owned()
-                        }),
+                .docs_visible_entries()
+                .map(|source| {
+                    let members = source
+                        .members
+                        .iter()
+                        .filter(|member| visible_names.contains(member.as_str()))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    SourceEntry {
+                        name: source.name.clone(),
+                        source_type: source.source_type,
+                        members_hidden: members.len() != source.members.len(),
+                        members,
+                        registry_public_url: endpoints
+                            .and_then(|endpoints| endpoints.get(&source.name))
+                            .map(|endpoint| {
+                                endpoint
+                                    .public_url
+                                    .as_str()
+                                    .trim_end_matches('/')
+                                    .to_owned()
+                            }),
+                    }
                 })
                 .collect(),
         );
@@ -105,6 +119,7 @@ impl SourceCatalog {
                 name: name.to_owned(),
                 source_type,
                 members: members.iter().map(|member| (*member).to_owned()).collect(),
+                members_hidden: false,
                 registry_public_url: registry_public_url.map(str::to_owned),
             }
         };

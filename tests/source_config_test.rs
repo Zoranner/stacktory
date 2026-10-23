@@ -53,6 +53,47 @@ fn accepts_proxy_and_group_sources() {
 }
 
 #[test]
+fn source_docs_visibility_defaults_to_true_and_can_be_disabled() {
+    let config = Config::from_toml(CONFIGURATION).expect("default source visibility");
+    assert!(config.rustup.sources.docs_visible("company-nexus"));
+    assert!(config.rustup.sources.docs_visible("rust-lang"));
+    assert!(config.rustup.sources.docs_visible("group"));
+
+    let configuration = CONFIGURATION.replace(
+        "type = \"proxy\"\nbase_url = \"https://pkg.example.internal/repository/rustup-group\"",
+        "type = \"proxy\"\nvisible = false\nbase_url = \"https://pkg.example.internal/repository/rustup-group\"",
+    );
+    let config = Config::from_toml(&configuration).expect("hidden source");
+
+    assert!(!config.rustup.sources.docs_visible("company-nexus"));
+    assert!(config.rustup.sources.docs_visible("rust-lang"));
+    assert!(config.rustup.sources.docs_visible("group"));
+    assert_eq!(
+        config
+            .rustup
+            .sources
+            .proxy_members("group")
+            .expect("hidden member remains resolvable")
+            .iter()
+            .map(|source| source.name.as_str())
+            .collect::<Vec<_>>(),
+        ["company-nexus", "rust-lang"]
+    );
+}
+
+#[test]
+fn docker_sources_accept_docs_visibility() {
+    let configuration = format!(
+        "{CONFIGURATION}\n[docker]\n\n[[docker.sources]]\nname = \"official\"\ntype = \"proxy\"\nvisible = false\nbase_url = \"https://registry-1.docker.io\"\n\n[[docker.sources]]\nname = \"group\"\ntype = \"group\"\nmembers = [\"official\"]\n"
+    );
+    let config = Config::from_toml(&configuration).expect("Docker visibility");
+    let docker = config.docker.expect("Docker configuration");
+
+    assert!(!docker.sources.docs_visible("official"));
+    assert!(docker.sources.docs_visible("group"));
+}
+
+#[test]
 fn rejects_group_with_base_url() {
     let configuration = CONFIGURATION.replace(
         "type = \"group\"\nmembers = [\"company-nexus\", \"rust-lang\"]",

@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, net::IpAddr, path::PathBuf, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::IpAddr,
+    path::PathBuf,
+    time::Duration,
+};
 
 use serde::Deserialize;
 use thiserror::Error;
@@ -180,15 +185,22 @@ impl SourceConfig {
 #[derive(Clone, Debug)]
 pub struct SourceGraph {
     entries: BTreeMap<String, SourceConfig>,
+    hidden_from_docs: BTreeSet<String>,
 }
 
 impl SourceGraph {
     fn from_raw(sources: Vec<RawSourceConfig>) -> Result<Self, ConfigError> {
-        sources
-            .into_iter()
-            .map(RawSourceConfig::into_source_config)
-            .collect::<Result<Vec<_>, _>>()
-            .and_then(Self::new)
+        let mut hidden_from_docs = BTreeSet::new();
+        let mut configs = Vec::with_capacity(sources.len());
+        for source in sources {
+            if !source.visible {
+                hidden_from_docs.insert(source.name.clone());
+            }
+            configs.push(source.into_source_config()?);
+        }
+        let mut graph = Self::new(configs)?;
+        graph.hidden_from_docs = hidden_from_docs;
+        Ok(graph)
     }
 
     fn from_raw_docker(
@@ -273,7 +285,10 @@ impl SourceGraph {
             }
         }
 
-        Ok(Self { entries })
+        Ok(Self {
+            entries,
+            hidden_from_docs: BTreeSet::new(),
+        })
     }
 
     pub fn get(&self, name: &str) -> Option<&SourceConfig> {
@@ -282,6 +297,16 @@ impl SourceGraph {
 
     pub fn entries(&self) -> impl Iterator<Item = &SourceConfig> {
         self.entries.values()
+    }
+
+    pub fn docs_visible_entries(&self) -> impl Iterator<Item = &SourceConfig> {
+        self.entries
+            .values()
+            .filter(|source| !self.hidden_from_docs.contains(&source.name))
+    }
+
+    pub fn docs_visible(&self, name: &str) -> bool {
+        self.entries.contains_key(name) && !self.hidden_from_docs.contains(name)
     }
 
     pub fn proxy_members(&self, name: &str) -> Option<Vec<&SourceConfig>> {
@@ -441,6 +466,8 @@ struct RawDockerSourceConfig {
     name: String,
     #[serde(rename = "type")]
     source_type: SourceType,
+    #[serde(default = "default_visible")]
+    visible: bool,
     #[serde(default)]
     base_url: Option<Url>,
     #[serde(default)]
@@ -473,6 +500,7 @@ impl RawDockerSourceConfig {
             RawSourceConfig {
                 name,
                 source_type: self.source_type,
+                visible: self.visible,
                 base_url: self.base_url,
                 allow_http: self.allow_http,
                 members: self.members,
@@ -488,6 +516,8 @@ struct RawSourceConfig {
     name: String,
     #[serde(rename = "type")]
     source_type: SourceType,
+    #[serde(default = "default_visible")]
+    visible: bool,
     #[serde(default)]
     base_url: Option<Url>,
     #[serde(default)]
@@ -514,6 +544,10 @@ impl RawSourceConfig {
             members: self.members,
         })
     }
+}
+
+fn default_visible() -> bool {
+    true
 }
 
 impl Config {

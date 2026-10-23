@@ -59,7 +59,7 @@ pub(crate) fn render_section_markdown(
             .any(|source| source.registry_public_url.is_some())
     {
         output.push_str(
-            "\n## 配置\n\n当前配置未提供 Docker 客户端地址。请为入口同时设置 `listen_port` 和 `public_url`。\n",
+            "\n## 配置\n\n当前文档未提供可展示的 Docker 客户端地址。请检查入口的 `visible` 设置，或在入口上同时设置 `listen_port` 和 `public_url`。\n",
         );
         return output;
     }
@@ -249,7 +249,7 @@ fn render_config_html(section: &GuideSection, base_url: &str, catalog: &SourceCa
     if !has_endpoint {
         return r#"<section class="article-section" aria-labelledby="config-title">
   <div class="section-heading"><h2 id="config-title">配置</h2></div>
-  <p class="config-empty">当前配置未提供 Docker 客户端地址。请为入口同时设置 <code>listen_port</code> 和 <code>public_url</code>。</p>
+  <p class="config-empty">当前文档未提供可展示的 Docker 客户端地址。请检查入口的 <code>visible</code> 设置，或在入口上同时设置 <code>listen_port</code> 和 <code>public_url</code>。</p>
 </section>"#
             .to_owned();
     }
@@ -311,7 +311,7 @@ fn render_sources_markdown(
 ) -> String {
     let sources = catalog.sources(&section.ecosystem);
     if sources.is_empty() {
-        return "当前配置未提供该生态入口。\n".to_owned();
+        return "当前配置未提供可在文档中展示的入口。\n".to_owned();
     }
     let proxies = sources
         .iter()
@@ -407,7 +407,7 @@ fn render_sources_markdown(
 fn render_sources_html(section: &GuideSection, base_url: &str, catalog: &SourceCatalog) -> String {
     let sources = catalog.sources(&section.ecosystem);
     if sources.is_empty() {
-        return r#"<p class="source-empty">当前配置未提供该生态入口。</p>"#.to_owned();
+        return r#"<p class="source-empty">当前配置未提供可在文档中展示的入口。</p>"#.to_owned();
     }
     let proxies = sources
         .iter()
@@ -574,7 +574,11 @@ fn render_entry_picker(section: &GuideSection, base_url: &str, catalog: &SourceC
 
 fn source_members(source: &SourceEntry) -> String {
     if source.members.is_empty() {
-        "直连".to_owned()
+        if source.members_hidden {
+            "已隐藏".to_owned()
+        } else {
+            "直连".to_owned()
+        }
     } else {
         source.members.join(" → ")
     }
@@ -582,7 +586,11 @@ fn source_members(source: &SourceEntry) -> String {
 
 fn group_members_html(source: &SourceEntry) -> String {
     if source.members.is_empty() {
-        "—".to_owned()
+        if source.members_hidden {
+            "已隐藏".to_owned()
+        } else {
+            "—".to_owned()
+        }
     } else {
         source
             .members
