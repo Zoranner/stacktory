@@ -247,6 +247,14 @@ p {
   margin-top: var(--space-8);
 }
 
+.directory-list--guide {
+  margin-bottom: var(--space-10);
+}
+
+.directory-row--guide {
+  border-bottom-color: var(--line-strong);
+}
+
 .directory-group + .directory-group {
   margin-top: var(--space-10);
 }
@@ -264,11 +272,6 @@ p {
   color: var(--champagne);
   font-size: var(--text-md);
   font-weight: 600;
-}
-
-.directory-group-meta {
-  color: var(--paper-muted);
-  font-size: var(--text-xs);
 }
 
 .directory-list {
@@ -381,6 +384,23 @@ p {
   margin-top: var(--space-3);
   color: var(--paper-soft);
   font-size: var(--text-lg);
+}
+
+.article-copy {
+  margin-top: var(--space-3);
+  color: var(--paper-soft);
+  font-size: var(--text-md);
+}
+
+.guide-list {
+  margin: var(--space-3) 0 0;
+  padding-left: var(--space-5);
+  color: var(--paper-soft);
+  font-size: var(--text-md);
+}
+
+.guide-list li + li {
+  margin-top: var(--space-1);
 }
 
 .article-section {

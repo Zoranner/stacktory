@@ -12,7 +12,7 @@ Microsoft Marketplace 扩展搜索、查看和安装当前可用。
 
 ## 源配置文档
 
-打开 [Stacktory | 使用说明](https://pkg.rd.kim/docs)，进入 VS Code 详情页，复制提示词
+打开 [Stacktory | 文档](https://pkg.rd.kim/docs)，进入 VS Code 详情页，复制提示词
 发给智能体。提示词要求先备份当前 `product.json`，只修改扩展市场地址，并在修改后要求
 完全重启 VS Code。
 

@@ -4,7 +4,7 @@ Stacktory 的用户文档按制品库分别维护。请选择正在使用的制�
 
 管理员需要提供 Stacktory 服务地址和入口名称。常用入口是 `group`；如果管理员提供了 `official` 等直接入口，按管理员给出的名称配置。各个制品库当前是否可用以根 README 的状态表为准，本页只负责选择对应的使用文档。PyPI 尚未开放。
 
-- [Stacktory | 使用说明](https://pkg.rd.kim/docs)
+- [Stacktory | 文档](https://pkg.rd.kim/docs)
 
 ## 制品库文档
 

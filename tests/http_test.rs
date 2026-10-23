@@ -203,7 +203,8 @@ async fn source_config_pages_use_the_request_host_and_stack_title() {
         .await
         .expect("docs body");
     let html = String::from_utf8(body.to_vec()).expect("docs UTF-8");
-    assert!(html.contains("<title>Stacktory | 使用说明</title>"));
+    assert!(html.contains("<title>Stacktory | 文档</title>"));
+    assert!(html.contains("href=\"/docs/guide\""));
     assert!(html.contains("href=\"/docs/cargo\""));
     assert!(html.contains("https://pkg.rd.kim"));
 
@@ -224,7 +225,7 @@ async fn source_config_pages_use_the_request_host_and_stack_title() {
         .await
         .expect("cargo detail body");
     let html = String::from_utf8(body.to_vec()).expect("cargo detail UTF-8");
-    assert!(html.contains("<title>Stacktory | 使用说明 | Cargo</title>"));
+    assert!(html.contains("<title>Stacktory | 文档 | Cargo</title>"));
     assert!(html.contains("https://pkg.rd.kim/mirror/cargo/group/"));
     assert!(html.contains("data-copy-target=\"prompt-cargo\""));
     assert!(!html.contains("{base_url}"));
@@ -253,8 +254,48 @@ async fn source_config_pages_use_the_request_host_and_stack_title() {
         .await
         .expect("cargo markdown body");
     let markdown = String::from_utf8(body.to_vec()).expect("cargo markdown UTF-8");
-    assert!(markdown.contains("# Stacktory | 使用说明 | Cargo"));
+    assert!(markdown.contains("# Stacktory | 文档 | Cargo"));
     assert!(markdown.contains("https://pkg.rd.kim/mirror/cargo/group/"));
+
+    let guide = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/docs/guide")
+                .header("host", "pkg.rd.kim")
+                .header("x-forwarded-proto", "https")
+                .body(Body::empty())
+                .expect("guide request"),
+        )
+        .await
+        .expect("guide response");
+    assert_eq!(guide.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(guide.into_body(), usize::MAX)
+        .await
+        .expect("guide body");
+    let html = String::from_utf8(body.to_vec()).expect("guide UTF-8");
+    assert!(html.contains("<title>Stacktory | 文档 | 使用说明</title>"));
+    assert!(html.contains("<a href=\"/docs\">文档</a>"));
+    assert!(html.contains("配置前"));
+
+    let guide_markdown = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/docs/guide/index.md")
+                .header("host", "pkg.rd.kim")
+                .header("x-forwarded-proto", "https")
+                .body(Body::empty())
+                .expect("guide markdown request"),
+        )
+        .await
+        .expect("guide markdown response");
+    assert_eq!(guide_markdown.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(guide_markdown.into_body(), usize::MAX)
+        .await
+        .expect("guide markdown body");
+    let markdown = String::from_utf8(body.to_vec()).expect("guide markdown UTF-8");
+    assert!(markdown.starts_with("# Stacktory | 文档 | 使用说明"));
 
     let unknown = router
         .oneshot(

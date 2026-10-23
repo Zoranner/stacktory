@@ -48,6 +48,8 @@ pub fn router_with_rustup(service: Arc<RustupService>) -> Router {
         .route("/docs.md", get(source_config_index_markdown))
         .route("/docs/index.css", get(docs_css))
         .route("/docs/index.js", get(docs_js))
+        .route("/docs/guide", get(source_config_guide_page))
+        .route("/docs/guide/index.md", get(source_config_guide_markdown))
         .route("/docs/{stack}", get(source_config_section_page))
         .route(
             "/docs/{stack}/index.md",
@@ -198,6 +200,16 @@ async fn source_config_section_page(
     ))
 }
 
+async fn source_config_guide_page(
+    State(service): State<Arc<RustupService>>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    let base_url = public_base_url_for_request(&headers, service.public_url());
+    html_response(crate::docs::source_config::render_guide_html(
+        base_url.as_str(),
+    ))
+}
+
 async fn source_config_index_markdown(
     State(service): State<Arc<RustupService>>,
     headers: HeaderMap,
@@ -209,6 +221,17 @@ async fn source_config_index_markdown(
             base_url.as_str(),
             service.docs_catalog(),
         ),
+    )
+}
+
+async fn source_config_guide_markdown(
+    State(service): State<Arc<RustupService>>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    let base_url = public_base_url_for_request(&headers, service.public_url());
+    text_response(
+        "text/markdown; charset=utf-8",
+        crate::docs::source_config::render_guide_markdown(base_url.as_str()),
     )
 }
 
