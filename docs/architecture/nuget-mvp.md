@@ -83,6 +83,10 @@ listed/deprecation 等上游字段，不在公共层解释 NuGet 特有的版本
 语义。registration 中的 package content URL 必须重写到当前命名入口的
 `/package/...` 路径，并绑定 service index 选择的 selected proxy。
 
+`catalogEntry.iconUrl` 只有在与 package content resource 同源时才允许代理，并重写到
+`/mirror/nuget/{name}/icon/{package_id}/{version}`；图标按来源和版本缓存，其他来源的
+图标地址会被丢弃，避免客户端绕过 Stacktory 直接访问上游。
+
 若 registration 返回的 content URL 不在已校验的上游资源范围内，适配器必须
 拒绝该响应，不得跟随任意 CDN 或客户端注入地址。
 

@@ -1,3 +1,4 @@
+mod icon;
 mod package;
 mod path;
 mod registration;

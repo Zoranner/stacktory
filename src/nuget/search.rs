@@ -324,6 +324,7 @@ fn response(status: StatusCode, content_type: &str, body: Vec<u8>) -> Response {
 fn error_response(error: &NugetError) -> Response {
     let status = match error {
         NugetError::Source(SourcePoolError::UnknownEntry(_)) => StatusCode::NOT_FOUND,
+        NugetError::IconNotFound(_) => StatusCode::NOT_FOUND,
         NugetError::InvalidSearchRequest(_) => StatusCode::BAD_REQUEST,
         NugetError::Source(SourcePoolError::TerminalSourceError { status, .. }) => {
             StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY)
@@ -337,6 +338,7 @@ fn error_response(error: &NugetError) -> Response {
         | NugetError::InvalidPackageIndex(_)
         | NugetError::InvalidVulnerability(_)
         | NugetError::InvalidVulnerabilityPath(_)
+        | NugetError::InvalidIcon(_)
         | NugetError::PackageIntegrityFailure(_) => StatusCode::BAD_GATEWAY,
         NugetError::Storage(_) | NugetError::Serialization(_) | NugetError::Audit(_) => {
             StatusCode::INTERNAL_SERVER_ERROR

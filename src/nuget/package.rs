@@ -20,6 +20,7 @@ use crate::{
     fsutil::atomic_write,
     nuget::{
         group_fallback_error, group_fallback_source,
+        path::flatcontainer_icon_url,
         registration::{PackageBinding, binding_for_source, binding_path, persist_binding},
         service_index::{NugetAuditDetails, NugetError, NugetService, ServiceIndexSnapshot},
         {metadata_is_stale, now_unix_secs},
@@ -619,6 +620,7 @@ async fn binding_for_package_index(
     upstream_url.set_path(&format!(
         "{base_path}/{package_id}/{version}/{package_id}.{version}.nupkg"
     ));
+    let icon_url = flatcontainer_icon_url(package_base, &package_id, &version).to_string();
     Ok(PackageBinding {
         selected_proxy: snapshot.selected_proxy.clone(),
         source_fingerprint: snapshot.source_fingerprint.clone(),
@@ -626,6 +628,7 @@ async fn binding_for_package_index(
         package_id,
         version,
         upstream_url: upstream_url.to_string(),
+        icon_url: Some(icon_url),
         package_hash: None,
         package_hash_algorithm: None,
     })
@@ -912,9 +915,9 @@ fn response(status: StatusCode, content_type: &str, body: Vec<u8>) -> Response {
 
 fn package_error_response(error: &NugetError) -> Response {
     let status = match error {
-        NugetError::Source(SourcePoolError::UnknownEntry(_)) | NugetError::InvalidPackage(_) => {
-            StatusCode::NOT_FOUND
-        }
+        NugetError::Source(SourcePoolError::UnknownEntry(_))
+        | NugetError::InvalidPackage(_)
+        | NugetError::IconNotFound(_) => StatusCode::NOT_FOUND,
         NugetError::Source(SourcePoolError::TerminalSourceError { status, .. }) => {
             StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY)
         }
@@ -930,6 +933,7 @@ fn package_error_response(error: &NugetError) -> Response {
         NugetError::InvalidPackageIndex(_) => StatusCode::BAD_GATEWAY,
         NugetError::InvalidSearchRequest(_) => StatusCode::BAD_REQUEST,
         NugetError::InvalidSearch(_) => StatusCode::BAD_GATEWAY,
+        NugetError::InvalidIcon(_) => StatusCode::BAD_GATEWAY,
         NugetError::PackageIntegrityFailure(_) => StatusCode::BAD_GATEWAY,
         NugetError::Storage(_) | NugetError::Serialization(_) | NugetError::Audit(_) => {
             StatusCode::INTERNAL_SERVER_ERROR

@@ -22,7 +22,7 @@ use crate::{
 
 use super::{
     group_fallback_error, group_fallback_source,
-    path::{is_safe_segment, safe_resource_url},
+    path::{is_safe_segment, local_icon_url, safe_icon_url, safe_resource_url},
     service_index::ServiceIndexSnapshot,
     {metadata_is_stale, now_unix_secs},
 };
@@ -37,6 +37,8 @@ pub(crate) struct PackageBinding {
     pub(crate) package_id: String,
     pub(crate) version: String,
     pub(crate) upstream_url: String,
+    #[serde(default)]
+    pub(crate) icon_url: Option<String>,
     pub(crate) package_hash: Option<String>,
     pub(crate) package_hash_algorithm: Option<String>,
 }
@@ -441,6 +443,27 @@ fn rewrite_object(
                 )
             })
         });
+    let icon_identity = catalog_identity
+        .as_ref()
+        .map(|(package_id, version, _, _)| (package_id.clone(), version.clone()))
+        .or_else(|| {
+            let package_id = object.get("id").and_then(Value::as_str)?;
+            let version = object.get("version").and_then(Value::as_str)?;
+            Some((package_id.to_owned(), version.to_owned()))
+        })
+        .or_else(|| {
+            request
+                .leaf_version
+                .clone()
+                .map(|version| (request.package_id.clone(), version))
+        });
+    let mut icon_url = rewrite_icon_field(
+        object,
+        icon_identity.as_ref(),
+        snapshot,
+        service,
+        entry_name,
+    );
 
     if object.contains_key("catalogEntry") {
         match object.get_mut("catalogEntry") {
@@ -449,6 +472,9 @@ fn rewrite_object(
             }
             Some(Value::Object(catalog)) => {
                 catalog.remove("@id");
+                if icon_url.is_none() {
+                    icon_url = safe_icon_upstream(catalog, icon_identity.as_ref(), snapshot);
+                }
             }
             _ => {}
         }
@@ -459,6 +485,7 @@ fn rewrite_object(
             NugetError::InvalidRegistration("packageContent is not a URL string".to_owned())
         })?;
         let (package_id, version, package_hash, package_hash_algorithm) = catalog_identity
+            .clone()
             .or_else(|| {
                 let id = object.get("id").and_then(Value::as_str)?;
                 let version = object.get("version").and_then(Value::as_str)?;
@@ -527,6 +554,7 @@ fn rewrite_object(
             package_id: package_id.to_owned(),
             version: version.to_owned(),
             upstream_url: upstream_url.to_string(),
+            icon_url: icon_url.clone(),
             package_hash,
             package_hash_algorithm,
         };
@@ -708,6 +736,49 @@ fn local_package_url(root_url: &Url, entry_name: &str, package_id: &str, version
     url.to_string()
 }
 
+fn rewrite_icon_field(
+    object: &mut serde_json::Map<String, Value>,
+    identity: Option<&(String, String)>,
+    snapshot: &ServiceIndexSnapshot,
+    service: &NugetService,
+    entry_name: &str,
+) -> Option<String> {
+    if !object.contains_key("iconUrl") {
+        return None;
+    }
+    let upstream = safe_icon_upstream(object, identity, snapshot);
+    match (upstream, identity) {
+        (Some(upstream), Some((package_id, version))) => {
+            object.insert(
+                "iconUrl".to_owned(),
+                Value::String(local_icon_url(
+                    &service.root_url,
+                    entry_name,
+                    package_id,
+                    version,
+                )),
+            );
+            Some(upstream)
+        }
+        _ => {
+            object.remove("iconUrl");
+            None
+        }
+    }
+}
+
+fn safe_icon_upstream(
+    object: &serde_json::Map<String, Value>,
+    identity: Option<&(String, String)>,
+    snapshot: &ServiceIndexSnapshot,
+) -> Option<String> {
+    let icon = object.get("iconUrl")?.as_str()?.to_owned();
+    let (_, _) = identity?;
+    let package_base = snapshot.package_base_url.as_ref()?;
+    let parsed = Url::parse(&icon).ok()?;
+    safe_icon_url(package_base, &parsed).then_some(icon)
+}
+
 fn registration_path(data_dir: &Path, entry_name: &str, relative: &str) -> PathBuf {
     crate::layout::metadata_root(data_dir, "nuget")
         .join(entry_name)
@@ -834,9 +905,11 @@ fn registration_error_response(error: &NugetError) -> Response {
         NugetError::InvalidVulnerabilityPath(_) => StatusCode::NOT_FOUND,
         NugetError::Source(_) | NugetError::InvalidServiceIndex(_) => StatusCode::BAD_GATEWAY,
         NugetError::InvalidPackage(_) => StatusCode::NOT_FOUND,
+        NugetError::IconNotFound(_) => StatusCode::NOT_FOUND,
         NugetError::InvalidPackageIndex(_) => StatusCode::BAD_GATEWAY,
         NugetError::InvalidSearchRequest(_) => StatusCode::BAD_REQUEST,
         NugetError::InvalidSearch(_) => StatusCode::BAD_GATEWAY,
+        NugetError::InvalidIcon(_) => StatusCode::BAD_GATEWAY,
         NugetError::PackageIntegrityFailure(_) => StatusCode::BAD_GATEWAY,
         NugetError::Storage(_) | NugetError::Serialization(_) | NugetError::Audit(_) => {
             StatusCode::INTERNAL_SERVER_ERROR

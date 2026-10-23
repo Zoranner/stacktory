@@ -92,6 +92,105 @@ async fn registration_index_rewrites_leaf_and_package_content_relationships() {
 }
 
 #[tokio::test]
+async fn registration_rewrites_and_serves_package_icon() {
+    let (upstream, address) = start_registration_server(false, false).await;
+    let data_dir = tempdir().expect("data directory");
+    let router = nuget_router(upstream, address, data_dir.path());
+
+    let response = router
+        .clone()
+        .oneshot(get_request(
+            "/mirror/nuget/official/registration/foo/index.json",
+        ))
+        .await
+        .expect("registration response");
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("registration body");
+    let registration: serde_json::Value = serde_json::from_slice(&body).expect("registration JSON");
+    assert_eq!(
+        registration["items"][0]["catalogEntry"]["iconUrl"],
+        "http://127.0.0.1:18761/mirror/nuget/official/icon/foo/1.0.0"
+    );
+    assert!(!String::from_utf8_lossy(&body).contains("nuget.example"));
+    let binding: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            data_dir
+                .path()
+                .join("stores/nuget/metadata/official/bindings/foo/1.0.0.json"),
+        )
+        .expect("package binding"),
+    )
+    .expect("package binding JSON");
+    assert_eq!(
+        binding["icon_url"],
+        format!(
+            "http://nuget.example:{}/v3-flatcontainer/foo/1.0.0/icon",
+            address.port()
+        )
+    );
+
+    let icon_path = "/mirror/nuget/official/icon/foo/1.0.0";
+    let icon = router
+        .clone()
+        .oneshot(get_request(icon_path))
+        .await
+        .expect("icon response");
+    assert_eq!(icon.status(), axum::http::StatusCode::OK);
+    assert_eq!(
+        icon.headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("image/png")
+    );
+    assert_eq!(
+        axum::body::to_bytes(icon.into_body(), usize::MAX)
+            .await
+            .expect("icon body"),
+        b"stacktory-icon".as_slice()
+    );
+
+    let cached = router
+        .oneshot(get_request(icon_path))
+        .await
+        .expect("cached icon response");
+    assert_eq!(cached.status(), axum::http::StatusCode::OK);
+    let audit =
+        std::fs::read_to_string(data_dir.path().join("audit/events.jsonl")).expect("audit log");
+    assert!(audit.contains(r#""event":"nuget_icon_published""#));
+    assert!(audit.contains(r#""event":"nuget_icon_read""#));
+    assert!(audit.contains(r#""cache_status":"hit""#));
+    assert!(
+        data_dir
+            .path()
+            .join("stores/nuget/artifacts/official/objects/icon/foo/1.0.0/icon")
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn registration_drops_icon_urls_outside_the_package_resource() {
+    let (upstream, address) = start_registration_server_with_icon(false, false, true).await;
+    let data_dir = tempdir().expect("data directory");
+    let router = nuget_router(upstream, address, data_dir.path());
+
+    let response = router
+        .oneshot(get_request(
+            "/mirror/nuget/official/registration/foo/index.json",
+        ))
+        .await
+        .expect("registration response");
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("registration body");
+    let registration: serde_json::Value = serde_json::from_slice(&body).expect("registration JSON");
+    assert!(registration["items"][0]["catalogEntry"]["iconUrl"].is_null());
+    assert!(!String::from_utf8_lossy(&body).contains("evil.example"));
+}
+
+#[tokio::test]
 async fn registration_cache_rebases_after_the_public_root_changes() {
     let (upstream, address) = start_registration_server(false, false).await;
     let data_dir = tempdir().expect("data directory");
@@ -617,6 +716,14 @@ async fn start_registration_server(
     external_content: bool,
     mismatched_version: bool,
 ) -> (Url, SocketAddr) {
+    start_registration_server_with_icon(external_content, mismatched_version, false).await
+}
+
+async fn start_registration_server_with_icon(
+    external_content: bool,
+    mismatched_version: bool,
+    external_icon: bool,
+) -> (Url, SocketAddr) {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
     let address = listener.local_addr().expect("address");
     let content_version = if mismatched_version { "2.0.0" } else { "1.0.0" };
@@ -627,6 +734,14 @@ async fn start_registration_server(
     } else {
         format!(
             "http://nuget.example:{}/v3-flatcontainer/foo/{content_version}/foo.{content_version}.nupkg",
+            address.port(),
+        )
+    };
+    let icon_url = if external_icon {
+        format!("http://evil.example/v3-flatcontainer/foo/{content_version}/icon")
+    } else {
+        format!(
+            "http://nuget.example:{}/v3-flatcontainer/foo/{content_version}/icon",
             address.port(),
         )
     };
@@ -647,13 +762,14 @@ async fn start_registration_server(
             "count":1,
             "items":[{{
                 "@id":"http://nuget.example:{}/v3/registration/foo/1.0.0.json",
-                "catalogEntry":{{"id":"foo","version":"{}"}},
+                "catalogEntry":{{"id":"foo","version":"{}","iconUrl":"{}"}},
                 "packageContent":"{}"
             }}]
         }}"#,
         address.port(),
         address.port(),
         content_version,
+        icon_url,
         content_url
     );
     let router = Router::new()
@@ -685,6 +801,15 @@ async fn start_registration_server(
                     let registration_index = registration_index.clone();
                     async move { registration_index }
                 }
+            }),
+        )
+        .route(
+            "/v3-flatcontainer/foo/1.0.0/icon",
+            get(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "image/png")],
+                    b"stacktory-icon".as_slice(),
+                )
             }),
         );
     tokio::spawn(async move {

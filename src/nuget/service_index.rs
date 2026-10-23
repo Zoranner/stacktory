@@ -57,6 +57,10 @@ pub enum NugetError {
     InvalidRegistrationPath(String),
     #[error("NuGet package content is invalid: {0}")]
     InvalidPackage(String),
+    #[error("NuGet icon is invalid: {0}")]
+    InvalidIcon(String),
+    #[error("NuGet icon `{0}` was not found")]
+    IconNotFound(String),
     #[error("NuGet package version index is invalid: {0}")]
     InvalidPackageIndex(String),
     #[error("NuGet search request is invalid: {0}")]
@@ -174,6 +178,9 @@ impl NugetService {
         }
         if path.starts_with("package/") {
             return super::package::serve(self, entry_name, path, pool).await;
+        }
+        if path.starts_with("icon/") {
+            return super::icon::serve(self, entry_name, path, pool).await;
         }
         if path == "search/query" {
             return super::search::serve(
@@ -846,7 +853,7 @@ fn is_not_found(error: &NugetError) -> bool {
     )
 }
 
-fn nuget_error_response(error: &NugetError) -> Response {
+pub(crate) fn nuget_error_response(error: &NugetError) -> Response {
     let status = match error {
         NugetError::Source(SourcePoolError::UnknownEntry(_)) => StatusCode::NOT_FOUND,
         NugetError::Source(SourcePoolError::TerminalSourceError { status, .. }) => {
@@ -857,12 +864,14 @@ fn nuget_error_response(error: &NugetError) -> Response {
             ..
         }) => StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
         NugetError::InvalidVulnerabilityPath(_) => StatusCode::NOT_FOUND,
+        NugetError::IconNotFound(_) => StatusCode::NOT_FOUND,
         NugetError::InvalidSearchRequest(_) => StatusCode::BAD_REQUEST,
         NugetError::Source(_)
         | NugetError::InvalidServiceIndex(_)
         | NugetError::InvalidRegistration(_)
         | NugetError::InvalidRegistrationPath(_)
         | NugetError::InvalidPackage(_)
+        | NugetError::InvalidIcon(_)
         | NugetError::InvalidPackageIndex(_)
         | NugetError::InvalidSearch(_)
         | NugetError::InvalidVulnerability(_)

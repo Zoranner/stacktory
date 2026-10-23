@@ -1,6 +1,6 @@
 use url::Url;
 
-use crate::sources::pool::is_safe_configured_url;
+use crate::sources::{pool::is_safe_configured_url, same_origin};
 
 pub(crate) fn validate_service_index_url(url: &Url, require_https: bool) -> bool {
     matches!(url.scheme(), "http" | "https")
@@ -38,6 +38,39 @@ pub(crate) fn safe_resource_url(base_url: &Url, require_https: bool, candidate: 
         return is_safe_configured_url(candidate);
     }
     true
+}
+
+pub(crate) fn safe_icon_url(package_base: &Url, candidate: &Url) -> bool {
+    same_origin(package_base, candidate) && safe_resource_url(package_base, false, candidate)
+}
+
+pub(crate) fn flatcontainer_icon_url(package_base: &Url, package_id: &str, version: &str) -> Url {
+    let mut url = package_base.clone();
+    let base_path = url.path().trim_end_matches('/');
+    let package_id = package_id.to_ascii_lowercase();
+    let version = version.to_ascii_lowercase();
+    url.set_path(&format!("{base_path}/{package_id}/{version}/icon"));
+    url.set_query(None);
+    url.set_fragment(None);
+    url
+}
+
+pub(crate) fn local_icon_url(
+    root_url: &Url,
+    entry_name: &str,
+    package_id: &str,
+    version: &str,
+) -> String {
+    let mut url = root_url.clone();
+    let base_path = root_url.path().trim_end_matches('/');
+    let package_id = package_id.to_ascii_lowercase();
+    let version = version.to_ascii_lowercase();
+    url.set_path(&format!(
+        "{base_path}/mirror/nuget/{entry_name}/icon/{package_id}/{version}"
+    ));
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string()
 }
 
 pub(crate) fn is_safe_segment(value: &str) -> bool {
