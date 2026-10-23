@@ -540,15 +540,15 @@ fn docker_sources_accept_registry_endpoints() {
 name = \"official\"\n\
 type = \"proxy\"\n\
 base_url = \"https://registry.example\"\n\
-registry_listen_port = 19001\n\
-registry_public_url = \"https://docker.example.internal:19001\"\n\
+listen_port = 19001\n\
+public_url = \"https://docker.example.internal:19001\"\n\
 \n\
 [[docker.sources]]\n\
 name = \"group\"\n\
 type = \"group\"\n\
 members = [\"official\"]\n\
-registry_listen_port = 19000\n\
-registry_public_url = \"https://docker.example.internal:19000\"\n"
+listen_port = 19000\n\
+public_url = \"https://docker.example.internal:19000\"\n"
     );
 
     let config = Config::from_toml(&configuration).expect("Docker registry endpoint configuration");
@@ -563,28 +563,7 @@ registry_public_url = \"https://docker.example.internal:19000\"\n"
 }
 
 #[test]
-fn rejects_legacy_docker_listen_port() {
-    let configuration = format!(
-        "{LOCAL_DEVELOPMENT}\n\
-         \n\
-         [docker]\n\
-         \n\
-         [[docker.sources]]\n\
-         name = \"official\"\n\
-         type = \"proxy\"\n\
-         base_url = \"https://registry.example\"\n\
-         registry_listen_port = 19001\n\
-         registry_public_url = \"https://docker.example.internal:19001\"\n\
-         listen_port = 19002\n"
-    );
-
-    let error = Config::from_toml(&configuration).expect_err("legacy Docker listen_port");
-
-    assert!(matches!(error, ConfigError::Parse(_)));
-}
-
-#[test]
-fn docker_registry_listen_ports_must_be_unique() {
+fn docker_listen_ports_must_be_unique() {
     let configuration = format!(
         "{LOCAL_DEVELOPMENT}\n\
 \n\
@@ -594,15 +573,15 @@ fn docker_registry_listen_ports_must_be_unique() {
 name = \"first\"\n\
 type = \"proxy\"\n\
 base_url = \"https://first.example\"\n\
-registry_listen_port = 19000\n\
-registry_public_url = \"https://docker.example.internal:19000\"\n\
+listen_port = 19000\n\
+public_url = \"https://docker.example.internal:19000\"\n\
 \n\
 [[docker.sources]]\n\
 name = \"second\"\n\
 type = \"proxy\"\n\
 base_url = \"https://second.example\"\n\
-registry_listen_port = 19000\n\
-registry_public_url = \"https://docker.example.internal:19001\"\n"
+listen_port = 19000\n\
+public_url = \"https://docker.example.internal:19001\"\n"
     );
 
     let error = Config::from_toml(&configuration).expect_err("duplicate Docker port");
@@ -610,7 +589,7 @@ registry_public_url = \"https://docker.example.internal:19001\"\n"
 }
 
 #[test]
-fn docker_registry_listen_port_cannot_use_the_main_port() {
+fn docker_listen_port_cannot_use_the_main_port() {
     let configuration = format!(
         "{LOCAL_DEVELOPMENT}\n\
 \n\
@@ -620,8 +599,8 @@ fn docker_registry_listen_port_cannot_use_the_main_port() {
 name = \"official\"\n\
 type = \"proxy\"\n\
 base_url = \"https://official.example\"\n\
-registry_listen_port = 18761\n\
-registry_public_url = \"https://docker.example.internal:18761\"\n"
+listen_port = 18761\n\
+public_url = \"https://docker.example.internal:18761\"\n"
     );
 
     let error = Config::from_toml(&configuration).expect_err("main port conflict");
@@ -629,7 +608,7 @@ registry_public_url = \"https://docker.example.internal:18761\"\n"
 }
 
 #[test]
-fn docker_registry_listen_port_requires_a_public_url() {
+fn docker_listen_port_requires_a_public_url() {
     let configuration = format!(
         "{LOCAL_DEVELOPMENT}\n\
 \n\
@@ -639,15 +618,15 @@ fn docker_registry_listen_port_requires_a_public_url() {
 name = \"official\"\n\
 type = \"proxy\"\n\
 base_url = \"https://official.example\"\n\
-registry_listen_port = 19000\n"
+listen_port = 19000\n"
     );
 
     let error = Config::from_toml(&configuration).expect_err("missing Docker registry public URL");
-    assert!(error.to_string().contains("registry_public_url"));
+    assert!(error.to_string().contains("public_url"));
 }
 
 #[test]
-fn docker_registry_public_url_requires_a_listen_port() {
+fn docker_public_url_requires_a_listen_port() {
     let configuration = format!(
         "{LOCAL_DEVELOPMENT}\n\
 \n\
@@ -657,15 +636,15 @@ fn docker_registry_public_url_requires_a_listen_port() {
 name = \"official\"\n\
 type = \"proxy\"\n\
 base_url = \"https://official.example\"\n\
-registry_public_url = \"https://docker.example.internal:19000\"\n"
+public_url = \"https://docker.example.internal:19000\"\n"
     );
 
     let error = Config::from_toml(&configuration).expect_err("missing Docker registry listen port");
-    assert!(error.to_string().contains("registry_listen_port"));
+    assert!(error.to_string().contains("listen_port"));
 }
 
 #[test]
-fn docker_registry_public_url_must_be_a_host_root() {
+fn docker_public_url_must_be_a_host_root() {
     let configuration = format!(
         "{LOCAL_DEVELOPMENT}\n\
 \n\
@@ -675,16 +654,16 @@ fn docker_registry_public_url_must_be_a_host_root() {
 name = \"official\"\n\
 type = \"proxy\"\n\
 base_url = \"https://official.example\"\n\
-registry_listen_port = 19000\n\
-registry_public_url = \"https://docker.example.internal:19000/registry\"\n"
+listen_port = 19000\n\
+public_url = \"https://docker.example.internal:19000/registry\"\n"
     );
 
     let error = Config::from_toml(&configuration).expect_err("Docker registry URL path");
-    assert!(error.to_string().contains("registry_public_url"));
+    assert!(error.to_string().contains("public_url"));
 }
 
 #[test]
-fn docker_registry_public_urls_must_be_unique() {
+fn docker_public_urls_must_be_unique() {
     let configuration = format!(
         "{LOCAL_DEVELOPMENT}\n\
 \n\
@@ -694,19 +673,19 @@ fn docker_registry_public_urls_must_be_unique() {
 name = \"first\"\n\
 type = \"proxy\"\n\
 base_url = \"https://first.example\"\n\
-registry_listen_port = 19000\n\
-registry_public_url = \"https://docker.example.internal:19000\"\n\
+listen_port = 19000\n\
+public_url = \"https://docker.example.internal:19000\"\n\
 \n\
 [[docker.sources]]\n\
 name = \"second\"\n\
 type = \"proxy\"\n\
 base_url = \"https://second.example\"\n\
-registry_listen_port = 19001\n\
-registry_public_url = \"https://docker.example.internal:19000\"\n"
+listen_port = 19001\n\
+public_url = \"https://docker.example.internal:19000\"\n"
     );
 
     let error = Config::from_toml(&configuration).expect_err("duplicate Docker registry URL");
-    assert!(error.to_string().contains("registry_public_url"));
+    assert!(error.to_string().contains("public_url"));
 }
 
 #[test]

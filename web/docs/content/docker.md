@@ -31,4 +31,4 @@ docker info
 ## 注意
 - 需要管理员权限，修改后必须重启 Docker。
 - 不要修改无关 daemon 配置；不要写入账号、密码或 token。
-- Docker 客户端地址来自入口的 registry_public_url 配置；未配置时页面不会生成具体地址。
+- Docker 客户端地址来自入口的 public_url 配置；未配置时页面不会生成具体地址。

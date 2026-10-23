@@ -325,19 +325,19 @@ pub enum ConfigError {
     InsecureHttpSource(String),
     #[error("NuGet source `{0}` base_url must be an actual `/v3/index.json` service index")]
     InvalidNugetServiceIndexUrl(String),
-    #[error("Docker source `{0}` has an invalid registry_listen_port")]
+    #[error("Docker source `{0}` has an invalid listen_port")]
     InvalidDockerRegistryPort(String),
-    #[error("Docker source `{0}` sets registry_listen_port without registry_public_url")]
+    #[error("Docker source `{0}` sets listen_port without public_url")]
     DockerRegistryPublicUrlMissing(String),
-    #[error("Docker source `{0}` sets registry_public_url without registry_listen_port")]
+    #[error("Docker source `{0}` sets public_url without listen_port")]
     DockerRegistryListenPortMissing(String),
-    #[error("Docker source `{0}` has an invalid registry_public_url")]
+    #[error("Docker source `{0}` has an invalid public_url")]
     InvalidDockerRegistryPublicUrl(String),
-    #[error("Docker source `{source_name}` uses duplicate registry_listen_port {port}")]
+    #[error("Docker source `{source_name}` uses duplicate listen_port {port}")]
     DuplicateDockerRegistryPort { source_name: String, port: u16 },
-    #[error("Docker source `{source_name}` uses duplicate registry_public_url `{url}`")]
+    #[error("Docker source `{source_name}` uses duplicate public_url `{url}`")]
     DuplicateDockerRegistryPublicUrl { source_name: String, url: String },
-    #[error("Docker source `{source_name}` registry_listen_port {port} conflicts with server.port")]
+    #[error("Docker source `{source_name}` listen_port {port} conflicts with server.port")]
     DockerRegistryPortConflictsWithServer { source_name: String, port: u16 },
     #[error("rustup.channels must contain at least one channel")]
     MissingRustupChannel,
@@ -409,15 +409,15 @@ struct RawDockerSourceConfig {
     #[serde(default)]
     members: Vec<String>,
     #[serde(default)]
-    registry_listen_port: Option<u16>,
+    listen_port: Option<u16>,
     #[serde(default)]
-    registry_public_url: Option<Url>,
+    public_url: Option<Url>,
 }
 
 impl RawDockerSourceConfig {
     fn into_parts(self) -> Result<(RawSourceConfig, Option<DockerRegistryEndpoint>), ConfigError> {
         let name = self.name;
-        let endpoint = match (self.registry_listen_port, self.registry_public_url) {
+        let endpoint = match (self.listen_port, self.public_url) {
             (None, None) => None,
             (Some(_), None) => {
                 return Err(ConfigError::DockerRegistryPublicUrlMissing(name));

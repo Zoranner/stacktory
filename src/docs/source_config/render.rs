@@ -60,7 +60,7 @@ pub(crate) fn render_section_markdown(
             .any(|source| source.registry_public_url.is_some())
     {
         output.push_str(
-            "\n## 配置\n\n当前配置未提供 Docker 客户端地址。请为入口同时设置 `registry_listen_port` 和 `registry_public_url`。\n",
+            "\n## 配置\n\n当前配置未提供 Docker 客户端地址。请为入口同时设置 `listen_port` 和 `public_url`。\n",
         );
         return output;
     }
@@ -248,7 +248,7 @@ fn render_config_html(section: &GuideSection, base_url: &str, catalog: &SourceCa
     if !has_endpoint {
         return r#"<section class="article-section" aria-labelledby="config-title">
   <div class="section-heading"><h2 id="config-title">配置</h2></div>
-  <p class="config-empty">当前配置未提供 Docker 客户端地址。请为入口同时设置 <code>registry_listen_port</code> 和 <code>registry_public_url</code>。</p>
+  <p class="config-empty">当前配置未提供 Docker 客户端地址。请为入口同时设置 <code>listen_port</code> 和 <code>public_url</code>。</p>
 </section>"#
             .to_owned();
     }
@@ -387,11 +387,11 @@ fn render_sources_markdown(
 
     if show_registry {
         output.push_str(
-            "\nDocker 客户端地址来自每个入口的 `registry_public_url`，可直接用于 Docker `registry-mirrors`。\n",
+            "\nDocker 客户端地址来自每个入口的 `public_url`，可直接用于 Docker `registry-mirrors`。\n",
         );
     } else if docker {
         output.push_str(
-            "\n当前未配置 Docker 客户端地址。请在入口上同时设置 `registry_listen_port` 和 `registry_public_url`。\n",
+            "\n当前未配置 Docker 客户端地址。请在入口上同时设置 `listen_port` 和 `public_url`。\n",
         );
     }
     output
@@ -487,11 +487,11 @@ fn render_sources_html(section: &GuideSection, base_url: &str, catalog: &SourceC
 
     if show_registry {
         output.push_str(
-            r#"<p class="field-note">Docker 客户端地址来自每个入口的 <code>registry_public_url</code>，可直接用于 Docker <code>registry-mirrors</code>。</p>"#,
+            r#"<p class="field-note">Docker 客户端地址来自每个入口的 <code>public_url</code>，可直接用于 Docker <code>registry-mirrors</code>。</p>"#,
         );
     } else if docker {
         output.push_str(
-            r#"<p class="field-note">当前未配置 Docker 客户端地址；请在入口上同时设置 <code>registry_listen_port</code> 和 <code>registry_public_url</code>。</p>"#,
+            r#"<p class="field-note">当前未配置 Docker 客户端地址；请在入口上同时设置 <code>listen_port</code> 和 <code>public_url</code>。</p>"#,
         );
     }
     output

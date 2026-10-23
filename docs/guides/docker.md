@@ -39,11 +39,11 @@ Stacktory 不向 Docker 客户端返回上游 Registry host。上游协议请求
 name = "group"
 type = "group"
 members = ["official", "ghcr", "quay", "microsoft", "aliyun", "xuanyuan", "unstructured"]
-registry_listen_port = 19000
-registry_public_url = "https://docker.example.com:19000"
+listen_port = 19000
+public_url = "https://docker.example.com:19000"
 ```
 
-配置后，该监听端口的根路径固定绑定到 `group`，客户端使用 `registry_public_url`：
+配置后，该监听端口的根路径固定绑定到 `group`，客户端使用 `public_url`：
 
 ```text
 docker.example.com:19000/v2/...
@@ -55,7 +55,7 @@ docker.example.com:19000/v2/...
 Docker group 会按成员顺序回退 `401`、`403`、`404`、`408`、`429`、`5xx` 和网络
 失败；其他 `4xx` 直接返回。直接 source 入口不会向兄弟来源回退。
 
-`registry_public_url` 必须是客户端可访问的地址，不能包含路径、查询参数或片段；
+`public_url` 必须是客户端可访问的地址，不能包含路径、查询参数或片段；
 它可以由外部 DNS、端口映射或反向代理发布。未配置这对字段的 source 仍只能通过
 `/mirror/docker/{name}/v2/...` 访问。
 仓库的 `deploy/app/config.example.toml` 已为 `group` 显式配置 `19000`，

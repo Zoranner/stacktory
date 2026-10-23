@@ -76,7 +76,7 @@ GET /docs/{stack}/index.md
 入口名、`Group`/`Proxy` 类型、Group 成员、解析后的地址和 Docker 客户端地址。Proxy 和
 Group 分开展示；页面初始选择第一个 Group，没有 Group 时选择第一个 Proxy。该初始值
 只用于生成首屏配置步骤，用户可以在详情页切换当前入口，不表示推荐。
-Docker 的独立 Registry 入口用 `registry_listen_port` 和 `registry_public_url` 成对配置，
+Docker 的独立 Registry 入口用 `listen_port` 和 `public_url` 成对配置，
 页面只展示客户端可访问的完整地址，不单独展示监听端口。
 
 没有实现的后端生态（PyPI、Winget）不出现在可执行目录中，只保留在页面说明里。

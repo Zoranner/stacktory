@@ -79,50 +79,50 @@ members = ["official", "ustc"]
 name = "official"
 type = "proxy"
 base_url = "https://registry-1.docker.io"
-# registry_listen_port = 19001
-# registry_public_url = "https://docker.example.internal:19001"
+# listen_port = 19001
+# public_url = "https://docker.example.internal:19001"
 
 [[docker.sources]]
 name = "microsoft"
 type = "proxy"
 base_url = "https://mcr.microsoft.com"
-# registry_listen_port = 19002
-# registry_public_url = "https://docker.example.internal:19002"
+# listen_port = 19002
+# public_url = "https://docker.example.internal:19002"
 
 [[docker.sources]]
 name = "ghcr"
 type = "proxy"
 base_url = "https://ghcr.io"
-# registry_listen_port = 19003
-# registry_public_url = "https://docker.example.internal:19003"
+# listen_port = 19003
+# public_url = "https://docker.example.internal:19003"
 
 [[docker.sources]]
 name = "quay"
 type = "proxy"
 base_url = "https://quay.io"
-# registry_listen_port = 19004
-# registry_public_url = "https://docker.example.internal:19004"
+# listen_port = 19004
+# public_url = "https://docker.example.internal:19004"
 
 [[docker.sources]]
 name = "aliyun"
 type = "proxy"
 base_url = "https://registry.cn-hangzhou.aliyuncs.com"
-# registry_listen_port = 19005
-# registry_public_url = "https://docker.example.internal:19005"
+# listen_port = 19005
+# public_url = "https://docker.example.internal:19005"
 
 [[docker.sources]]
 name = "xuanyuan"
 type = "proxy"
 base_url = "https://docker.xuanyuan.me"
-# registry_listen_port = 19006
-# registry_public_url = "https://docker.example.internal:19006"
+# listen_port = 19006
+# public_url = "https://docker.example.internal:19006"
 
 [[docker.sources]]
 name = "unstructured"
 type = "proxy"
 base_url = "https://downloads.unstructured.io"
-# registry_listen_port = 19007
-# registry_public_url = "https://docker.example.internal:19007"
+# listen_port = 19007
+# public_url = "https://docker.example.internal:19007"
 
 [[docker.sources]]
 name = "group"
@@ -138,8 +138,8 @@ members = [
   "unstructured",
 ]
 # group 入口的标准 Docker Registry 监听端口和客户端地址。
-registry_listen_port = 19000
-registry_public_url = "https://docker.example.internal:19000"
+listen_port = 19000
+public_url = "https://docker.example.internal:19000"
 
 [npm]
 

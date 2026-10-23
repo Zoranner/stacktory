@@ -377,9 +377,9 @@ Docker source 的 `base_url` 是一个 Registry V2 根地址。Stacktory 对外�
 Docker 客户端返回上游 Registry host。
 
 为兼容标准 Docker Registry 客户端，Docker source 可以成对配置可选的
-`registry_listen_port` 和 `registry_public_url`。Stacktory 为每个配置端口启动
+`listen_port` 和 `public_url`。Stacktory 为每个配置端口启动
 独立 listener，并将该 listener 的根 `/v2/...` 固定绑定到对应 source；客户端
-可见地址来自 `registry_public_url`。两个字段必须同时存在，多个 source 的端口和
+可见地址来自 `public_url`。两个字段必须同时存在，多个 source 的端口和
 公开地址必须唯一，端口不能占用 `server.port`。公开地址不能包含路径、查询参数
 或片段，域名和 TLS 终止由外部 DNS、端口映射或反向代理完成。未配置这对字段的
 source 不增加根 Registry 入口。

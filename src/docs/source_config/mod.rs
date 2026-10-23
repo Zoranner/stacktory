@@ -147,7 +147,7 @@ mod tests {
     }
 
     #[test]
-    fn docker_uses_configured_registry_urls_instead_of_listener_ports() {
+    fn docker_uses_configured_public_urls_instead_of_listener_ports() {
         let catalog = SourceCatalog::sample();
         let section = section_by_id("docker").expect("Docker section");
         let html = render_section_html(section, "https://pkg.example.test", &catalog);
@@ -156,7 +156,7 @@ mod tests {
         for rendered in [&html, &markdown] {
             assert!(rendered.contains("Docker 客户端地址"));
             assert!(rendered.contains("http://docker.example.test:19000"));
-            assert!(rendered.contains("registry_public_url"));
+            assert!(rendered.contains("public_url"));
             assert!(!rendered.contains("CLI 端口"));
         }
         assert!(html.contains("registry-mirrors"));

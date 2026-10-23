@@ -79,8 +79,8 @@ docker compose -f deploy/docker-compose.yml up -d
 
 compose 默认发布主服务端口 `18000` 和 Docker `group` 入口的 `19000`。如果需要为其他
 Docker source 开放标准 Registry 入口，在 `deploy/app/config.toml` 中同时设置
-`registry_listen_port` 和 `registry_public_url`，并在 `deploy/docker-compose.yml` 中
-增加相同的端口映射。`registry_public_url` 必须是客户端实际访问的完整地址。
+`listen_port` 和 `public_url`，并在 `deploy/docker-compose.yml` 中增加相同的端口映射。
+`public_url` 必须是客户端实际访问的完整地址。
 compose 会通过容器内 `127.0.0.1:18000` 的 TCP 连接检查服务是否在监听。
 需要区分存活和就绪时，`/healthz` 只报告进程可响应，`/readyz` 会检查数据目录和
 日志目录可写；就绪检查失败返回 `503`。
