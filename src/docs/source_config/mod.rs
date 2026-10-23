@@ -49,13 +49,23 @@ mod tests {
     }
 
     #[test]
-    fn section_markdown_lists_all_sources_and_recommends_group() {
+    fn section_markdown_lists_all_sources_and_uses_the_initial_entry() {
         let catalog = SourceCatalog::sample();
         let section = section_by_id("cargo").expect("cargo section");
         let markdown = render_section_markdown(section, "https://pkg.example.test", &catalog);
-        assert!(markdown.contains("推荐入口：`https://pkg.example.test/mirror/cargo/group/`"));
-        assert!(markdown.contains("| `official` | Proxy |"));
-        assert!(markdown.contains("| `group` | Group | official |"));
+        assert!(markdown.contains("Markdown 页面使用入口 `group`（Group）"));
+        assert!(markdown.contains("### Proxy 入口（直接来源）"));
+        assert!(markdown.contains("### Group 入口（按成员顺序回退）"));
+        assert!(
+            markdown.contains("| `official` | `https://pkg.example.test/mirror/cargo/official/` |")
+        );
+        assert!(
+            markdown.contains(
+                "| `group` | official | `https://pkg.example.test/mirror/cargo/group/` |"
+            )
+        );
+        assert!(!markdown.contains("推荐入口"));
+        assert!(!markdown.contains("示例入口"));
         assert!(markdown.contains("请把本机 Cargo 的 crates.io 源切换到 Stacktory"));
         assert!(markdown.contains("cargo fetch"));
         assert!(markdown.contains("备份"));
@@ -71,8 +81,10 @@ mod tests {
         assert!(html.starts_with("<!doctype html>"));
         assert!(html.contains("lang=\"zh-CN\""));
         assert!(html.contains("<title>Stacktory | 使用说明</title>"));
+        assert!(html.contains("class=\"docs-main\""));
         assert!(html.contains("href=\"/docs/cargo\""));
         assert!(html.contains(">Node.js</h2>"));
+        assert!(html.contains("href=\"/theme.css\""));
         assert!(html.contains("href=\"/docs/index.css\""));
         assert!(html.contains("src=\"/docs/index.js\""));
         assert!(!html.contains("{base_url}"));
@@ -86,11 +98,17 @@ mod tests {
         let html = render_section_html(section, "https://pkg.example.test/artifacts", &catalog);
         assert!(html.contains("<title>Stacktory | 使用说明 | Cargo</title>"));
         assert!(html.contains("data-copy-target=\"prompt-cargo\""));
-        assert!(html.contains("可用入口"));
-        assert!(html.contains("<code>official</code>"));
-        assert!(html.contains("<code>group</code>"));
+        assert!(html.contains(">入口</h2>"));
+        assert!(html.contains("source-name\">official</code>"));
+        assert!(html.contains("source-name\">group</code>"));
         assert!(html.contains("Proxy"));
         assert!(html.contains("https://pkg.example.test/artifacts/mirror/cargo/group/"));
+        assert!(html.contains("当前入口"));
+        assert!(html.contains("id=\"entry-select\""));
+        assert!(html.contains("data-endpoint-scope"));
+        assert!(!html.contains("推荐入口"));
+        assert!(!html.contains("示例入口"));
+        assert!(html.contains("href=\"/artifacts/theme.css\""));
         assert!(html.contains("href=\"/artifacts/docs/index.css\""));
         assert!(html.contains("src=\"/artifacts/docs/index.js\""));
         assert!(html.contains("请把本机 Cargo"));
@@ -111,8 +129,8 @@ mod tests {
 
         for html in [npm_html, bun_html] {
             assert!(html.contains("Node.js"));
-            assert!(html.contains("<code>npmjs</code>"));
-            assert!(html.contains("<code>group</code>"));
+            assert!(html.contains("source-name\">npmjs</code>"));
+            assert!(html.contains("source-name\">group</code>"));
         }
     }
 
@@ -122,9 +140,9 @@ mod tests {
         let section = section_by_id("upm").expect("UPM section");
         let html = render_section_html(section, "https://pkg.example.test", &catalog);
 
-        assert!(html.contains("<code>unity</code>"));
-        assert!(html.contains("<code>openupm</code>"));
-        assert!(html.contains("unity → openupm"));
+        assert!(html.contains("source-name\">unity</code>"));
+        assert!(html.contains("source-name\">openupm</code>"));
+        assert!(html.contains("<code>unity</code> → <code>openupm</code>"));
         assert!(html.contains("Group"));
     }
 
@@ -151,6 +169,8 @@ mod tests {
                 assert!(!rendered.contains("{base_url}"), "{}", section.id);
                 assert!(!rendered.contains("{endpoint}"), "{}", section.id);
                 assert!(!rendered.contains("{{"), "{}", section.id);
+                assert!(!rendered.contains("推荐入口"), "{}", section.id);
+                assert!(!rendered.contains("示例入口"), "{}", section.id);
                 assert!(!rendered.contains("api.nuget.org"), "{}", section.id);
                 assert!(!rendered.contains("registry.npmjs.org"), "{}", section.id);
                 assert!(!rendered.contains("packages.unity.com"), "{}", section.id);

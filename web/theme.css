@@ -1,0 +1,42 @@
+:root {
+  --font-sans: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+
+  --ink: #030405;
+  --paper: #f4efe6;
+  --paper-soft: #c7beb1;
+  --paper-muted: #8e887f;
+  --champagne: #efd2a9;
+
+  --surface: #0b0f14;
+  --surface-raised: #11171d;
+  --line: rgba(239, 210, 169, 0.22);
+  --line-strong: rgba(239, 210, 169, 0.42);
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 28px;
+  --text-3xl: 34px;
+
+  --radius: 2px;
+  --docs-content: 820px;
+  --docs-index: 920px;
+  --docs-sidebar: 196px;
+  --docs-gap: 48px;
+  --docs-gutter: clamp(20px, 4vw, 52px);
+}

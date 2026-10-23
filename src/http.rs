@@ -26,6 +26,7 @@ use crate::{
 const LANDING_HTML: &str = include_str!("../web/index.html");
 const LANDING_CSS: &str = include_str!("../web/index.css");
 const LANDING_JS: &str = include_str!("../web/index.js");
+const THEME_CSS: &str = include_str!("../web/theme.css");
 const THREE_JS: &str = include_str!("../web/vendor/three.min.js");
 const DOCS_CSS: &str = include_str!("../web/docs/index.css");
 const DOCS_JS: &str = include_str!("../web/docs/index.js");
@@ -39,6 +40,7 @@ pub fn router_with_rustup(service: Arc<RustupService>) -> Router {
         .route("/healthz", get(health))
         .route("/readyz", get(ready))
         .route("/", get(landing_page))
+        .route("/theme.css", get(theme_css))
         .route("/index.css", get(landing_css))
         .route("/index.js", get(landing_js))
         .route("/vendor/three.min.js", get(three_js))
@@ -131,12 +133,14 @@ async fn landing_page(
     let home = site_href(&base_url, "/");
     let docs = site_href(&base_url, "/docs");
     let css = site_href(&base_url, "/index.css");
+    let theme = site_href(&base_url, "/theme.css");
     let js = site_href(&base_url, "/index.js");
     let three = site_href(&base_url, "/vendor/three.min.js");
     let html = LANDING_HTML
         .replace("{{HOME}}", &home)
         .replace("{{DOCS}}", &docs)
         .replace("{{CSS}}", &css)
+        .replace("{{THEME}}", &theme)
         .replace("{{JS}}", &js)
         .replace("{{THREE}}", &three)
         .replace("{{SERVICE_URL}}", base_url.as_str());
@@ -145,6 +149,10 @@ async fn landing_page(
 
 async fn landing_css() -> axum::response::Response {
     asset_response("text/css; charset=utf-8", LANDING_CSS)
+}
+
+async fn theme_css() -> axum::response::Response {
+    asset_response("text/css; charset=utf-8", THEME_CSS)
 }
 
 async fn landing_js() -> axum::response::Response {

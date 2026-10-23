@@ -1,12 +1,4 @@
 .landing-page {
-  --font-sans: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
-  --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
-  --paper: #f4efe6;
-  --paper-soft: #c7beb1;
-  --paper-muted: #8e887f;
-  --champagne: #efd2a9;
-  --ink: #030405;
-  --line: rgba(239, 210, 169, 0.24);
   min-height: 100%;
   margin: 0;
   overflow-x: hidden;

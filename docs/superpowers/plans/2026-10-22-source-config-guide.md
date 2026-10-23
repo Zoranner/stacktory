@@ -213,9 +213,8 @@ pub(crate) fn render_section_markdown(
 ) -> String {
     let mut out = format!("# Stacktory | 使用说明 | {}\n\n", section.title);
     out.push_str(&format!("{}\n\n", section.summary));
-    let endpoint = recommended_endpoint(section, base_url, catalog);
-    out.push_str(&format!("推荐入口：`{endpoint}`\n\n"));
-    out.push_str("## 可用入口\n\n");
+    let endpoint = initial_endpoint(section, base_url, catalog);
+    out.push_str("## 入口\n\n");
     out.push_str(&render_sources_markdown(section, base_url, catalog));
     out.push_str("## 给智能体的提示词\n\n```text\n");
     out.push_str(&replace_template(&section.prompt, base_url, &endpoint));
@@ -234,7 +233,8 @@ pub(crate) fn render_section_markdown(
 }
 ```
 
-`recommended_endpoint` 从 `catalog` 选择 Group，缺少 Group 时选择第一个 Proxy。
+`initial_endpoint` 从 `catalog` 选择第一个 Group，缺少 Group 时选择第一个 Proxy，
+只作为页面首屏的初始入口。
 `SourceCatalog::from_config` 在服务启动时读取 Rustup、Cargo、npm、NuGet、UPM、VS Code
 和 Docker 的实际 source 配置。
 

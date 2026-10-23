@@ -35,12 +35,18 @@ pub(crate) fn render_section_markdown(
     base_url: &str,
     catalog: &SourceCatalog,
 ) -> String {
-    let endpoint = recommended_endpoint(section, base_url, catalog);
+    let endpoint = initial_endpoint(section, base_url, catalog);
     let mut output = format!("# Stacktory | 使用说明 | {}\n\n", section.title);
     output.push_str(&replace_template(&section.summary, base_url, &endpoint));
     output.push_str("\n\n");
-    output.push_str(&format!("推荐入口：`{endpoint}`\n\n"));
-    output.push_str("## 可用入口\n\n");
+    if let Some(source) = catalog.initial(&section.ecosystem) {
+        output.push_str(&format!(
+            "Markdown 页面使用入口 `{}`（{}）。如需其他入口，请按下方入口列表替换地址。\n\n",
+            source.name,
+            source_type_label(source.source_type)
+        ));
+    }
+    output.push_str("## 入口\n\n");
     output.push_str(&render_sources_markdown(section, base_url, catalog));
     output.push_str("\n## 给智能体的提示词\n\n```text\n");
     output.push_str(&replace_template(&section.prompt, base_url, &endpoint));
@@ -115,6 +121,10 @@ fn render_page(
         .replace("{{NAV}}", &nav)
         .replace("{{CONTENT}}", &content)
         .replace(
+            "{{THEME}}",
+            &escape_html(&site_href(base_url, "/theme.css")),
+        )
+        .replace(
             "{{STYLESHEET}}",
             &escape_html(&site_href(base_url, "/docs/index.css")),
         )
@@ -131,7 +141,7 @@ fn render_navigation(current: Option<&GuideSection>, base_url: &str) -> String {
         let group_title = section.group_title.as_str();
         if group != Some(group_title) {
             links.push_str(&format!(
-                r#"<div class="nav-group-title">{}</div>"#,
+                r#"<div class="docs-nav-group">{}</div>"#,
                 escape_html(&section.group_title)
             ));
             group = Some(group_title);
@@ -142,7 +152,7 @@ fn render_navigation(current: Option<&GuideSection>, base_url: &str) -> String {
             ""
         };
         links.push_str(&format!(
-            r#"<a href="{}"{}>{}</a>"#,
+            r#"<a class="docs-nav-link" href="{}"{}>{}</a>"#,
             escape_html(&site_href(base_url, &format!("/docs/{}", section.id))),
             current_attribute,
             escape_html(&section.title)
@@ -155,40 +165,42 @@ fn render_navigation(current: Option<&GuideSection>, base_url: &str) -> String {
 
 fn render_index_body(base_url: &str, catalog: &SourceCatalog) -> String {
     let mut groups = String::new();
-    let mut group: Option<&str> = None;
+    let mut grouped: Vec<(&str, Vec<&GuideSection>)> = Vec::new();
     for section in super::sections() {
-        let group_title = section.group_title.as_str();
-        if group != Some(group_title) {
-            if group.is_some() {
-                groups.push_str("</div></section>");
-            }
-            groups.push_str(&format!(
-                r#"<section class="stack-group"><h2 class="group-title">{}</h2><div class="stack-grid">"#,
-                escape_html(&section.group_title)
-            ));
-            group = Some(group_title);
+        match grouped.last_mut() {
+            Some((title, sections)) if *title == section.group_title => sections.push(section),
+            _ => grouped.push((section.group_title.as_str(), vec![section])),
         }
-        let source_count = catalog.sources(&section.ecosystem).len();
-        groups.push_str(&format!(
-            r#"<a class="stack-card" href="{href}">
-  <div class="stack-card-top"><h2>{title}</h2><span class="stack-arrow" aria-hidden="true">→</span></div>
-  <p class="stack-summary">{summary}</p>
-  <span class="source-count">{source_count} 个入口</span>
+    }
+    for (group_title, sections) in grouped {
+        let mut rows = String::new();
+        for section in &sections {
+            let source_count = catalog.sources(&section.ecosystem).len();
+            rows.push_str(&format!(
+                r#"<a class="directory-row" href="{href}">
+  <span class="directory-copy"><span class="directory-name">{title}</span><span class="directory-summary">{summary}</span></span>
+  <span class="directory-side"><span class="directory-meta">{source_count} 个入口</span><span class="directory-arrow" aria-hidden="true">→</span></span>
 </a>"#,
-            href = escape_html(&site_href(base_url, &format!("/docs/{}", section.id))),
-            title = escape_html(&section.title),
-            summary = escape_html(&section.summary),
-            source_count = source_count,
+                href = escape_html(&site_href(base_url, &format!("/docs/{}", section.id))),
+                title = escape_html(&section.title),
+                summary = escape_html(&section.summary),
+                source_count = source_count,
+            ));
+        }
+        groups.push_str(&format!(
+            r#"<section class="directory-group"><header class="directory-group-header"><h2>{group_title}</h2><span class="directory-group-meta">{count} 个客户端</span></header><div class="directory-list">{rows}</div></section>"#,
+            group_title = escape_html(group_title),
+            count = sections.len(),
+            rows = rows,
         ));
     }
-    if group.is_some() {
-        groups.push_str("</div></section>");
-    }
-    format!(r#"<h1 class="index-title">技术栈</h1>{groups}"#)
+    format!(
+        r#"<header class="docs-intro"><p class="eyebrow">客户端配置</p><h1>使用说明</h1><p class="docs-lede">选择技术栈，查看当前服务提供的入口和配置步骤。配置前请先备份目标文件，失败时停止。</p></header><div class="docs-directory">{groups}</div>"#
+    )
 }
 
 fn render_section_body(section: &GuideSection, base_url: &str, catalog: &SourceCatalog) -> String {
-    let endpoint = recommended_endpoint(section, base_url, catalog);
+    let endpoint = initial_endpoint(section, base_url, catalog);
     let prompt = escape_html(&replace_template(&section.prompt, base_url, &endpoint));
     let manual = escape_html(&replace_template(
         &section.manual_steps,
@@ -199,45 +211,46 @@ fn render_section_body(section: &GuideSection, base_url: &str, catalog: &SourceC
     let mut notes = String::new();
     for note in &section.notes {
         notes.push_str(&format!(
-            "<li>{}</li>",
+            "<li data-endpoint-scope>{}</li>",
             escape_html(&replace_template(note, base_url, &endpoint))
         ));
     }
     let sources = render_sources_html(section, base_url, catalog);
+    let entry_picker = render_entry_picker(section, base_url, catalog);
     format!(
-        r#"<div class="detail-header">
-  <a class="back-link" href="{docs_home}"><span aria-hidden="true">←</span> 返回技术栈</a>
-  <div class="detail-title-row"><h1>{title}</h1></div>
-  <p class="detail-summary">{summary}</p>
-</div>
-<section class="endpoint-panel" aria-labelledby="endpoint-title">
-  <div class="endpoint-label" id="endpoint-title">推荐入口</div>
-  <code class="endpoint-code">{endpoint}</code>
-</section>
-<section class="source-panel" aria-labelledby="source-title">
-  <h2 id="source-title">可用入口</h2>
+        r#"<nav class="breadcrumb" aria-label="面包屑"><a href="{docs_home}">使用说明</a><span class="breadcrumb-separator" aria-hidden="true">/</span><span>{group_title}</span><span class="breadcrumb-separator" aria-hidden="true">/</span><span>{title}</span></nav>
+<header class="article-header">
+  <p class="eyebrow">{group_title}</p>
+  <h1>{title}</h1>
+  <p class="article-summary">{summary}</p>
+</header>
+<section class="article-section" aria-labelledby="sources-title">
+  <div class="section-heading"><h2 id="sources-title">入口</h2></div>
   {sources}
 </section>
-<section class="content-panel" aria-label="{title} 配置方式">
+<section class="article-section" aria-labelledby="config-title">
+  <div class="section-heading"><h2 id="config-title">配置</h2></div>
+  {entry_picker}
   <div class="mode-switch" role="tablist" aria-label="配置方式">
     <button class="mode-tab" id="tab-auto" type="button" role="tab" aria-selected="true" aria-controls="panel-auto" tabindex="0">自动配置</button>
     <button class="mode-tab" id="tab-manual" type="button" role="tab" aria-selected="false" aria-controls="panel-manual" tabindex="-1">手动配置</button>
   </div>
   <div class="tab-panel prompt-panel" id="panel-auto" role="tabpanel" aria-labelledby="tab-auto" tabindex="0">
     <div class="panel-head"><h2>提示词</h2><button class="copy-button" type="button" data-copy-target="prompt-{id}"><span class="copy-icon" aria-hidden="true"></span><span class="button-label">复制提示词</span></button></div>
-    <pre id="prompt-{id}"><code>{prompt}</code></pre>
+    <pre id="prompt-{id}"><code data-endpoint-scope>{prompt}</code></pre>
   </div>
   <div class="tab-panel" id="panel-manual" role="tabpanel" aria-labelledby="tab-manual" tabindex="0" hidden>
-    <div class="panel-head"><h2>手动配置</h2><code class="file-path">{endpoint}</code></div>
-    <pre class="config-snippet"><code>{manual}</code></pre>
-    <div class="verify-block"><h2>验证</h2><pre><code>{verify}</code></pre></div>
+    <div class="panel-head"><h2>手动配置</h2></div>
+    <pre class="config-snippet"><code data-endpoint-scope>{manual}</code></pre>
+    <div class="verify-block"><h2>验证</h2><pre><code data-endpoint-scope>{verify}</code></pre></div>
     <div class="notes"><h2>注意</h2><ul>{notes}</ul></div>
   </div>
 </section>"#,
         docs_home = escape_html(&site_href(base_url, "/docs")),
+        group_title = escape_html(&section.group_title),
         title = escape_html(&section.title),
         summary = escape_html(&section.summary),
-        endpoint = escape_html(&endpoint),
+        entry_picker = entry_picker,
         sources = sources,
         id = section.id,
         prompt = prompt,
@@ -256,17 +269,75 @@ fn render_sources_markdown(
     if sources.is_empty() {
         return "当前配置未提供该生态入口。\n".to_owned();
     }
-    let mut output = String::from("| 入口 | 类型 | 成员 | 地址 |\n| --- | --- | --- | --- |\n");
-    for source in sources {
-        let endpoint = endpoint_for(&section.ecosystem, &source.name, base_url)
-            .unwrap_or_else(|| "—".to_owned());
-        output.push_str(&format!(
-            "| `{}` | {} | {} | `{}` |\n",
-            source.name,
-            source_type_label(source.source_type),
-            source_members(source),
-            endpoint
-        ));
+    let proxies = sources
+        .iter()
+        .filter(|source| source.source_type == SourceType::Proxy);
+    let groups = sources
+        .iter()
+        .filter(|source| source.source_type == SourceType::Group);
+    let docker = section.ecosystem == "docker";
+    let mut output = String::new();
+
+    output.push_str("### Proxy 入口（直接来源）\n\n");
+    let proxies = proxies.collect::<Vec<_>>();
+    if proxies.is_empty() {
+        output.push_str("当前未配置 Proxy 入口。\n");
+    } else if docker && proxies.iter().any(|source| source.cli_port.is_some()) {
+        output.push_str("| 入口 | 地址 | CLI 端口 |\n| --- | --- | --- |\n");
+        for source in proxies {
+            let endpoint = endpoint_for(&section.ecosystem, &source.name, base_url)
+                .unwrap_or_else(|| "—".to_owned());
+            output.push_str(&format!(
+                "| `{}` | `{}` | {} |\n",
+                source.name,
+                endpoint,
+                source_port(source)
+            ));
+        }
+    } else {
+        output.push_str("| 入口 | 地址 |\n| --- | --- |\n");
+        for source in proxies {
+            let endpoint = endpoint_for(&section.ecosystem, &source.name, base_url)
+                .unwrap_or_else(|| "—".to_owned());
+            output.push_str(&format!("| `{}` | `{}` |\n", source.name, endpoint));
+        }
+    }
+
+    output.push_str("\n### Group 入口（按成员顺序回退）\n\n");
+    let groups = groups.collect::<Vec<_>>();
+    if groups.is_empty() {
+        output.push_str("当前未配置 Group 入口。\n");
+    } else if docker && groups.iter().any(|source| source.cli_port.is_some()) {
+        output.push_str("| 入口 | 成员 | 地址 | CLI 端口 |\n| --- | --- | --- | --- |\n");
+        for source in groups {
+            let endpoint = endpoint_for(&section.ecosystem, &source.name, base_url)
+                .unwrap_or_else(|| "—".to_owned());
+            output.push_str(&format!(
+                "| `{}` | {} | `{}` | {} |\n",
+                source.name,
+                source_members(source),
+                endpoint,
+                source_port(source)
+            ));
+        }
+    } else {
+        output.push_str("| 入口 | 成员 | 地址 |\n| --- | --- | --- |\n");
+        for source in groups {
+            let endpoint = endpoint_for(&section.ecosystem, &source.name, base_url)
+                .unwrap_or_else(|| "—".to_owned());
+            output.push_str(&format!(
+                "| `{}` | {} | `{}` |\n",
+                source.name,
+                source_members(source),
+                endpoint
+            ));
+        }
+    }
+
+    if docker && sources.iter().any(|source| source.cli_port.is_some()) {
+        output.push_str(
+            "\nCLI 端口是 Docker 客户端直连该入口的独立监听端口；未配置时使用 `/mirror/docker/{name}/v2/`。\n",
+        );
     }
     output
 }
@@ -276,40 +347,180 @@ fn render_sources_html(section: &GuideSection, base_url: &str, catalog: &SourceC
     if sources.is_empty() {
         return r#"<p class="source-empty">当前配置未提供该生态入口。</p>"#.to_owned();
     }
-    let mut rows = String::new();
-    for source in sources {
-        let endpoint = endpoint_for(&section.ecosystem, &source.name, base_url)
-            .unwrap_or_else(|| "—".to_owned());
-        let port = source
-            .cli_port
-            .map(|port| format!(":{port}"))
-            .unwrap_or_else(|| "—".to_owned());
-        rows.push_str(&format!(
-            r#"<tr>
-  <td><code>{name}</code></td>
-  <td><span class="source-type">{source_type}</span></td>
-  <td class="source-members">{members}</td>
-  <td><code class="source-endpoint">{endpoint}</code></td>
-  <td class="source-port">{port}</td>
-</tr>"#,
-            name = escape_html(&source.name),
-            source_type = source_type_label(source.source_type),
-            members = escape_html(&source_members(source)),
-            endpoint = escape_html(&endpoint),
-            port = escape_html(&port),
+    let proxies = sources
+        .iter()
+        .filter(|source| source.source_type == SourceType::Proxy)
+        .collect::<Vec<_>>();
+    let groups = sources
+        .iter()
+        .filter(|source| source.source_type == SourceType::Group)
+        .collect::<Vec<_>>();
+    let docker = section.ecosystem == "docker";
+    let mut output = String::new();
+
+    output.push_str(r#"<h3 class="subsection-title">Proxy 入口（直接来源）</h3>"#);
+    if proxies.is_empty() {
+        output.push_str(r#"<p class="source-empty">当前未配置 Proxy 入口。</p>"#);
+    } else {
+        let show_cli_port = docker && proxies.iter().any(|source| source.cli_port.is_some());
+        let port_header = if show_cli_port {
+            "<th>CLI 端口</th>"
+        } else {
+            ""
+        };
+        let mut rows = String::new();
+        for source in proxies {
+            let endpoint = endpoint_for(&section.ecosystem, &source.name, base_url)
+                .unwrap_or_else(|| "—".to_owned());
+            let port_cell = if show_cli_port {
+                format!(
+                    r#"<td class="source-port">{}</td>"#,
+                    escape_html(&source_port(source))
+                )
+            } else {
+                String::new()
+            };
+            rows.push_str(&format!(
+                r#"<tr><td><code class="source-name">{}</code></td><td><code class="source-url">{}</code></td>{}</tr>"#,
+                escape_html(&source.name),
+                escape_html(&endpoint),
+                port_cell,
+            ));
+        }
+        output.push_str(&format!(
+            r#"<div class="source-table-wrap"><table class="source-table"><thead><tr><th>入口</th><th>地址</th>{port_header}</tr></thead><tbody>{rows}</tbody></table></div>"#
         ));
     }
+
+    output.push_str(r#"<h3 class="subsection-title">Group 入口（按成员顺序回退）</h3>"#);
+    if groups.is_empty() {
+        output.push_str(r#"<p class="source-empty">当前未配置 Group 入口。</p>"#);
+    } else {
+        let show_cli_port = docker && groups.iter().any(|source| source.cli_port.is_some());
+        output.push_str(r#"<div class="group-list">"#);
+        for source in groups {
+            let endpoint = endpoint_for(&section.ecosystem, &source.name, base_url)
+                .unwrap_or_else(|| "—".to_owned());
+            let port = if show_cli_port {
+                format!(
+                    r#"<span class="source-port">CLI 端口 {}</span>"#,
+                    escape_html(&source_port(source))
+                )
+            } else {
+                String::new()
+            };
+            let members = group_members_html(source);
+            output.push_str(&format!(
+                r#"<div class="group-row"><div class="group-head"><code class="source-name">{name}</code><span class="group-members">成员：{members}</span></div><code class="source-url">{endpoint}</code>{port}</div>"#,
+                name = escape_html(&source.name),
+                members = members,
+                endpoint = escape_html(&endpoint),
+            ));
+        }
+        output.push_str("</div>");
+    }
+
+    if docker && sources.iter().any(|source| source.cli_port.is_some()) {
+        output.push_str(
+            r#"<p class="field-note">CLI 端口是 Docker 客户端直连该入口的独立监听端口；未配置时使用 <code>/mirror/docker/{name}/v2/</code>。</p>"#,
+        );
+    }
+    output
+}
+
+fn render_entry_picker(section: &GuideSection, base_url: &str, catalog: &SourceCatalog) -> String {
+    let initial = catalog.initial(&section.ecosystem);
+    let Some(initial) = initial else {
+        return String::new();
+    };
+    let Some(initial_endpoint) = endpoint_for(&section.ecosystem, &initial.name, base_url) else {
+        return String::new();
+    };
+
+    let mut groups = Vec::new();
+    let mut proxies = Vec::new();
+    for source in catalog.sources(&section.ecosystem) {
+        let Some(endpoint) = endpoint_for(&section.ecosystem, &source.name, base_url) else {
+            continue;
+        };
+        match source.source_type {
+            SourceType::Group => groups.push((source, endpoint)),
+            SourceType::Proxy => proxies.push((source, endpoint)),
+        }
+    }
+
+    if groups.len() + proxies.len() == 1 {
+        return format!(
+            r#"<div class="entry-picker"><span class="entry-picker-label">当前入口</span><code class="entry-current">{} · {}</code><code class="entry-url" data-entry-url>{}</code></div>"#,
+            source_type_label(initial.source_type),
+            escape_html(&initial.name),
+            escape_html(&initial_endpoint),
+        );
+    }
+
+    let mut options = String::new();
+    for (label, entries) in [("Group 入口", groups), ("Proxy 入口", proxies)] {
+        if entries.is_empty() {
+            continue;
+        }
+        options.push_str(&format!(r#"<optgroup label="{label}">"#));
+        for (source, endpoint) in entries {
+            let selected = if source.name == initial.name {
+                " selected"
+            } else {
+                ""
+            };
+            options.push_str(&format!(
+                r#"<option value="{}"{}>{}</option>"#,
+                escape_html(&endpoint),
+                selected,
+                escape_html(&source.name),
+            ));
+        }
+        options.push_str("</optgroup>");
+    }
+
     format!(
-        r#"<div class="source-table-wrap"><table class="source-table"><thead><tr><th>入口</th><th>类型</th><th>成员</th><th>地址</th><th>CLI 端口</th></tr></thead><tbody>{rows}</tbody></table></div>"#
+        r#"<div class="entry-picker"><label class="entry-picker-label" for="entry-select">当前入口</label><select id="entry-select" class="entry-select" data-entry-select data-current-endpoint="{}">{}</select><code class="entry-url" data-entry-url>{}</code></div>"#,
+        escape_html(&initial_endpoint),
+        options,
+        escape_html(&initial_endpoint),
     )
 }
 
 fn source_members(source: &SourceEntry) -> String {
     if source.members.is_empty() {
-        "—".to_owned()
+        "直连".to_owned()
     } else {
         source.members.join(" → ")
     }
+}
+
+fn group_members_html(source: &SourceEntry) -> String {
+    if source.members.is_empty() {
+        "—".to_owned()
+    } else {
+        source
+            .members
+            .iter()
+            .map(|member| format!("<code>{}</code>", escape_html(member)))
+            .collect::<Vec<_>>()
+            .join(" → ")
+    }
+}
+
+fn source_port(source: &SourceEntry) -> String {
+    source
+        .cli_port
+        .map(|port| format!(":{port}"))
+        .unwrap_or_else(|| "—".to_owned())
+}
+
+fn initial_endpoint(section: &GuideSection, base_url: &str, catalog: &SourceCatalog) -> String {
+    catalog
+        .initial(&section.ecosystem)
+        .and_then(|source| endpoint_for(&section.ecosystem, &source.name, base_url))
+        .unwrap_or_else(|| "当前配置未提供入口".to_owned())
 }
 
 fn source_type_label(source_type: SourceType) -> &'static str {
@@ -317,13 +528,6 @@ fn source_type_label(source_type: SourceType) -> &'static str {
         SourceType::Proxy => "Proxy",
         SourceType::Group => "Group",
     }
-}
-
-fn recommended_endpoint(section: &GuideSection, base_url: &str, catalog: &SourceCatalog) -> String {
-    catalog
-        .recommended(&section.ecosystem)
-        .and_then(|source| endpoint_for(&section.ecosystem, &source.name, base_url))
-        .unwrap_or_else(|| "当前配置未提供入口".to_owned())
 }
 
 fn endpoint_for(ecosystem: &str, entry: &str, base_url: &str) -> Option<String> {

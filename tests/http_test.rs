@@ -68,10 +68,12 @@ async fn landing_page_links_to_docs_and_serves_its_assets() {
     assert!(html.contains("<title>Stacktory</title>"));
     assert!(html.contains("href=\"/docs\""));
     assert!(html.contains("https://pkg.rd.kim"));
+    assert!(html.contains("href=\"/theme.css\""));
     assert!(html.contains("href=\"/index.css\""));
     assert!(html.contains("src=\"/vendor/three.min.js\""));
 
     for (path, content_type) in [
+        ("/theme.css", "text/css; charset=utf-8"),
         ("/index.css", "text/css; charset=utf-8"),
         ("/index.js", "text/javascript; charset=utf-8"),
         ("/vendor/three.min.js", "text/javascript; charset=utf-8"),
@@ -121,10 +123,12 @@ async fn source_config_page_serves_external_assets() {
         .await
         .expect("docs page body");
     let html = String::from_utf8(body.to_vec()).expect("docs page UTF-8");
+    assert!(html.contains("href=\"/theme.css\""));
     assert!(html.contains("href=\"/docs/index.css\""));
     assert!(html.contains("src=\"/docs/index.js\""));
 
     for (path, content_type) in [
+        ("/theme.css", "text/css; charset=utf-8"),
         ("/docs/index.css", "text/css; charset=utf-8"),
         ("/docs/index.js", "text/javascript; charset=utf-8"),
     ] {

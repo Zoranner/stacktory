@@ -1,3 +1,20 @@
+document.querySelectorAll("[data-entry-select]").forEach((select) => {
+  const endpointScopes = Array.from(document.querySelectorAll("[data-endpoint-scope]"));
+  const endpointDisplay = document.querySelector("[data-entry-url]");
+
+  select.addEventListener("change", () => {
+    const previousEndpoint = select.dataset.currentEndpoint;
+    const nextEndpoint = select.value;
+    if (!previousEndpoint || previousEndpoint === nextEndpoint) return;
+
+    endpointScopes.forEach((scope) => {
+      scope.textContent = scope.textContent.split(previousEndpoint).join(nextEndpoint);
+    });
+    if (endpointDisplay) endpointDisplay.textContent = nextEndpoint;
+    select.dataset.currentEndpoint = nextEndpoint;
+  });
+});
+
 document.querySelectorAll('[role="tab"][aria-controls]').forEach((tab, index, tabs) => {
   const activate = (selected, focus) => {
     tabs.forEach((item) => {

@@ -67,7 +67,7 @@ impl SourceCatalog {
             .unwrap_or(&[])
     }
 
-    pub(crate) fn recommended(&self, ecosystem: &str) -> Option<&SourceEntry> {
+    pub(crate) fn initial(&self, ecosystem: &str) -> Option<&SourceEntry> {
         let sources = self.sources(ecosystem);
         sources
             .iter()
