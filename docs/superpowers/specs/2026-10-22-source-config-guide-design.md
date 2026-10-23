@@ -53,23 +53,28 @@ GET /docs/{stack}/index.md
 
 - 页头：产品名、当前服务地址、页面说明和使用边界。
 - 使用说明：先备份、只改目标配置、完成后验证、失败时停止。
-- 技术栈导航：Rustup、Cargo、npm、Bun、NuGet、UPM、VS Code、Docker。
-- 索引页：技术栈卡片，包含简介、状态和进入详情页的链接。
-- 详情页：入口地址、适用条件、给智能体的提示词、手动步骤、验证命令和注意事项。
+- 技术栈导航按生态分组：Rust（Rustup、Cargo）、Node.js（npm、Bun）、.NET（NuGet）、
+  Unity（UPM）、VS Code、Docker；Node.js 后续可继续增加 pnpm、yarn，不改变页面结构。
+- 索引页按生态分组展示客户端卡片，包含简介、配置入口数量和进入详情页的链接。
+- 详情页包含推荐入口、当前生态的全部入口、给智能体的提示词、手动步骤、验证命令和注意事项。
 - 页尾：配置失败时保留备份并报告；页面不执行本地命令。
 
 ### 技术栈内容
 
-| 技术栈 | 默认入口 | 提示词目标 | 必须说明的边界 |
+| 生态 | 客户端 | 提示词目标 | 必须说明的边界 |
 | --- | --- | --- | --- |
-| Rustup | `/mirror/rustup/group` | 设置 `RUSTUP_DIST_SERVER` | 用户级环境变量；重新打开终端 |
-| Cargo | `/mirror/cargo/group/` | 修改 `~/.cargo/config.toml` 的 source replacement | 保留现有 source；不覆盖无关配置 |
-| npm | `/mirror/npm/group/` | 设置 npm registry | 用户级 `.npmrc`；项目级配置可能覆盖 |
-| Bun | `/mirror/npm/group/` | 修改用户级 `.bunfig.toml` | 与 npm 分开；项目级 `bunfig.toml` 优先 |
-| NuGet | `/mirror/nuget/group/v3/index.json` | 修改用户级 `NuGet.Config` | 项目级 `NuGet.Config` 可能覆盖；不要添加凭据 |
-| UPM | `/mirror/upm/group` | 修改当前 Unity 项目 `Packages/manifest.json` | 需要项目根目录；scope 由项目决定 |
-| VS Code | `/mirror/vscode/group` | 修改 VS Code `product.json` 的 Gallery 三项 | 必须备份；升级后可能被覆盖 |
-| Docker | 管理员提供的 Docker Group 地址 | 修改 Docker `registry-mirrors` | 需要管理员权限和重启；不猜测地址 |
+| Rust | Rustup | 设置 `RUSTUP_DIST_SERVER` | 用户级环境变量；重新打开终端 |
+| Rust | Cargo | 修改 `~/.cargo/config.toml` 的 source replacement | 保留现有 source；不覆盖无关配置 |
+| Node.js | npm | 设置 npm registry | 用户级 `.npmrc`；项目级配置可能覆盖 |
+| Node.js | Bun | 修改用户级 `.bunfig.toml` | 与 npm 分开；项目级 `bunfig.toml` 优先 |
+| .NET | NuGet | 修改用户级 `NuGet.Config` | 项目级 `NuGet.Config` 可能覆盖；不要添加凭据 |
+| Unity | UPM | 修改当前 Unity 项目 `Packages/manifest.json` | 需要项目根目录；scope 由项目决定 |
+| VS Code | VS Code | 修改 VS Code `product.json` 的 Gallery 三项 | 必须备份；升级后可能被覆盖 |
+| Docker | Docker | 修改 Docker `registry-mirrors` | 需要管理员权限和重启；不猜测地址 |
+
+入口不是写死的 `group`。每个详情页从当前服务配置读取对应生态的全部 source，展示
+入口名、`Group`/`Proxy` 类型、Group 成员、解析后的地址和 Docker CLI 端口；推荐入口
+优先选择 Group，没有 Group 时使用第一个 Proxy。
 
 没有实现的后端生态（PyPI、Winget）不出现在可执行卡片中，只保留在页面说明里。
 
@@ -101,7 +106,8 @@ GET /docs/{stack}/index.md
 6. 如果路径、权限或配置格式不确定，停止并报告，不要猜测。
 ```
 
-页面渲染时把 `{base_url}` 替换为当前服务地址；不得把未替换的占位符发给用户。
+页面渲染时把 `{base_url}` 和 `{endpoint}` 替换为当前服务地址和推荐入口；不得把未替换
+的占位符发给用户。
 
 ## 人看的页面
 
@@ -111,7 +117,7 @@ GET /docs/{stack}/index.md
 
 - 桌面端左侧固定导航，右侧内容区；移动端导航变为顶部横向可滚动列表。
 - 页头显示当前服务地址和“可以手动配置，也可以复制提示词给智能体”的简短说明。
-- 每个技术栈是一张卡片，卡片头部有状态标签和入口地址。
+- 每个技术栈是一张卡片，卡片显示简介和当前配置的入口数量，不使用状态标签。
 - 提示词放在 `<pre><code>` 中，旁边有复制按钮；复制成功通过 `aria-live` 提示。
 - 详情页提供“自动配置”和“手动配置”两个标签，默认显示自动配置；标签支持点击、
   左右方向键、`Home` 和 `End` 切换。
@@ -130,36 +136,61 @@ GET /docs/{stack}/index.md
 
 ## 技术设计
 
-新增 `src/docs/source_config/`，定义稳定的内容结构：
+新增 `src/docs/source_config/`，其中 `content.rs` 只解析内容文件，`catalog.rs` 把运行时
+配置转换为文档入口，`render.rs` 只负责 HTML/Markdown 输出：
 
 ```rust
 pub(crate) struct GuideSection {
-    pub(crate) id: &'static str,
-    pub(crate) title: &'static str,
-    pub(crate) summary: &'static str,
-    pub(crate) target: Target,
-    pub(crate) prompt: &'static str,
-    pub(crate) manual_steps: &'static str,
-    pub(crate) verify: &'static str,
-    pub(crate) notes: &'static [&'static str],
-}
-
-pub(crate) enum Target {
-    ServicePath(&'static str),
-    AdminProvided(&'static str),
+    pub(crate) id: String,
+    pub(crate) group_title: String,
+    pub(crate) title: String,
+    pub(crate) summary: String,
+    pub(crate) ecosystem: String,
+    pub(crate) prompt: String,
+    pub(crate) manual_steps: String,
+    pub(crate) verify: String,
+    pub(crate) notes: Vec<String>,
 }
 ```
+
+每个客户端的正文放在 `web/docs/content/<id>.md`，使用简单的 front matter 和固定章节：
+
+```text
+---
+id: cargo
+group: Rust
+title: Cargo
+summary: ...
+ecosystem: cargo
+---
+## 提示词
+...
+## 手动步骤
+...
+## 验证
+...
+## 注意
+- ...
+```
+
+新增客户端只需增加内容文件并在 `content.rs` 的文件列表中登记；新增生态分组不需要改
+渲染器。页面模板和样式位于 `web/docs/index.html`、`web/docs/index.css`、`web/docs/index.js`。
 
 渲染函数：
 
 ```rust
-pub(crate) fn render_index_markdown(base_url: &str) -> String;
+pub(crate) fn render_index_markdown(base_url: &str, catalog: &SourceCatalog) -> String;
 pub(crate) fn render_section_markdown(
     section: &GuideSection,
     base_url: &str,
+    catalog: &SourceCatalog,
 ) -> String;
-pub(crate) fn render_index_html(base_url: &str) -> String;
-pub(crate) fn render_section_html(section: &GuideSection, base_url: &str) -> String;
+pub(crate) fn render_index_html(base_url: &str, catalog: &SourceCatalog) -> String;
+pub(crate) fn render_section_html(
+    section: &GuideSection,
+    base_url: &str,
+    catalog: &SourceCatalog,
+) -> String;
 ```
 
 两个渲染器只读取同一组 `GuideSection`，并且：
@@ -168,7 +199,7 @@ pub(crate) fn render_section_html(section: &GuideSection, base_url: &str) -> Str
 - 对 `{base_url}` 做一次明确替换，渲染后检查页面中不存在该占位符。
 - Markdown 和 HTML 的标题、顺序、提示词和验证命令保持一致。
 - 索引页和详情页共享同一个页面骨架、侧边导航和 CSS；详情页的浏览器标题追加当前 section 标题。
-- HTML 内联的复制脚本只读取 `data-copy-target` 指向的文本，不使用 `innerHTML`。
+- `web/docs/index.js` 只切换标签和复制 `data-copy-target` 指向的文本，不使用 `innerHTML`。
 
 HTTP 路由放在主服务路由中：
 
@@ -190,7 +221,13 @@ Docker listener 不提供这两个页面。页面不增加配置；服务地址�
 - `/docs.md` 返回 `200` 和 `text/markdown; charset=utf-8`。
 - `/docs/rustup/index.md` 返回 `200` 和 `text/markdown; charset=utf-8`。
 - 页面包含全部可用技术栈，且每个卡片有可复制提示词。
+- npm 和 Bun 位于同一个 Node.js 分组，共用当前 npm 生态的入口列表。
+- 详情页列出当前生态配置的全部 Group/Proxy 入口、成员、地址和 Docker CLI 端口，
+  不再只显示一个写死的 `group`。
+- Unity 页面的入口列表来自 UPM 配置，而不是单一的 `group` 字符串。
+- 用户修改 `web/docs/content/*.md` 后，页面文案和提示词随构建更新。
 - 通过 `pkg.rd.kim` 访问时，未替换的 `{base_url}` 不出现，地址指向 `pkg.rd.kim`。
+- 渲染结果中不出现未替换的 `{endpoint}`。
 - 页面不包含上游 URL、token、密码或本地缓存路径。
 - 复制按钮可用；没有 JavaScript 时，提示词仍然可以被选中复制。
 - 页面在窄屏下不出现水平溢出；代码块可独立横向滚动。

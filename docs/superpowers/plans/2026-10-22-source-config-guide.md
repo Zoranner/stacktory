@@ -28,9 +28,14 @@
 | --- | --- |
 | `src/lib.rs` | 注册内部 `docs` 模块，不扩大公共 API |
 | `src/docs/mod.rs` | 暴露内部 `source_config` 模块 |
-| `src/docs/source_config/mod.rs` | 定义 `GuideSection`、`Target`、内容入口和渲染入口 |
-| `src/docs/source_config/content.rs` | 所有技术栈的静态内容、提示词、验证命令和注意事项 |
-| `src/docs/source_config/render.rs` | 索引/详情页的 Markdown 与 HTML 渲染、HTML 转义、复制脚本和 CSS |
+| `src/docs/source_config/mod.rs` | 定义 `GuideSection`、内容入口和渲染入口 |
+| `src/docs/source_config/content.rs` | 解析 `web/docs/content/*.md`，不保存技术栈正文 |
+| `src/docs/source_config/catalog.rs` | 从运行时 `Config` 生成生态入口目录 |
+| `src/docs/source_config/render.rs` | 索引/详情页的 Markdown 与 HTML 渲染、入口表、转义 |
+| `web/docs/index.html` | 文档页模板 |
+| `web/docs/index.css` | 文档页样式，使用与首页一致的视觉变量 |
+| `web/docs/index.js` | 标签切换和提示词复制 |
+| `web/docs/content/*.md` | 每个技术栈的可编辑正文、提示词、验证和注意事项 |
 | `src/http.rs` | `/docs`、`/docs.md`、`/docs/{stack}`、`/docs/{stack}/index.md` 路由、请求 Host 到公开地址的转换、旧脚本路由保持 404 |
 | `tests/http_test.rs` | 索引/详情路由、标题、请求 Host、Markdown、未知 stack 和旧脚本 404 的集成测试 |
 | `docs/guides/vscode.md` | 增加源配置页面入口；旧脚本说明已经删除 |
@@ -38,13 +43,15 @@
 | `README.md` | 在开始使用部分增加页面入口 |
 | `src/tools/vscode-gallery.ps1` | 已删除；实施时只验证旧入口保持 404 |
 
-## Task: 建立内容模型和 Markdown 文档
+## Task: 建立内容模型、入口目录和 Markdown 文档
 
 **Files:**
 - Create: `src/docs/mod.rs`
 - Create: `src/docs/source_config/mod.rs`
 - Create: `src/docs/source_config/content.rs`
+- Create: `src/docs/source_config/catalog.rs`
 - Create: `src/docs/source_config/render.rs`
+- Create: `web/docs/content/*.md`
 - Modify: `src/lib.rs`
 - Test: `src/docs/source_config/mod.rs`（单元测试）
 
@@ -54,11 +61,15 @@
 
 ```rust
 pub(crate) struct GuideSection { /* 字段见 Spec */ }
-pub(crate) enum Target { ServicePath(&'static str), AdminProvided(&'static str) }
+pub(crate) struct SourceCatalog { /* 从 Config 生成 */ }
 pub(crate) fn sections() -> &'static [GuideSection];
 pub(crate) fn section_by_id(id: &str) -> Option<&'static GuideSection>;
-pub(crate) fn render_index_markdown(base_url: &str) -> String;
-pub(crate) fn render_section_markdown(section: &GuideSection, base_url: &str) -> String;
+pub(crate) fn render_index_markdown(base_url: &str, catalog: &SourceCatalog) -> String;
+pub(crate) fn render_section_markdown(
+    section: &GuideSection,
+    base_url: &str,
+    catalog: &SourceCatalog,
+) -> String;
 ```
 
 - [ ] **Step 1: 写失败测试，固定页面内容契约**
@@ -144,73 +155,88 @@ pub(crate) enum Target {
 }
 ```
 
-在 `src/docs/source_config/content.rs` 中放入 8 个 section，顺序固定为
+在 `web/docs/content/` 中为每个客户端建立 Markdown 文件，顺序固定为
 `Rustup`、`Cargo`、`npm`、`Bun`、`NuGet`、`UPM`、`VS Code`、`Docker`。
-每个 section 必须填满以下内容，不允许留空或 TODO：
+文件使用固定 front matter 和章节：
 
-- Rustup：`Target::ServicePath("/mirror/rustup/group")`，提示词要求设置用户级
-  `RUSTUP_DIST_SERVER`，验证 `rustup show`，说明需要重新打开终端。
-- Cargo：`Target::ServicePath("/mirror/cargo/group/")`，提示词要求合并
-  `~/.cargo/config.toml`，只改 crates.io source replacement，验证 `cargo fetch`。
-- npm：`Target::ServicePath("/mirror/npm/group/")`，提示词要求修改用户级 `.npmrc`，
-  验证 `npm config get registry`，说明项目级 `.npmrc` 可能覆盖。
-- Bun：`Target::ServicePath("/mirror/npm/group/")`，提示词要求修改用户级
-  `.bunfig.toml`，验证 `bun install` 或 `bun pm cache`，说明项目级 `bunfig.toml`
-  优先。
-- NuGet：`Target::ServicePath("/mirror/nuget/group/v3/index.json")`，提示词要求修改
-  用户级 `NuGet.Config`，备份、保留凭据项、验证 `dotnet restore`，说明项目级配置
-  可能覆盖。
-- UPM：`Target::ServicePath("/mirror/upm/group")`，提示词要求从当前 Unity 项目
-  `Packages/manifest.json` 读取并保留现有 `scopedRegistries` 和 `scopes`，验证
-  `Packages/manifest.json` 可解析和 Unity 包解析成功。
-- VS Code：`Target::ServicePath("/mirror/vscode/group")`，提示词要求找到当前安装的
-  `product.json`、备份、只改 `serviceUrl`、`resourceUrlTemplate`、
-  `extensionUrlTemplate`，验证 JSON 可解析并要求重启 VS Code。
-- Docker：`Target::AdminProvided("Docker Group 地址由管理员提供")`，提示词要求先
-  向用户确认地址、检查管理员权限、备份 daemon 配置、只改 `registry-mirrors`，
-  验证 `docker info`；明确不能猜测地址，不能修改无关 daemon 配置。
+```text
+---
+id: cargo
+group: Rust
+title: Cargo
+summary: 通过 Sparse Registry 下载 crates.io 依赖。
+ecosystem: cargo
+---
+## 提示词
+...
+## 手动步骤
+...
+## 验证
+...
+## 注意
+- ...
+```
 
-每个 `prompt` 使用 `{base_url}` 占位符，每个 `manual_steps` 和 `verify` 都写具体命令，
-不能写“按实际情况处理”或“参考文档”。
+`group` 决定导航和索引页的生态分组：Rustup/Cargo 属于 Rust，npm/Bun 属于 Node.js，
+NuGet 属于 .NET，UPM 属于 Unity。提示词和手动步骤使用 `{endpoint}` 占位符；渲染时
+由运行时入口目录替换。`content.rs` 只解析文件，不保存正文。
 
 - [ ] **Step 4: 实现 Markdown 渲染**
 
 在 `src/docs/source_config/render.rs` 中实现：
 
 ```rust
-pub(crate) fn render_index_markdown(base_url: &str) -> String {
+pub(crate) fn render_index_markdown(base_url: &str, catalog: &SourceCatalog) -> String {
     let mut out = String::from("# Stacktory | 使用说明\n\n");
     out.push_str("可以直接按手动步骤配置，也可以把提示词复制给智能体。所有操作先备份，失败时停止。\n\n");
-    out.push_str("## 技术栈\n\n");
+    let mut group = None;
     for section in crate::docs::source_config::sections() {
+        if group != Some(section.group_title.as_str()) {
+            out.push_str(&format!("## {}\n\n", section.group_title));
+            group = Some(section.group_title.as_str());
+        }
         out.push_str(&format!(
-            "- [{}](/docs/{}/index.md)：{}\n",
-            section.title, section.id, section.summary
+            "- [{}]({})：{}（{} 个入口）\n",
+            section.title,
+            site_href(base_url, &format!("/docs/{}/index.md", section.id)),
+            section.summary,
+            catalog.sources(&section.ecosystem).len()
         ));
     }
     out
 }
 
-pub(crate) fn render_section_markdown(section: &GuideSection, base_url: &str) -> String {
+pub(crate) fn render_section_markdown(
+    section: &GuideSection,
+    base_url: &str,
+    catalog: &SourceCatalog,
+) -> String {
     let mut out = format!("# Stacktory | 使用说明 | {}\n\n", section.title);
     out.push_str(&format!("{}\n\n", section.summary));
-    out.push_str(&format!("入口：`{}`\n\n", target_text(&section.target, base_url)));
+    let endpoint = recommended_endpoint(section, base_url, catalog);
+    out.push_str(&format!("推荐入口：`{endpoint}`\n\n"));
+    out.push_str("## 可用入口\n\n");
+    out.push_str(&render_sources_markdown(section, base_url, catalog));
     out.push_str("## 给智能体的提示词\n\n```text\n");
-    out.push_str(&section.prompt.replace("{base_url}", base_url));
+    out.push_str(&replace_template(&section.prompt, base_url, &endpoint));
     out.push_str("\n```\n\n## 手动步骤\n\n");
-    out.push_str(section.manual_steps);
+    out.push_str(&replace_template(&section.manual_steps, base_url, &endpoint));
     out.push_str("\n\n## 验证\n\n```text\n");
-    out.push_str(section.verify);
+    out.push_str(&replace_template(&section.verify, base_url, &endpoint));
     out.push_str("\n```\n\n## 注意\n\n");
-    for note in section.notes {
-        out.push_str(&format!("- {note}\n"));
+    for note in &section.notes {
+        out.push_str(&format!(
+            "- {}\n",
+            replace_template(note, base_url, &endpoint)
+        ));
     }
     out
 }
 ```
 
-`target_text` 对 `ServicePath(path)` 返回
-`format!("{}{}", base_url.trim_end_matches('/'), path)`，对 `AdminProvided(text)` 返回 `text`。
+`recommended_endpoint` 从 `catalog` 选择 Group，缺少 Group 时选择第一个 Proxy。
+`SourceCatalog::from_config` 在服务启动时读取 Rustup、Cargo、npm、NuGet、UPM、VS Code
+和 Docker 的实际 source 配置。
 
 - [ ] **Step 5: 注册内部模块并运行单元测试**
 
@@ -365,8 +391,8 @@ Expected: 编译失败，提示 `render_index_html` 不存在。
 
 CSS 至少包含以下变量和规则：
 
-以下片段只是最低结构契约；颜色、间距和响应式规则以 `preview.css` 为准，不重新设计
-页面。
+以下片段只是最低结构契约；颜色、间距和响应式规则以 `web/docs/index.css` 为准，
+并沿用首页的字体、墨黑背景和香槟色强调，不重新设计视觉体系。
 
 ```css
 :root {
@@ -601,6 +627,7 @@ async fn source_config_index_page(
     let base_url = public_base_url_for_request(&headers, service.public_url());
     html_response(crate::docs::source_config::render_index_html(
         base_url.as_str(),
+        service.docs_catalog(),
     ))
 }
 
@@ -616,6 +643,7 @@ async fn source_config_section_page(
     html_response(crate::docs::source_config::render_section_html(
         section,
         base_url.as_str(),
+        service.docs_catalog(),
     ))
 }
 
@@ -626,7 +654,10 @@ async fn source_config_index_markdown(
     let base_url = public_base_url_for_request(&headers, service.public_url());
     text_response(
         "text/markdown; charset=utf-8",
-        crate::docs::source_config::render_index_markdown(base_url.as_str()),
+        crate::docs::source_config::render_index_markdown(
+            base_url.as_str(),
+            service.docs_catalog(),
+        ),
     )
 }
 
@@ -644,6 +675,7 @@ async fn source_config_section_markdown(
         crate::docs::source_config::render_section_markdown(
             section,
             base_url.as_str(),
+            service.docs_catalog(),
         ),
     )
 }
