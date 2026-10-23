@@ -267,17 +267,6 @@ p {
   line-height: 1.55;
 }
 
-.status {
-  display: inline-block;
-  align-self: flex-start;
-  margin-top: auto;
-  padding: 3px 7px;
-  border: 1px solid var(--line);
-  color: var(--champagne);
-  font-size: 11px;
-  font-weight: 600;
-}
-
 .stack-path {
   margin-top: 8px;
   color: var(--paper-muted);
@@ -322,10 +311,6 @@ p {
   font-weight: 700;
   letter-spacing: -0.035em;
   line-height: 1.15;
-}
-
-.detail-title-row .status {
-  margin-top: 0;
 }
 
 .detail-summary {

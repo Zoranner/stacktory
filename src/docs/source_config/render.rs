@@ -27,7 +27,6 @@ pub(crate) fn render_section_markdown(section: &GuideSection, base_url: &str) ->
     let mut output = format!("# Stacktory | 使用说明 | {}\n\n", section.title);
     output.push_str(&replace_base_url(section.summary, base_url));
     output.push_str("\n\n");
-    output.push_str(&format!("状态：{}\n\n", section.status));
     output.push_str(&format!(
         "入口：`{}`\n\n",
         target_text(&section.target, base_url)
@@ -130,13 +129,11 @@ fn render_index_body(base_url: &str) -> String {
             r#"<a class="stack-card" href="{href}">
   <div class="stack-card-top"><h2>{title}</h2><span class="stack-arrow" aria-hidden="true">→</span></div>
   <p class="stack-summary">{summary}</p>
-  <span class="status">{status}</span>
   <code class="stack-path">{target}</code>
 </a>"#,
             href = escape_html(&site_href(base_url, &format!("/docs/{}", section.id))),
             title = escape_html(section.title),
             summary = escape_html(section.summary),
-            status = escape_html(section.status),
             target = escape_html(&target_text(&section.target, "")),
         ));
     }
@@ -159,7 +156,7 @@ fn render_section_body(section: &GuideSection, base_url: &str) -> String {
     format!(
         r#"<div class="detail-header">
   <a class="back-link" href="{docs_home}"><span aria-hidden="true">←</span> 返回技术栈</a>
-  <div class="detail-title-row"><h1>{title}</h1><span class="status">{status}</span></div>
+  <div class="detail-title-row"><h1>{title}</h1></div>
   <p class="detail-summary">{summary}</p>
 </div>
 <section class="endpoint-panel" aria-labelledby="endpoint-title">
@@ -184,7 +181,6 @@ fn render_section_body(section: &GuideSection, base_url: &str) -> String {
 </section>"#,
         docs_home = escape_html(&site_href(base_url, "/docs")),
         title = escape_html(section.title),
-        status = escape_html(section.status),
         summary = escape_html(section.summary),
         target = escape_html(&target_text(&section.target, base_url)),
         id = section.id,

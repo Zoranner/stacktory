@@ -4,7 +4,6 @@ pub(crate) const SECTIONS: &[GuideSection] = &[
     GuideSection {
         id: "rustup",
         title: "Rustup",
-        status: "可用",
         summary: "通过 Stacktory 下载 Rust 工具链和组件。",
         target: Target::ServicePath("/mirror/rustup/group"),
         prompt: r#"请把本机 Rustup 的下载地址切换到 Stacktory。
@@ -32,7 +31,6 @@ PowerShell（Windows）：
     GuideSection {
         id: "cargo",
         title: "Cargo",
-        status: "可用",
         summary: "通过 Sparse Registry 下载 crates.io 依赖。",
         target: Target::ServicePath("/mirror/cargo/group/"),
         prompt: r#"请把本机 Cargo 的 crates.io 源切换到 Stacktory。
@@ -63,7 +61,6 @@ registry = "sparse+{base_url}/mirror/cargo/group/""#,
     GuideSection {
         id: "npm",
         title: "npm",
-        status: "可用",
         summary: "通过 npm-compatible Registry 安装依赖。",
         target: Target::ServicePath("/mirror/npm/group/"),
         prompt: r#"请把本机 npm 的默认 registry 切换到 Stacktory。
@@ -94,7 +91,6 @@ registry={base_url}/mirror/npm/group/"
     GuideSection {
         id: "bun",
         title: "Bun",
-        status: "可用",
         summary: "通过 npm-compatible Registry 安装 Bun 依赖。",
         target: Target::ServicePath("/mirror/npm/group/"),
         prompt: r#"请把本机 Bun 的默认 registry 切换到 Stacktory。
@@ -123,7 +119,6 @@ registry = "{base_url}/mirror/npm/group/"
     GuideSection {
         id: "nuget",
         title: "NuGet",
-        status: "可用",
         summary: "通过 NuGet V3 只读入口还原包和执行只读查询。",
         target: Target::ServicePath("/mirror/nuget/group/v3/index.json"),
         prompt: r#"请把本机用户级 NuGet 配置的 Stacktory source 设置为只读源。
@@ -151,7 +146,6 @@ dotnet nuget list source"#,
     GuideSection {
         id: "upm",
         title: "UPM",
-        status: "需项目目录",
         summary: "在当前 Unity 项目中配置 Stacktory scoped registry。",
         target: Target::ServicePath("/mirror/upm/group"),
         prompt: r#"请把当前 Unity 项目的 UPM scoped registry 配置到 Stacktory。
@@ -187,7 +181,6 @@ dotnet nuget list source"#,
     GuideSection {
         id: "vscode",
         title: "VS Code",
-        status: "需安装目录",
         summary: "将 VS Code 扩展市场切换到 Stacktory。",
         target: Target::ServicePath("/mirror/vscode/group"),
         prompt: r#"请把本机 VS Code 的扩展市场切换到 Stacktory。
@@ -218,7 +211,6 @@ dotnet nuget list source"#,
     GuideSection {
         id: "docker",
         title: "Docker",
-        status: "需管理员",
         summary: "将 Docker 镜像源指向管理员提供的 Stacktory Group 地址。",
         target: Target::AdminProvided("Docker Group 地址由管理员提供"),
         prompt: r#"请把本机 Docker 配置为使用管理员提供的 Stacktory Docker Group 镜像地址。

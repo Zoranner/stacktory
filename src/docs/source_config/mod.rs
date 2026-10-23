@@ -13,7 +13,6 @@ pub(crate) fn section_by_id(id: &str) -> Option<&'static GuideSection> {
 pub(crate) struct GuideSection {
     pub(crate) id: &'static str,
     pub(crate) title: &'static str,
-    pub(crate) status: &'static str,
     pub(crate) summary: &'static str,
     pub(crate) target: Target,
     pub(crate) prompt: &'static str,
@@ -118,6 +117,19 @@ mod tests {
                 );
                 assert!(!rendered.contains("registry-1.docker.io"), "{}", section.id);
             }
+        }
+    }
+
+    #[test]
+    fn pages_do_not_render_status_badges() {
+        let index = render_index_html("https://pkg.example.test");
+        assert!(!index.contains("class=\"status\""));
+
+        for section in sections() {
+            let html = render_section_html(section, "https://pkg.example.test");
+            let markdown = render_section_markdown(section, "https://pkg.example.test");
+            assert!(!html.contains("class=\"status\""), "{}", section.id);
+            assert!(!markdown.contains("状态："), "{}", section.id);
         }
     }
 }

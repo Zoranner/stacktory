@@ -124,7 +124,7 @@ GET /docs/{stack}/index.md
 
 - 使用系统字体和中性背景，蓝绿色作为主操作色。
 - 代码块使用等宽字体、浅色底和可横向滚动。
-- 卡片边界清晰，状态标签使用“可用”“需项目目录”“需管理员”等文字。
+- 卡片边界清晰，不使用没有信息量的状态标签。
 - 焦点样式清晰，复制按钮可键盘操作，颜色对比满足可读性。
 - 不加载网络资源，避免离线或内网环境出现布局缺失。
 
@@ -136,7 +136,6 @@ GET /docs/{stack}/index.md
 pub(crate) struct GuideSection {
     pub(crate) id: &'static str,
     pub(crate) title: &'static str,
-    pub(crate) status: &'static str,
     pub(crate) summary: &'static str,
     pub(crate) target: Target,
     pub(crate) prompt: &'static str,

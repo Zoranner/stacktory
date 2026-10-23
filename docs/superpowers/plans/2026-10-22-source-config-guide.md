@@ -130,7 +130,6 @@ pub(crate) fn section_by_id(id: &str) -> Option<&'static GuideSection> {
 pub(crate) struct GuideSection {
     pub(crate) id: &'static str,
     pub(crate) title: &'static str,
-    pub(crate) status: &'static str,
     pub(crate) summary: &'static str,
     pub(crate) target: Target,
     pub(crate) prompt: &'static str,
@@ -195,7 +194,6 @@ pub(crate) fn render_index_markdown(base_url: &str) -> String {
 pub(crate) fn render_section_markdown(section: &GuideSection, base_url: &str) -> String {
     let mut out = format!("# Stacktory | 使用说明 | {}\n\n", section.title);
     out.push_str(&format!("{}\n\n", section.summary));
-    out.push_str(&format!("状态：{}\n\n", section.status));
     out.push_str(&format!("入口：`{}`\n\n", target_text(&section.target, base_url)));
     out.push_str("## 给智能体的提示词\n\n```text\n");
     out.push_str(&section.prompt.replace("{base_url}", base_url));
@@ -390,7 +388,6 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: system
 .guide-card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 24px; margin-bottom: 20px; }
 pre { overflow-x: auto; padding: 16px; background: #f0f4f5; border-radius: 8px; }
 code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
-.status { color: var(--warning); font-size: 13px; }
 button { cursor: pointer; border: 1px solid var(--accent); color: var(--accent-strong); background: transparent; border-radius: 6px; padding: 6px 10px; }
 button:focus-visible { outline: 3px solid rgba(8, 127, 140, .35); outline-offset: 2px; }
 @media (max-width: 820px) {
