@@ -71,13 +71,56 @@ async fn landing_page_links_to_docs_and_serves_its_assets() {
     assert!(html.contains("https://pkg.rd.kim"));
     assert!(html.contains("href=\"/theme.css\""));
     assert!(html.contains("href=\"/index.css\""));
-    assert!(html.contains("src=\"/vendor/three.min.js\""));
+    assert!(html.contains("\"three\": \"/vendor/three.module.js\""));
+    assert!(html.contains("\"three/addons/\": \"/vendor/three-addons/\""));
+    assert!(html.contains("type=\"module\" src=\"/index.js\""));
 
     for (path, content_type) in [
         ("/theme.css", "text/css; charset=utf-8"),
         ("/index.css", "text/css; charset=utf-8"),
         ("/index.js", "text/javascript; charset=utf-8"),
         ("/vendor/three.min.js", "text/javascript; charset=utf-8"),
+        ("/vendor/three.module.js", "text/javascript; charset=utf-8"),
+        (
+            "/vendor/three-addons/postprocessing/EffectComposer.js",
+            "text/javascript; charset=utf-8",
+        ),
+        (
+            "/vendor/three-addons/postprocessing/RenderPass.js",
+            "text/javascript; charset=utf-8",
+        ),
+        (
+            "/vendor/three-addons/postprocessing/UnrealBloomPass.js",
+            "text/javascript; charset=utf-8",
+        ),
+        (
+            "/vendor/three-addons/postprocessing/OutputPass.js",
+            "text/javascript; charset=utf-8",
+        ),
+        (
+            "/vendor/three-addons/postprocessing/Pass.js",
+            "text/javascript; charset=utf-8",
+        ),
+        (
+            "/vendor/three-addons/postprocessing/ShaderPass.js",
+            "text/javascript; charset=utf-8",
+        ),
+        (
+            "/vendor/three-addons/postprocessing/MaskPass.js",
+            "text/javascript; charset=utf-8",
+        ),
+        (
+            "/vendor/three-addons/shaders/CopyShader.js",
+            "text/javascript; charset=utf-8",
+        ),
+        (
+            "/vendor/three-addons/shaders/LuminosityHighPassShader.js",
+            "text/javascript; charset=utf-8",
+        ),
+        (
+            "/vendor/three-addons/shaders/OutputShader.js",
+            "text/javascript; charset=utf-8",
+        ),
     ] {
         let response = router
             .clone()

@@ -40,7 +40,14 @@
     </section>
   </main>
 
-  <script src="{{THREE}}"></script>
-  <script src="{{JS}}"></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "{{THREE}}",
+        "three/addons/": "{{THREE_ADDONS}}"
+      }
+    }
+  </script>
+  <script type="module" src="{{JS}}"></script>
 </body>
 </html>

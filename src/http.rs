@@ -27,9 +27,55 @@ const LANDING_HTML: &str = include_str!("../web/index.html");
 const LANDING_CSS: &str = include_str!("../web/index.css");
 const LANDING_JS: &str = include_str!("../web/index.js");
 const THEME_CSS: &str = include_str!("../web/theme.css");
-const THREE_JS: &str = include_str!("../web/vendor/three.min.js");
 const DOCS_CSS: &str = include_str!("../web/docs/index.css");
 const DOCS_JS: &str = include_str!("../web/docs/index.js");
+const VENDOR_MODULES: &[(&str, &str)] = &[
+    ("three.min.js", include_str!("../web/vendor/three.min.js")),
+    (
+        "three.module.js",
+        include_str!("../web/vendor/three.module.js"),
+    ),
+    (
+        "three-addons/postprocessing/EffectComposer.js",
+        include_str!("../web/vendor/three-addons/postprocessing/EffectComposer.js"),
+    ),
+    (
+        "three-addons/postprocessing/RenderPass.js",
+        include_str!("../web/vendor/three-addons/postprocessing/RenderPass.js"),
+    ),
+    (
+        "three-addons/postprocessing/UnrealBloomPass.js",
+        include_str!("../web/vendor/three-addons/postprocessing/UnrealBloomPass.js"),
+    ),
+    (
+        "three-addons/postprocessing/OutputPass.js",
+        include_str!("../web/vendor/three-addons/postprocessing/OutputPass.js"),
+    ),
+    (
+        "three-addons/postprocessing/Pass.js",
+        include_str!("../web/vendor/three-addons/postprocessing/Pass.js"),
+    ),
+    (
+        "three-addons/postprocessing/ShaderPass.js",
+        include_str!("../web/vendor/three-addons/postprocessing/ShaderPass.js"),
+    ),
+    (
+        "three-addons/postprocessing/MaskPass.js",
+        include_str!("../web/vendor/three-addons/postprocessing/MaskPass.js"),
+    ),
+    (
+        "three-addons/shaders/CopyShader.js",
+        include_str!("../web/vendor/three-addons/shaders/CopyShader.js"),
+    ),
+    (
+        "three-addons/shaders/LuminosityHighPassShader.js",
+        include_str!("../web/vendor/three-addons/shaders/LuminosityHighPassShader.js"),
+    ),
+    (
+        "three-addons/shaders/OutputShader.js",
+        include_str!("../web/vendor/three-addons/shaders/OutputShader.js"),
+    ),
+];
 
 pub fn router() -> Router {
     Router::new().route("/healthz", get(health))
@@ -43,7 +89,7 @@ pub fn router_with_rustup(service: Arc<RustupService>) -> Router {
         .route("/theme.css", get(theme_css))
         .route("/index.css", get(landing_css))
         .route("/index.js", get(landing_js))
-        .route("/vendor/three.min.js", get(three_js))
+        .route("/vendor/{*path}", get(vendor_module))
         .route("/docs", get(source_config_index_page))
         .route("/docs.md", get(source_config_index_markdown))
         .route("/docs/index.css", get(docs_css))
@@ -135,7 +181,8 @@ async fn landing_page(
     let css = site_href(&base_url, "/index.css");
     let theme = site_href(&base_url, "/theme.css");
     let js = site_href(&base_url, "/index.js");
-    let three = site_href(&base_url, "/vendor/three.min.js");
+    let three = site_href(&base_url, "/vendor/three.module.js");
+    let three_addons = site_href(&base_url, "/vendor/three-addons/");
     let html = LANDING_HTML
         .replace("{{HOME}}", &home)
         .replace("{{DOCS}}", &docs)
@@ -143,6 +190,7 @@ async fn landing_page(
         .replace("{{THEME}}", &theme)
         .replace("{{JS}}", &js)
         .replace("{{THREE}}", &three)
+        .replace("{{THREE_ADDONS}}", &three_addons)
         .replace("{{SERVICE_URL}}", base_url.as_str());
     html_response(html)
 }
@@ -159,8 +207,14 @@ async fn landing_js() -> axum::response::Response {
     asset_response("text/javascript; charset=utf-8", LANDING_JS)
 }
 
-async fn three_js() -> axum::response::Response {
-    asset_response("text/javascript; charset=utf-8", THREE_JS)
+async fn vendor_module(Path(path): Path<String>) -> axum::response::Response {
+    let Some((_, body)) = VENDOR_MODULES
+        .iter()
+        .find(|(name, _)| *name == path.as_str())
+    else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    asset_response("text/javascript; charset=utf-8", body)
 }
 
 async fn docs_css() -> axum::response::Response {
