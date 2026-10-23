@@ -334,7 +334,7 @@ fn deployment_config_matches_the_runtime_schema() {
         config.storage.data_dir,
         std::path::PathBuf::from("/app/data")
     );
-    assert_eq!(config.server.port, 18761);
+    assert_eq!(config.server.port, 18000);
     assert_eq!(
         config
             .docker

@@ -1,7 +1,7 @@
 # 进程级监听端点和客户端可见地址。
 [server]
 address = "0.0.0.0"
-port = 18761
+port = 18000
 # 经反向代理发布时，这里的端口可以与监听端口不同。
 public_url = "https://stacktory.example.internal"
 

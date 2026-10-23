@@ -74,10 +74,10 @@ docker compose -f deploy/docker-compose.yml up -d
 `deploy/app/logs` 必须对该用户可写。`deploy/app/config.toml` 中的
 `storage.data_dir`、`storage.log_dir` 应分别保持为 `/app/data`、`/app/logs`。
 
-compose 默认发布主服务端口 `18761` 和 Docker `group` 入口的 `19000`。如果需要为其他
+compose 默认发布主服务端口 `18000` 和 Docker `group` 入口的 `19000`。如果需要为其他
 Docker source 开放标准 CLI 端口，在 `deploy/app/config.toml` 中设置对应
 `cli_listen_port`，并在 `deploy/docker-compose.yml` 中增加相同的端口映射。
-compose 会通过容器内 `127.0.0.1:18761` 的 TCP 连接检查服务是否在监听。
+compose 会通过容器内 `127.0.0.1:18000` 的 TCP 连接检查服务是否在监听。
 需要区分存活和就绪时，`/healthz` 只报告进程可响应，`/readyz` 会检查数据目录和
 日志目录可写；就绪检查失败返回 `503`。
 
