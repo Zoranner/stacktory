@@ -15,6 +15,9 @@ Stacktory 为公司内网开发机提供统一的工具链和软件包下载入�
 | PyPI 包 | 暂不可用 | 请勿配置 pip |
 | NuGet 包 | 只读 restore、查询和漏洞数据可用 | 配置 NuGet source 指向 `/mirror/nuget/{name}/v3/index.json` |
 
+示例配置默认启用 Rustup、Docker 和 npm；Cargo、NuGet、UPM、VS Code 需要按同样的
+来源结构增加对应生态段，未配置的生态不会注册路由。
+
 ## 开始使用
 
 打开 [Stacktory | 文档](https://pkg.rd.kim/docs)。

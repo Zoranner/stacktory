@@ -15,6 +15,6 @@ WORKDIR /app
 COPY --from=builder /app/target/release/stacktory ./stacktory
 RUN mkdir -p /app/data /app/logs && chown stacktory:stacktory /app/data /app/logs
 
-EXPOSE 18761
+EXPOSE 18000
 USER stacktory
 CMD ["./stacktory"]

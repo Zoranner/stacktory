@@ -1,6 +1,6 @@
 [package]
 name = "stacktory"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 # 当前发布和门禁使用的工具链；降低前需要先用目标版本跑完整测试。
 rust-version = "1.98"
