@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#020305">
+  <meta name="description" content="Stacktory 提供内部制品镜像、工具链下载与客户端源配置。">
+  <title>Stacktory</title>
+  <link rel="stylesheet" href="{{CSS}}">
+</head>
+<body class="landing-page">
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
+  <div class="space" aria-hidden="true">
+    <canvas id="blackhole-canvas" class="space__canvas"></canvas>
+  </div>
+
+  <header class="site-header">
+    <a class="brand" href="{{HOME}}" aria-label="Stacktory 首页">
+      <span class="brand__mark" aria-hidden="true">S</span>
+      <span class="brand__name">Stacktory</span>
+    </a>
+    <span class="site-service">{{SERVICE_URL}}</span>
+  </header>
+
+  <main id="main" class="landing-main">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero__copy">
+        <h1 id="hero-title">
+          <span class="hero__line hero__line--primary">技术制品镜像</span>
+          <span class="hero__line hero__line--accent">汇聚于此</span>
+        </h1>
+        <p class="hero__lede">制品镜像、工具链下载与客户端源配置。</p>
+        <a class="hero__action" href="{{DOCS}}">
+          <span>查看使用说明</span>
+          <span class="hero__arrow" aria-hidden="true">→</span>
+        </a>
+      </div>
+    </section>
+  </main>
+
+  <script src="{{THREE}}"></script>
+  <script src="{{JS}}"></script>
+</body>
+</html>
