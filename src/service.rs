@@ -48,6 +48,10 @@ pub enum ServiceError {
 }
 
 impl RustupService {
+    pub fn public_url(&self) -> &url::Url {
+        &self.root_url
+    }
+
     pub fn new(config: Config) -> Result<Self, ServiceError> {
         Self::new_with_artifact_budget(config, ArtifactBudget::default())
     }
