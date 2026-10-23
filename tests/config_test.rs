@@ -354,39 +354,9 @@ fn deployment_config_matches_the_runtime_schema() {
             .as_str(),
         "https://docker.example.internal:19000/"
     );
-    assert_eq!(
-        config
-            .cargo
-            .as_ref()
-            .expect("cargo configuration")
-            .sources
-            .get("official")
-            .expect("cargo official source")
-            .source_type,
-        stacktory::SourceType::Proxy
-    );
-    assert_eq!(
-        config
-            .cargo
-            .as_ref()
-            .expect("cargo configuration")
-            .sources
-            .get("official")
-            .expect("cargo official source")
-            .base_url
-            .as_ref()
-            .expect("cargo official source URL")
-            .as_str(),
-        "https://index.crates.io/"
-    );
-    assert_source_names(
-        &config.rustup.sources,
-        &["aliyun", "group", "official", "tsinghua"],
-    );
-    assert_source_names(
-        &config.cargo.as_ref().expect("cargo configuration").sources,
-        &["group", "official", "ustc"],
-    );
+    assert_eq!(config.upstream.metadata_timeout_secs, 30);
+    assert_eq!(config.upstream.artifact_timeout_secs, 600);
+    assert_source_names(&config.rustup.sources, &["group", "official", "tsinghua"]);
 }
 
 #[test]
@@ -395,51 +365,16 @@ fn deployment_config_retains_all_configured_ecosystem_source_graphs() {
 
     assert_source_names(
         &config.docker.expect("docker configuration").sources,
-        &[
-            "aliyun",
-            "ghcr",
-            "group",
-            "microsoft",
-            "official",
-            "quay",
-            "unstructured",
-            "xuanyuan",
-        ],
+        &["dockerproxy", "ghcr", "ghcr-nju", "group", "official"],
     );
     assert_source_names(
         &config.npm.expect("npm configuration").sources,
-        &["binary", "group", "huawei", "npmjs", "npmmirror"],
+        &["group", "npmmirror", "official"],
     );
-    assert_source_names(
-        &config.nuget.expect("nuget configuration").sources,
-        &["group", "official"],
-    );
-    assert_source_names(
-        &config.upm.expect("upm configuration").sources,
-        &["cesium", "group", "openupm", "unity"],
-    );
-    assert_source_names(
-        &config
-            .vscode
-            .as_ref()
-            .expect("vscode configuration")
-            .sources,
-        &["group", "official"],
-    );
-    assert_eq!(
-        config
-            .vscode
-            .as_ref()
-            .expect("vscode configuration")
-            .sources
-            .get("official")
-            .expect("vscode official source")
-            .base_url
-            .as_ref()
-            .expect("vscode official source URL")
-            .as_str(),
-        "https://marketplace.visualstudio.com/_apis/public/gallery"
-    );
+    assert!(config.cargo.is_none());
+    assert!(config.nuget.is_none());
+    assert!(config.upm.is_none());
+    assert!(config.vscode.is_none());
 }
 
 #[test]
