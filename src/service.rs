@@ -9,6 +9,7 @@ use thiserror::Error;
 use crate::{
     Config,
     audit::{AuditDetails, AuditSink},
+    docs::source_config::SourceCatalog,
     locks::ShardedLocks,
     rustup::{DistPath, ManifestPolicy, RustupError, rewrite_manifest},
     sources::{
@@ -23,6 +24,7 @@ pub struct RustupService {
     channels: Vec<String>,
     refresh_interval_secs: u64,
     root_url: url::Url,
+    docs_catalog: SourceCatalog,
     sources: SourcePool,
     snapshots: SnapshotStore,
     cache: ArtifactCache,
@@ -52,6 +54,10 @@ impl RustupService {
         &self.root_url
     }
 
+    pub(crate) fn docs_catalog(&self) -> &SourceCatalog {
+        &self.docs_catalog
+    }
+
     pub fn new(config: Config) -> Result<Self, ServiceError> {
         Self::new_with_artifact_budget(config, ArtifactBudget::default())
     }
@@ -60,6 +66,7 @@ impl RustupService {
         config: Config,
         artifact_budget: ArtifactBudget,
     ) -> Result<Self, ServiceError> {
+        let docs_catalog = SourceCatalog::from_config(&config);
         let proxy_url = config.proxy.url.clone();
         let proxy_no_proxy = config.proxy.no_proxy.clone();
         let data_dir = config.storage.data_dir.clone();
@@ -76,6 +83,7 @@ impl RustupService {
             channels: config.rustup.channels,
             refresh_interval_secs: config.rustup.refresh_interval_secs,
             root_url: config.server.public_url,
+            docs_catalog,
             sources,
             snapshots: SnapshotStore::new(data_dir.clone()),
             cache: ArtifactCache::new(data_dir.clone()),

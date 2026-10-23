@@ -186,6 +186,15 @@ p {
   padding-top: 8px;
 }
 
+.nav-group-title {
+  padding: 14px 12px 6px;
+  color: var(--paper-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .stack-nav a {
   display: flex;
   align-items: center;
@@ -222,6 +231,18 @@ p {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 16px;
+}
+
+.stack-group + .stack-group {
+  margin-top: 30px;
+}
+
+.group-title {
+  margin-bottom: 12px;
+  color: var(--champagne);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
 
 .stack-card {
@@ -265,6 +286,14 @@ p {
   color: var(--paper-soft);
   font-size: 12px;
   line-height: 1.55;
+}
+
+.source-count {
+  margin-top: auto;
+  padding-top: 12px;
+  color: var(--paper-muted);
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .stack-path {
@@ -341,6 +370,88 @@ p {
   color: var(--champagne);
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+.source-panel {
+  margin-bottom: 30px;
+}
+
+.source-panel > h2 {
+  margin-bottom: 10px;
+  color: var(--paper-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.source-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+}
+
+.source-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.source-table th,
+.source-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.source-table th {
+  background: var(--surface);
+  color: var(--paper-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.source-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.source-table code {
+  color: var(--paper);
+}
+
+.source-type {
+  display: inline-block;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  color: var(--champagne);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.source-members {
+  min-width: 120px;
+  color: var(--paper-soft);
+  white-space: nowrap;
+}
+
+.source-endpoint {
+  color: var(--champagne);
+  overflow-wrap: anywhere;
+}
+
+.source-port {
+  color: var(--paper-muted);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.source-empty {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  color: var(--paper-muted);
+  font-size: 12px;
 }
 
 .content-panel {
@@ -565,6 +676,11 @@ p {
 
   .stack-grid {
     grid-template-columns: 1fr;
+  }
+
+  .source-table th,
+  .source-table td {
+    padding: 8px 10px;
   }
 
   .detail-title-row {

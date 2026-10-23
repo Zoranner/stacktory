@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::PathBuf,
     sync::{
@@ -16,8 +17,8 @@ use axum::{
 };
 use sha2::{Digest, Sha256};
 use stacktory::{
-    Config, ProxyConfig, RetentionConfig, RustupConfig, ServerConfig, SourceConfig, SourceGraph,
-    SourceType, StorageConfig,
+    Config, DockerConfig, EcosystemConfig, NugetConfig, ProxyConfig, RetentionConfig, RustupConfig,
+    ServerConfig, SourceConfig, SourceGraph, SourceType, StorageConfig, UpmConfig, VscodeConfig,
     http::{router, router_with_rustup},
     service::RustupService,
 };
@@ -1006,12 +1007,53 @@ fn rustup_service_with_public_url(
             sources: SourceGraph::new(vec![source("test", "http://127.0.0.1:1")])
                 .expect("source graph"),
         },
-        cargo: None,
-        vscode: None,
-        docker: None,
-        npm: None,
-        nuget: None,
-        upm: None,
+        cargo: Some(EcosystemConfig {
+            sources: SourceGraph::new(vec![
+                source("official", "https://index.crates.io"),
+                group("group", &["official"]),
+            ])
+            .expect("cargo sources"),
+        }),
+        vscode: Some(VscodeConfig {
+            sources: SourceGraph::new(vec![
+                source(
+                    "official",
+                    "https://marketplace.visualstudio.com/_apis/public/gallery",
+                ),
+                group("group", &["official"]),
+            ])
+            .expect("vscode sources"),
+        }),
+        docker: Some(DockerConfig {
+            sources: SourceGraph::new(vec![
+                source("official", "https://registry-1.docker.io"),
+                group("group", &["official"]),
+            ])
+            .expect("docker sources"),
+            cli_listen_ports: BTreeMap::from([("group".to_owned(), 19000)]),
+        }),
+        npm: Some(EcosystemConfig {
+            sources: SourceGraph::new(vec![
+                source("npmjs", "https://registry.npmjs.org"),
+                group("group", &["npmjs"]),
+            ])
+            .expect("npm sources"),
+        }),
+        nuget: Some(NugetConfig {
+            sources: SourceGraph::new(vec![
+                source("official", "https://api.nuget.org/v3/index.json"),
+                group("group", &["official"]),
+            ])
+            .expect("nuget sources"),
+        }),
+        upm: Some(UpmConfig {
+            sources: SourceGraph::new(vec![
+                source("unity", "https://packages.unity.com"),
+                source("openupm", "https://package.openupm.com"),
+                group("group", &["unity", "openupm"]),
+            ])
+            .expect("upm sources"),
+        }),
     })
     .expect("service")
 }

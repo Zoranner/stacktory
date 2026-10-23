@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn serve() -> Result<(), Box<dyn std::error::Error>> {
-    let mut config = read_config()?;
+    let config = read_config()?;
     let (log_file, rotated_log) =
         logging::init(config.storage.log_dir.clone(), std::time::SystemTime::now())?;
     if record_public_url(&config.storage.data_dir, config.server.public_url.as_str())? {
@@ -46,7 +46,7 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let mut docker_listeners = Vec::new();
     let artifact_budget = ArtifactBudget::default();
     let registry =
-        configured_registry_with_budget(&mut config, &mut docker_listeners, &artifact_budget)?;
+        configured_registry_with_budget(&config, &mut docker_listeners, &artifact_budget)?;
     let listener = TcpListener::bind((config.server.address, config.server.port)).await?;
     retention::spawn(
         config.storage.data_dir.clone(),
@@ -235,7 +235,7 @@ struct DockerListener {
 
 #[cfg(test)]
 fn configured_registry(
-    config: &mut Config,
+    config: &Config,
     docker_listeners: &mut Vec<DockerListener>,
 ) -> Result<AdapterRegistry, Box<dyn std::error::Error>> {
     let artifact_budget = ArtifactBudget::default();
@@ -243,14 +243,14 @@ fn configured_registry(
 }
 
 fn configured_registry_with_budget(
-    config: &mut Config,
+    config: &Config,
     docker_listeners: &mut Vec<DockerListener>,
     artifact_budget: &ArtifactBudget,
 ) -> Result<AdapterRegistry, Box<dyn std::error::Error>> {
     let mut registry = AdapterRegistry::new();
     let proxy_url = config.proxy.url.clone();
     let proxy_no_proxy = config.proxy.no_proxy.clone();
-    if let Some(cargo) = config.cargo.take() {
+    if let Some(cargo) = config.cargo.clone() {
         registry.register(
             "cargo",
             Arc::new(
@@ -268,7 +268,7 @@ fn configured_registry_with_budget(
             )),
         )?;
     }
-    if let Some(npm) = config.npm.take() {
+    if let Some(npm) = config.npm.clone() {
         registry.register(
             "npm",
             Arc::new(
@@ -286,7 +286,7 @@ fn configured_registry_with_budget(
             )),
         )?;
     }
-    if let Some(nuget) = config.nuget.take() {
+    if let Some(nuget) = config.nuget.clone() {
         registry.register(
             "nuget",
             Arc::new(
@@ -304,7 +304,7 @@ fn configured_registry_with_budget(
             )),
         )?;
     }
-    if let Some(upm) = config.upm.take() {
+    if let Some(upm) = config.upm.clone() {
         registry.register(
             "upm",
             Arc::new(
@@ -322,7 +322,7 @@ fn configured_registry_with_budget(
             )),
         )?;
     }
-    if let Some(vscode) = config.vscode.take() {
+    if let Some(vscode) = config.vscode.clone() {
         registry.register(
             "vscode",
             Arc::new(
@@ -340,7 +340,7 @@ fn configured_registry_with_budget(
             )),
         )?;
     }
-    if let Some(docker) = config.docker.take() {
+    if let Some(docker) = config.docker.clone() {
         docker_listeners.extend(docker.cli_listen_ports.clone().into_iter().map(
             |(entry_name, port)| DockerListener {
                 address: config.server.address,
@@ -376,7 +376,7 @@ mod tests {
 
     #[tokio::test]
     async fn configured_npm_and_upm_are_registered_separately() {
-        let mut config = Config {
+        let config = Config {
             server: ServerConfig {
                 address: "127.0.0.1".parse::<IpAddr>().expect("address"),
                 port: 18761,
@@ -415,7 +415,7 @@ mod tests {
         };
 
         let mut docker_listeners = Vec::new();
-        let registry = super::configured_registry(&mut config, &mut docker_listeners)
+        let registry = super::configured_registry(&config, &mut docker_listeners)
             .expect("configured registry");
         let router = router_with_registry(registry);
         let npm_response = router

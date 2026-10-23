@@ -91,14 +91,14 @@ pub struct RustupConfig {
     pub sources: SourceGraph,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct EcosystemConfig {
     pub sources: SourceGraph,
 }
 
 pub type CargoConfig = EcosystemConfig;
 pub type VscodeConfig = EcosystemConfig;
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct DockerConfig {
     pub sources: SourceGraph,
     pub cli_listen_ports: BTreeMap<String, u16>,
@@ -138,7 +138,7 @@ impl SourceConfig {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct SourceGraph {
     entries: BTreeMap<String, SourceConfig>,
 }
@@ -241,6 +241,10 @@ impl SourceGraph {
 
     pub fn get(&self, name: &str) -> Option<&SourceConfig> {
         self.entries.get(name)
+    }
+
+    pub fn entries(&self) -> impl Iterator<Item = &SourceConfig> {
+        self.entries.values()
     }
 
     pub fn proxy_members(&self, name: &str) -> Option<Vec<&SourceConfig>> {

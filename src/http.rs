@@ -170,6 +170,7 @@ async fn source_config_index_page(
     let base_url = public_base_url_for_request(&headers, service.public_url());
     html_response(crate::docs::source_config::render_index_html(
         base_url.as_str(),
+        service.docs_catalog(),
     ))
 }
 
@@ -185,6 +186,7 @@ async fn source_config_section_page(
     html_response(crate::docs::source_config::render_section_html(
         section,
         base_url.as_str(),
+        service.docs_catalog(),
     ))
 }
 
@@ -195,7 +197,10 @@ async fn source_config_index_markdown(
     let base_url = public_base_url_for_request(&headers, service.public_url());
     text_response(
         "text/markdown; charset=utf-8",
-        crate::docs::source_config::render_index_markdown(base_url.as_str()),
+        crate::docs::source_config::render_index_markdown(
+            base_url.as_str(),
+            service.docs_catalog(),
+        ),
     )
 }
 
@@ -210,7 +215,11 @@ async fn source_config_section_markdown(
     let base_url = public_base_url_for_request(&headers, service.public_url());
     text_response(
         "text/markdown; charset=utf-8",
-        crate::docs::source_config::render_section_markdown(section, base_url.as_str()),
+        crate::docs::source_config::render_section_markdown(
+            section,
+            base_url.as_str(),
+            service.docs_catalog(),
+        ),
     )
 }
 
