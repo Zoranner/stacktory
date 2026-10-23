@@ -35,7 +35,6 @@
 
   --radius: 2px;
   --docs-content: 820px;
-  --docs-index: 920px;
   --docs-sidebar: 196px;
   --docs-gap: 48px;
   --docs-gutter: clamp(20px, 4vw, 52px);

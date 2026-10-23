@@ -1,14 +1,11 @@
 mod catalog;
 mod content;
-mod overview;
 mod render;
 
 pub(crate) use catalog::{SourceCatalog, SourceEntry};
 pub(crate) use content::sections;
-pub(crate) use overview::{GUIDE_ID, overview};
 pub(crate) use render::{
-    render_guide_html, render_guide_markdown, render_index_html, render_index_markdown,
-    render_section_html, render_section_markdown,
+    render_index_html, render_index_markdown, render_section_html, render_section_markdown,
 };
 
 pub(crate) fn section_by_id(id: &str) -> Option<&'static GuideSection> {
@@ -31,9 +28,8 @@ pub(crate) struct GuideSection {
 #[cfg(test)]
 mod tests {
     use super::{
-        SourceCatalog, render_guide_html, render_guide_markdown, render_index_html,
-        render_index_markdown, render_section_html, render_section_markdown, section_by_id,
-        sections,
+        SourceCatalog, render_index_html, render_index_markdown, render_section_html,
+        render_section_markdown, section_by_id, sections,
     };
 
     #[test]
@@ -46,9 +42,9 @@ mod tests {
             assert!(markdown.contains(&format!("[{title}]")), "missing {title}");
         }
         assert!(markdown.starts_with("# Stacktory | 文档"));
-        assert!(markdown.contains("[使用说明](/docs/guide/index.md)"));
         assert!(markdown.contains("## Rust"));
         assert!(markdown.contains("## Node.js"));
+        assert!(!markdown.contains("使用说明"));
         assert!(!markdown.contains("{base_url}"));
         assert!(!markdown.contains("api.nuget.org"));
         assert_eq!(sections().len(), 8);
@@ -88,11 +84,12 @@ mod tests {
         assert!(html.contains("lang=\"zh-CN\""));
         assert!(html.contains("<title>Stacktory | 文档</title>"));
         assert!(html.contains("class=\"docs-main\""));
-        assert!(html.contains("href=\"/docs/guide\""));
-        assert!(html.contains(">使用说明</span>"));
         assert!(!html.contains("个客户端"));
         assert!(html.contains("href=\"/docs/cargo\""));
-        assert!(html.contains(">Node.js</h2>"));
+        assert!(html.contains(">技术栈</h2>"));
+        assert!(html.contains("class=\"doc-card\""));
+        assert!(!html.contains("使用说明"));
+        assert!(!html.contains("docs-nav-link\" href=\"/docs/guide\""));
         assert!(html.contains("href=\"/theme.css\""));
         assert!(html.contains("href=\"/docs/index.css\""));
         assert!(html.contains("src=\"/docs/index.js\""));
@@ -127,23 +124,6 @@ mod tests {
         assert!(html.contains("aria-controls=\"panel-manual\""));
         assert!(html.contains("<noscript>"));
         assert!(!html.contains("{base_url}"));
-    }
-
-    #[test]
-    fn guide_page_uses_the_shared_document_shell() {
-        let html = render_guide_html("https://pkg.example.test");
-        let markdown = render_guide_markdown("https://pkg.example.test");
-
-        assert!(html.contains("<title>Stacktory | 文档 | 使用说明</title>"));
-        assert!(html.contains("<a href=\"/docs\">文档</a>"));
-        assert!(html.contains("配置前"));
-        assert!(html.contains("配置后"));
-        assert!(html.contains("docs-nav-link\" href=\"/docs/guide\" aria-current=\"page\""));
-        assert!(!html.contains("{base_url}"));
-
-        assert!(markdown.starts_with("# Stacktory | 文档 | 使用说明"));
-        assert!(markdown.contains("## 配置前"));
-        assert!(markdown.contains("## 配置后"));
     }
 
     #[test]

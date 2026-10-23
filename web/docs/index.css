@@ -152,11 +152,6 @@ p {
   padding: var(--space-10) var(--docs-gutter) var(--space-16);
 }
 
-.docs-shell--index {
-  display: block;
-  width: min(var(--docs-index), 100%);
-}
-
 .sidebar {
   position: sticky;
   top: calc(68px + var(--space-6));
@@ -222,124 +217,54 @@ p {
   letter-spacing: 0.1em;
 }
 
-.docs-intro {
-  padding-bottom: var(--space-8);
-  border-bottom: 1px solid var(--line);
+.docs-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1px;
+  border: 1px solid var(--line-strong);
+  background: var(--line);
 }
 
-.docs-intro h1 {
-  margin-top: var(--space-2);
-  color: var(--paper);
-  font-size: var(--text-3xl);
-  font-weight: 700;
-  letter-spacing: -0.035em;
-  line-height: 1.15;
-}
-
-.docs-lede {
-  max-width: 56ch;
-  margin-top: var(--space-3);
-  color: var(--paper-soft);
-  font-size: var(--text-lg);
-}
-
-.docs-directory {
-  margin-top: var(--space-8);
-}
-
-.directory-list--guide {
-  margin-bottom: var(--space-10);
-}
-
-.directory-row--guide {
-  border-bottom-color: var(--line-strong);
-}
-
-.directory-group + .directory-group {
-  margin-top: var(--space-10);
-}
-
-.directory-group-header {
+.doc-card {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-4);
-  padding-bottom: var(--space-2);
-  border-bottom: 1px solid var(--line-strong);
-}
-
-.directory-group-header h2 {
-  color: var(--champagne);
-  font-size: var(--text-md);
-  font-weight: 600;
-}
-
-.directory-list {
-  display: flex;
+  min-height: 160px;
   flex-direction: column;
-}
-
-.directory-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-6);
-  padding: var(--space-4) var(--space-3);
-  border-bottom: 1px solid var(--line);
+  gap: var(--space-2);
+  padding: var(--space-4);
+  background: var(--ink);
   text-decoration: none;
   transition: background-color 120ms ease;
 }
 
-.directory-row:hover {
+.doc-card:hover {
   background: var(--surface);
 }
 
-.directory-copy {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  flex-direction: column;
-  gap: var(--space-1);
+.doc-card-group {
+  color: var(--champagne);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
 }
 
-.directory-name {
+.doc-card-title {
   color: var(--paper);
   font-size: var(--text-lg);
   font-weight: 600;
   line-height: 1.3;
 }
 
-.directory-summary {
+.doc-card-summary {
   color: var(--paper-soft);
   font-size: var(--text-md);
   line-height: 1.55;
 }
 
-.directory-side {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: var(--space-4);
-  padding-top: 2px;
-}
-
-.directory-meta {
+.doc-card-meta {
+  margin-top: auto;
   color: var(--paper-muted);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
-  white-space: nowrap;
-}
-
-.directory-arrow {
-  color: var(--paper-muted);
-  font-family: var(--font-mono);
-  font-size: var(--text-md);
-  transition: color 120ms ease, transform 120ms ease;
-}
-
-.directory-row:hover .directory-arrow {
-  color: var(--champagne);
-  transform: translateX(2px);
 }
 
 .breadcrumb {
@@ -384,23 +309,6 @@ p {
   margin-top: var(--space-3);
   color: var(--paper-soft);
   font-size: var(--text-lg);
-}
-
-.article-copy {
-  margin-top: var(--space-3);
-  color: var(--paper-soft);
-  font-size: var(--text-md);
-}
-
-.guide-list {
-  margin: var(--space-3) 0 0;
-  padding-left: var(--space-5);
-  color: var(--paper-soft);
-  font-size: var(--text-md);
-}
-
-.guide-list li + li {
-  margin-top: var(--space-1);
 }
 
 .article-section {
@@ -740,7 +648,7 @@ p {
 .copy-button:focus-visible,
 .brand:focus-visible,
 .breadcrumb a:focus-visible,
-.directory-row:focus-visible,
+.doc-card:focus-visible,
 .docs-nav-link:focus-visible,
 .entry-select:focus-visible {
   outline: 2px solid var(--champagne);
@@ -802,27 +710,12 @@ p {
     border-left-color: transparent;
   }
 
-  .docs-intro h1,
   .article-header h1 {
     font-size: var(--text-2xl);
   }
 
-  .docs-lede,
   .article-summary {
     font-size: var(--text-base);
-  }
-
-  .directory-row {
-    gap: var(--space-3);
-    padding: var(--space-3) var(--space-2);
-  }
-
-  .directory-side {
-    gap: var(--space-2);
-  }
-
-  .directory-summary {
-    font-size: var(--text-sm);
   }
 
   .section-heading {

@@ -18,32 +18,29 @@
 
 ## 页面
 
-提供目录、使用说明和详情三类只读地址：
+提供目录和详情两类只读地址：
 
 ```text
 GET /docs
 GET /docs.md
-GET /docs/guide
-GET /docs/guide/index.md
 GET /docs/{stack}
 GET /docs/{stack}/index.md
 ```
 
-`/docs` 是文档目录；`/docs/guide` 是独立的通用使用说明页；`/docs/{stack}` 是单个
-技术栈的详情页。`/docs.md`、`/docs/guide/index.md` 和 `/docs/{stack}/index.md` 是
-同一份内容模型渲染出的 Markdown。所有地址共用结构化内容，不允许手工维护多份文案。
+`/docs` 是文档目录，页面第一个章节就是技术栈卡片目录；`/docs/{stack}` 是单个技术栈
+的详情页。`/docs.md` 和 `/docs/{stack}/index.md` 是同一份内容模型渲染出的 Markdown。
+所有地址共用结构化内容，不允许手工维护多份文案。
 
 浏览器标题规则：
 
 ```text
 /docs              Stacktory | 文档
-/docs/guide        Stacktory | 文档 | 使用说明
 /docs/rustup       Stacktory | 文档 | Rustup
 /docs/cargo        Stacktory | 文档 | Cargo
 ```
 
-页面头部固定显示 `Stacktory | 文档`；使用说明页和技术栈详情页在右侧追加当前页面标题。
-子标题来自当前页面内容，由服务端渲染，不能由客户端脚本猜测或硬编码。
+页面头部固定显示 `Stacktory | 文档`；技术栈详情页在右侧追加当前页面标题。子标题来自
+当前页面内容，由服务端渲染，不能由客户端脚本猜测或硬编码。
 未知 `stack` 返回 `404`。
 
 页面默认使用当前请求的 Host 和协议生成服务地址；如果没有请求 Host，则使用服务配置
@@ -55,12 +52,11 @@ GET /docs/{stack}/index.md
 页面由以下部分组成：
 
 - 页头：产品名、当前服务地址、页面说明和使用边界。
-- 目录：第一项是“使用说明”，其后按生态分组展示技术栈目录行。
-- 使用说明独立页面：先备份、只改目标配置、完成后验证、失败时停止。
+- 目录：`/docs` 的第一个章节就是技术栈卡片目录，不设置独立使用说明页。
 - 技术栈导航按生态分组：Rust（Rustup、Cargo）、Node.js（npm、Bun）、.NET（NuGet）、
   Unity（UPM）、VS Code、Docker；Node.js 后续可继续增加 pnpm、yarn，不改变页面结构。
-- 目录页先展示使用说明，再按生态分组展示工具目录行，包含简介、配置入口数量和详情链接。
-- 侧栏导航把“使用说明”放在最前，再按生态分组排列技术栈。
+- 目录卡片展示工具名、所属生态、简介和配置入口数量，点击进入详情页。
+- 侧栏按生态分组排列技术栈，不放入口无关的说明页。
 - 技术栈详情页包含当前入口选择、当前生态的全部入口、给智能体的提示词、手动步骤、
   验证命令和注意事项。
 - 页尾：配置失败时保留备份并报告；页面不执行本地命令。
@@ -141,15 +137,14 @@ Docker 的独立 Registry 入口用 `listen_port` 和 `public_url` 成对配置�
 
 - 使用系统字体和深色中性背景，暖金色作为强调色，与首页共用颜色、字体和间距令牌。
 - 代码块使用等宽字体、浅色底和可横向滚动。
-- 入口表和 Group 列表使用细分隔线，不使用没有信息量的状态标签或卡片网格。
+- 技术栈目录使用卡片网格；详情页入口表和 Group 列表使用细分隔线，不使用状态标签。
 - 焦点样式清晰，复制按钮可键盘操作，颜色对比满足可读性。
 - 不加载网络资源，避免离线或内网环境出现布局缺失。
 
 ## 技术设计
 
-新增 `src/docs/source_config/`，其中 `content.rs` 解析技术栈内容文件，`overview.rs`
-解析通用使用说明，`catalog.rs` 把运行时配置转换为文档入口，`render.rs` 只负责
-HTML/Markdown 输出：
+新增 `src/docs/source_config/`，其中 `content.rs` 解析技术栈内容文件，`catalog.rs`
+把运行时配置转换为文档入口，`render.rs` 只负责 HTML/Markdown 输出：
 
 ```rust
 pub(crate) struct GuideSection {
@@ -187,20 +182,17 @@ ecosystem: cargo
 
 新增工具只需增加内容文件并在 `content.rs` 的文件列表中登记；新增生态分组不需要改
 渲染器。页面模板和样式位于 `web/docs/index.html`、`web/docs/index.css`、`web/docs/index.js`。
-通用使用说明位于 `web/docs/content/guide.toml`，包含标题、摘要和按章节组织的条目。
 
 渲染函数：
 
 ```rust
 pub(crate) fn render_index_markdown(base_url: &str, catalog: &SourceCatalog) -> String;
-pub(crate) fn render_guide_markdown(base_url: &str) -> String;
 pub(crate) fn render_section_markdown(
     section: &GuideSection,
     base_url: &str,
     catalog: &SourceCatalog,
 ) -> String;
 pub(crate) fn render_index_html(base_url: &str, catalog: &SourceCatalog) -> String;
-pub(crate) fn render_guide_html(base_url: &str) -> String;
 pub(crate) fn render_section_html(
     section: &GuideSection,
     base_url: &str,
@@ -213,8 +205,8 @@ HTML 和 Markdown 渲染器只读取同一份内容模型，并且：
 - 对 HTML 文本、属性、提示词和 URL 使用 HTML 转义。
 - 对 `{base_url}` 做一次明确替换，渲染后检查页面中不存在该占位符。
 - Markdown 和 HTML 的标题、顺序、提示词和验证命令保持一致。
-- 目录页、使用说明页和技术栈详情页共享页面骨架、侧边导航和 CSS；非目录页的浏览器
-  标题追加当前页面标题。
+- 目录页和技术栈详情页共享页面骨架、侧边导航和 CSS；详情页的浏览器标题追加当前
+  技术栈标题。
 - `web/docs/index.js` 只切换标签和复制 `data-copy-target` 指向的文本，不使用 `innerHTML`。
 
 HTTP 路由放在主服务路由中：
@@ -222,8 +214,6 @@ HTTP 路由放在主服务路由中：
 ```text
 GET /docs
 GET /docs.md
-GET /docs/guide
-GET /docs/guide/index.md
 GET /docs/{stack}
 GET /docs/{stack}/index.md
 ```
@@ -233,21 +223,18 @@ Docker listener 不提供这些文档页面。页面不增加运行时配置；�
 ## 验收
 
 - `/docs` 返回 `200` 和 `text/html; charset=utf-8`，标题为 `Stacktory | 文档`。
-- `/docs` 的第一项是“使用说明”，其后是按生态分组的技术栈目录。
-- `/docs/guide` 返回 `200`，标题为 `Stacktory | 文档 | 使用说明`。
+- `/docs` 的第一个章节是技术栈卡片目录，不包含独立使用说明页。
 - `/docs/rustup` 返回 `200`，标题为 `Stacktory | 文档 | Rustup`。
 - `/docs/cargo` 返回 `200`，标题为 `Stacktory | 文档 | Cargo`。
 - `/docs/unknown` 返回 `404`。
 - `/docs.md` 返回 `200` 和 `text/markdown; charset=utf-8`。
-- `/docs/guide/index.md` 返回 `200` 和 `text/markdown; charset=utf-8`。
 - `/docs/rustup/index.md` 返回 `200` 和 `text/markdown; charset=utf-8`。
 - 页面包含全部可用技术栈，且每个技术栈详情页有可复制提示词。
 - npm 和 Bun 位于同一个 Node.js 分组，共用当前 npm 生态的入口列表。
 - 详情页列出当前生态配置的全部 Group/Proxy 入口、成员、地址和 Docker 客户端地址，
   不再只显示一个写死的 `group`。
 - Unity 页面的入口列表来自 UPM 配置，而不是单一的 `group` 字符串。
-- 用户修改 `web/docs/content/*.md` 或 `web/docs/content/guide.toml` 后，页面文案和
-  提示词随构建更新。
+- 用户修改 `web/docs/content/*.md` 后，页面文案和提示词随构建更新。
 - 通过 `pkg.rd.kim` 访问时，未替换的 `{base_url}` 不出现，地址指向 `pkg.rd.kim`。
 - 渲染结果中不出现未替换的 `{endpoint}`。
 - 页面不包含上游 URL、token、密码或本地缓存路径。

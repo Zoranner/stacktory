@@ -1,19 +1,12 @@
-use super::{GUIDE_ID, GuideSection, SourceCatalog, SourceEntry, overview};
+use super::{GuideSection, SourceCatalog, SourceEntry};
 use crate::SourceType;
 use url::Url;
 
 const PAGE_TEMPLATE: &str = include_str!("../../../web/docs/index.html");
 
 pub(crate) fn render_index_markdown(base_url: &str, catalog: &SourceCatalog) -> String {
-    let guide = overview();
     let mut output = String::from("# Stacktory | 文档\n\n");
     output.push_str("选择技术栈，查看当前服务提供的入口和配置步骤。\n\n");
-    output.push_str(&format!(
-        "- [{}]({})：{}\n\n",
-        guide.title,
-        site_href(base_url, "/docs/guide/index.md"),
-        guide.summary
-    ));
     let mut group: Option<&str> = None;
     for section in super::sections() {
         let group_title = section.group_title.as_str();
@@ -95,7 +88,7 @@ pub(crate) fn render_index_html(base_url: &str, catalog: &SourceCatalog) -> Stri
         base_url,
         None,
         None,
-        render_index_body(base_url, catalog),
+        render_directory_body(base_url, catalog),
     )
 }
 
@@ -113,74 +106,6 @@ pub(crate) fn render_section_html(
     )
 }
 
-pub(crate) fn render_guide_html(base_url: &str) -> String {
-    let page = overview();
-    let mut sections = String::new();
-    for section in &page.sections {
-        let mut body = String::new();
-        for paragraph in &section.paragraphs {
-            body.push_str(&format!(
-                r#"<p class="article-copy">{}</p>"#,
-                escape_html(paragraph)
-            ));
-        }
-        if !section.items.is_empty() {
-            body.push_str(r#"<ul class="guide-list">"#);
-            for item in &section.items {
-                body.push_str(&format!("<li>{}</li>", escape_html(item)));
-            }
-            body.push_str("</ul>");
-        }
-        sections.push_str(&format!(
-            r#"<section class="article-section"><div class="section-heading"><h2>{}</h2></div>{}</section>"#,
-            escape_html(&section.title),
-            body,
-        ));
-    }
-    let content = format!(
-        r#"<nav class="breadcrumb" aria-label="面包屑"><a href="{docs_home}">文档</a><span class="breadcrumb-separator" aria-hidden="true">/</span><span>{title}</span></nav>
-<header class="article-header">
-  <h1>{title}</h1>
-  <p class="article-summary">{summary}</p>
-</header>
-{sections}"#,
-        docs_home = escape_html(&site_href(base_url, "/docs")),
-        title = escape_html(&page.title),
-        summary = escape_html(&page.summary),
-        sections = sections,
-    );
-    render_page(
-        &format!("Stacktory | 文档 | {}", page.title),
-        base_url,
-        Some(GUIDE_ID),
-        Some(page.title.as_str()),
-        content,
-    )
-}
-
-pub(crate) fn render_guide_markdown(base_url: &str) -> String {
-    let page = overview();
-    let mut output = format!(
-        "# Stacktory | 文档 | {}\n\n{}\n\n",
-        page.title, page.summary
-    );
-    for section in &page.sections {
-        output.push_str(&format!("## {}\n\n", section.title));
-        for paragraph in &section.paragraphs {
-            output.push_str(paragraph);
-            output.push_str("\n\n");
-        }
-        for item in &section.items {
-            output.push_str(&format!("- {item}\n"));
-        }
-        output.push('\n');
-    }
-    output.push_str("页面地址：");
-    output.push_str(base_url);
-    output.push('\n');
-    output
-}
-
 fn render_page(
     title: &str,
     base_url: &str,
@@ -188,9 +113,7 @@ fn render_page(
     current_title: Option<&str>,
     content: String,
 ) -> String {
-    let nav = current_id
-        .map(|id| render_navigation(id, base_url))
-        .unwrap_or_default();
+    let nav = render_navigation(current_id.unwrap_or_default(), base_url);
     let header_suffix = current_title
         .map(|title| {
             format!(
@@ -199,17 +122,12 @@ fn render_page(
             )
         })
         .unwrap_or_default();
-    let layout_class = if current_id.is_some() {
-        "docs-shell"
-    } else {
-        "docs-shell docs-shell--index"
-    };
     PAGE_TEMPLATE
         .replace("{{TITLE}}", &escape_html(title))
         .replace("{{HOME}}", &escape_html(&site_href(base_url, "/")))
         .replace("{{SERVICE_URL}}", &escape_html(base_url))
         .replace("{{HEADER_SUFFIX}}", &header_suffix)
-        .replace("{{LAYOUT_CLASS}}", layout_class)
+        .replace("{{LAYOUT_CLASS}}", "docs-shell")
         .replace("{{NAV}}", &nav)
         .replace("{{CONTENT}}", &content)
         .replace(
@@ -227,16 +145,7 @@ fn render_page(
 }
 
 fn render_navigation(current_id: &str, base_url: &str) -> String {
-    let guide_current = if current_id == GUIDE_ID {
-        r#" aria-current="page""#
-    } else {
-        ""
-    };
-    let mut links = format!(
-        r#"<a class="docs-nav-link" href="{}"{}>使用说明</a>"#,
-        escape_html(&site_href(base_url, "/docs/guide")),
-        guide_current,
-    );
+    let mut links = String::new();
     let mut group: Option<&str> = None;
     for section in super::sections() {
         let group_title = section.group_title.as_str();
@@ -264,45 +173,30 @@ fn render_navigation(current_id: &str, base_url: &str) -> String {
     )
 }
 
-fn render_index_body(base_url: &str, catalog: &SourceCatalog) -> String {
-    let guide = overview();
-    let guide_row = format!(
-        r#"<div class="directory-list directory-list--guide"><a class="directory-row directory-row--guide" href="{href}"><span class="directory-copy"><span class="directory-name">{title}</span><span class="directory-summary">{summary}</span></span><span class="directory-side"><span class="directory-arrow" aria-hidden="true">→</span></span></a></div>"#,
-        href = escape_html(&site_href(base_url, "/docs/guide")),
-        title = escape_html(&guide.title),
-        summary = escape_html(&guide.summary),
-    );
-    let mut groups = String::new();
-    let mut grouped: Vec<(&str, Vec<&GuideSection>)> = Vec::new();
+fn render_directory_body(base_url: &str, catalog: &SourceCatalog) -> String {
+    let mut cards = String::new();
     for section in super::sections() {
-        match grouped.last_mut() {
-            Some((title, sections)) if *title == section.group_title => sections.push(section),
-            _ => grouped.push((section.group_title.as_str(), vec![section])),
-        }
-    }
-    for (group_title, sections) in grouped {
-        let mut rows = String::new();
-        for section in &sections {
-            let source_count = catalog.sources(&section.ecosystem).len();
-            rows.push_str(&format!(
-                r#"<a class="directory-row" href="{href}">
-  <span class="directory-copy"><span class="directory-name">{title}</span><span class="directory-summary">{summary}</span></span>
-  <span class="directory-side"><span class="directory-meta">{source_count} 个入口</span><span class="directory-arrow" aria-hidden="true">→</span></span>
+        let source_count = catalog.sources(&section.ecosystem).len();
+        cards.push_str(&format!(
+            r#"<a class="doc-card" href="{href}">
+  <span class="doc-card-group">{group_title}</span>
+  <span class="doc-card-title">{title}</span>
+  <span class="doc-card-summary">{summary}</span>
+  <span class="doc-card-meta">{source_count} 个入口</span>
 </a>"#,
-                href = escape_html(&site_href(base_url, &format!("/docs/{}", section.id))),
-                title = escape_html(&section.title),
-                summary = escape_html(&section.summary),
-                source_count = source_count,
-            ));
-        }
-        groups.push_str(&format!(
-            r#"<section class="directory-group"><header class="directory-group-header"><h2>{group_title}</h2></header><div class="directory-list">{rows}</div></section>"#,
-            group_title = escape_html(group_title),
-            rows = rows,
+            href = escape_html(&site_href(base_url, &format!("/docs/{}", section.id))),
+            group_title = escape_html(&section.group_title),
+            title = escape_html(&section.title),
+            summary = escape_html(&section.summary),
+            source_count = source_count,
         ));
     }
     format!(
-        r#"<header class="docs-intro"><h1>文档</h1><p class="docs-lede">选择技术栈，查看当前服务提供的入口和配置步骤。</p></header><div class="docs-directory">{guide_row}{groups}</div>"#
+        r#"<header class="article-header"><h1>文档</h1><p class="article-summary">选择技术栈，查看当前服务提供的入口和配置步骤。</p></header>
+<section class="article-section" aria-labelledby="stacks-title">
+  <div class="section-heading"><h2 id="stacks-title">技术栈</h2></div>
+  <div class="docs-card-grid">{cards}</div>
+</section>"#
     )
 }
 
