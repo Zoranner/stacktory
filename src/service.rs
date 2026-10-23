@@ -13,7 +13,7 @@ use crate::{
     locks::ShardedLocks,
     rustup::{DistPath, ManifestPolicy, RustupError, rewrite_manifest},
     sources::{
-        ArtifactBudget, FetchOperation, GroupRun, SourcePool, SourcePoolError,
+        ArtifactBudget, FetchOperation, FetchTimeouts, GroupRun, SourcePool, SourcePoolError,
         source_error_is_group_fallback, source_error_is_not_found,
     },
     storage::{ArtifactCache, ArtifactFile, SnapshotStore, StorageError, StoredSnapshot},
@@ -71,6 +71,10 @@ impl RustupService {
         let proxy_no_proxy = config.proxy.no_proxy.clone();
         let data_dir = config.storage.data_dir.clone();
         let log_dir = config.storage.log_dir.clone();
+        let fetch_timeouts = FetchTimeouts {
+            metadata: config.upstream.metadata_timeout(),
+            artifact: config.upstream.artifact_timeout(),
+        };
         cleanup_temporary_artifacts(&data_dir);
         let sources = SourcePool::new_with_proxy(
             "rustup",
@@ -78,7 +82,8 @@ impl RustupService {
             proxy_url.as_ref(),
             proxy_no_proxy.as_deref(),
         )?
-        .with_artifact_budget(artifact_budget);
+        .with_artifact_budget(artifact_budget)
+        .with_fetch_timeouts(fetch_timeouts);
         Ok(Self {
             channels: config.rustup.channels,
             refresh_interval_secs: config.rustup.refresh_interval_secs,

@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use stacktory::{
     Config, DockerConfig, DockerRegistryEndpoint, EcosystemConfig, NugetConfig, ProxyConfig,
     RetentionConfig, RustupConfig, ServerConfig, SourceConfig, SourceGraph, SourceType,
-    StorageConfig, UpmConfig, VscodeConfig,
+    StorageConfig, UpmConfig, UpstreamConfig, VscodeConfig,
     http::{router, router_with_rustup},
     service::RustupService,
 };
@@ -483,6 +483,7 @@ async fn rustup_direct_source_not_found_preserves_the_upstream_status() {
             log_dir: PathBuf::from("logs"),
         },
         proxy: ProxyConfig::default(),
+        upstream: UpstreamConfig::default(),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -571,6 +572,7 @@ async fn public_rustup_artifact_route_serves_only_a_verified_published_artifact(
             log_dir: PathBuf::from("logs"),
         },
         proxy: ProxyConfig::default(),
+        upstream: UpstreamConfig::default(),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -681,6 +683,7 @@ async fn rustup_group_route_serves_manifest() {
             log_dir: PathBuf::from("logs"),
         },
         proxy: ProxyConfig::default(),
+        upstream: UpstreamConfig::default(),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -802,6 +805,7 @@ async fn rustup_group_artifact_stays_with_the_manifest_source() {
             log_dir: PathBuf::from("logs"),
         },
         proxy: ProxyConfig::default(),
+        upstream: UpstreamConfig::default(),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -879,6 +883,7 @@ async fn rustup_proxy_route_serves_only_its_proxy() {
             log_dir: PathBuf::from("logs"),
         },
         proxy: ProxyConfig::default(),
+        upstream: UpstreamConfig::default(),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -925,6 +930,7 @@ async fn unknown_rustup_artifact_source_returns_not_found_before_snapshot_lookup
             log_dir: PathBuf::from("logs"),
         },
         proxy: ProxyConfig::default(),
+        upstream: UpstreamConfig::default(),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -1019,6 +1025,7 @@ async fn legacy_rustup_route_returns_not_found() {
             log_dir: PathBuf::from("logs"),
         },
         proxy: ProxyConfig::default(),
+        upstream: UpstreamConfig::default(),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -1080,6 +1087,7 @@ fn rustup_service_with_public_url(
         },
         storage: StorageConfig { data_dir, log_dir },
         proxy: ProxyConfig::default(),
+        upstream: UpstreamConfig::default(),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,

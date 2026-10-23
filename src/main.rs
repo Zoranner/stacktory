@@ -4,14 +4,14 @@ use stacktory::{
     Config, SourcePool,
     audit::AuditSink,
     cargo::CargoAdapter,
-    docker::register_adapter_with_proxy_and_budget,
+    docker::{DockerRegistrationOptions, register_adapter_with_options},
     http::{router_with_docker_entry, router_with_rustup_and_registry},
     logging,
     npm::NpmAdapter,
     nuget::NugetAdapter,
     retention,
     service::RustupService,
-    sources::{ArtifactBudget, registry::AdapterRegistry},
+    sources::{ArtifactBudget, FetchTimeouts, registry::AdapterRegistry},
     upm::UpmAdapter,
     vscode::VscodeAdapter,
 };
@@ -250,6 +250,10 @@ fn configured_registry_with_budget(
     let mut registry = AdapterRegistry::new();
     let proxy_url = config.proxy.url.clone();
     let proxy_no_proxy = config.proxy.no_proxy.clone();
+    let fetch_timeouts = FetchTimeouts {
+        metadata: config.upstream.metadata_timeout(),
+        artifact: config.upstream.artifact_timeout(),
+    };
     if let Some(cargo) = config.cargo.clone() {
         registry.register(
             "cargo",
@@ -260,7 +264,8 @@ fn configured_registry_with_budget(
                     proxy_url.as_ref(),
                     proxy_no_proxy.as_deref(),
                 )?
-                .with_artifact_budget(artifact_budget.clone()),
+                .with_artifact_budget(artifact_budget.clone())
+                .with_fetch_timeouts(fetch_timeouts),
             ),
             Arc::new(CargoAdapter::new(
                 config.server.public_url.clone(),
@@ -278,7 +283,8 @@ fn configured_registry_with_budget(
                     proxy_url.as_ref(),
                     proxy_no_proxy.as_deref(),
                 )?
-                .with_artifact_budget(artifact_budget.clone()),
+                .with_artifact_budget(artifact_budget.clone())
+                .with_fetch_timeouts(fetch_timeouts),
             ),
             Arc::new(NpmAdapter::new(
                 config.server.public_url.clone(),
@@ -296,7 +302,8 @@ fn configured_registry_with_budget(
                     proxy_url.as_ref(),
                     proxy_no_proxy.as_deref(),
                 )?
-                .with_artifact_budget(artifact_budget.clone()),
+                .with_artifact_budget(artifact_budget.clone())
+                .with_fetch_timeouts(fetch_timeouts),
             ),
             Arc::new(NugetAdapter::new(
                 config.server.public_url.clone(),
@@ -314,7 +321,8 @@ fn configured_registry_with_budget(
                     proxy_url.as_ref(),
                     proxy_no_proxy.as_deref(),
                 )?
-                .with_artifact_budget(artifact_budget.clone()),
+                .with_artifact_budget(artifact_budget.clone())
+                .with_fetch_timeouts(fetch_timeouts),
             ),
             Arc::new(UpmAdapter::new(
                 config.server.public_url.clone(),
@@ -332,7 +340,8 @@ fn configured_registry_with_budget(
                     proxy_url.as_ref(),
                     proxy_no_proxy.as_deref(),
                 )?
-                .with_artifact_budget(artifact_budget.clone()),
+                .with_artifact_budget(artifact_budget.clone())
+                .with_fetch_timeouts(fetch_timeouts),
             ),
             Arc::new(VscodeAdapter::new(
                 config.server.public_url.clone(),
@@ -348,14 +357,17 @@ fn configured_registry_with_budget(
                 entry_name,
             },
         ));
-        register_adapter_with_proxy_and_budget(
+        register_adapter_with_options(
             &mut registry,
             docker,
             config.server.public_url.clone(),
             config.storage.data_dir.clone(),
-            proxy_url.as_ref(),
-            proxy_no_proxy.as_deref(),
-            artifact_budget,
+            DockerRegistrationOptions {
+                proxy_url: proxy_url.as_ref(),
+                proxy_no_proxy: proxy_no_proxy.as_deref(),
+                fetch_timeouts,
+                artifact_budget,
+            },
         )?;
     }
     Ok(registry)
@@ -369,7 +381,7 @@ mod tests {
     use stacktory::{
         Config, EcosystemConfig, NugetConfig, ProxyConfig, RetentionConfig, RustupConfig,
         ServerConfig, SourceConfig, SourceGraph, SourceType, StorageConfig, UpmConfig,
-        http::router_with_registry,
+        UpstreamConfig, http::router_with_registry,
     };
     use tower::ServiceExt;
     use url::Url;
@@ -387,6 +399,7 @@ mod tests {
                 log_dir: PathBuf::from("logs"),
             },
             proxy: ProxyConfig::default(),
+            upstream: UpstreamConfig::default(),
             retention: RetentionConfig::default(),
             rustup: RustupConfig {
                 refresh_interval_secs: 60,

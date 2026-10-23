@@ -30,8 +30,8 @@ use crate::{
     locks::ShardedLocks,
     sources::registry::{Adapter, AdapterFuture, AdapterRegistry, AdapterRequest, RegistryError},
     sources::{
-        ArtifactBudget, FetchOperation, GroupRun, SourcePoolError, source_error_is_group_fallback,
-        source_error_is_not_found,
+        ArtifactBudget, FetchOperation, FetchTimeouts, GroupRun, SourcePoolError,
+        source_error_is_group_fallback, source_error_is_not_found,
     },
 };
 
@@ -168,7 +168,19 @@ pub fn register_adapter(
     root_url: Url,
     data_dir: impl Into<PathBuf>,
 ) -> Result<(), DockerRegistrationError> {
-    register_adapter_with_proxy(registry, config, root_url, data_dir, None, None)
+    let artifact_budget = ArtifactBudget::default();
+    register_adapter_with_options(
+        registry,
+        config,
+        root_url,
+        data_dir,
+        DockerRegistrationOptions {
+            proxy_url: None,
+            proxy_no_proxy: None,
+            fetch_timeouts: FetchTimeouts::default(),
+            artifact_budget: &artifact_budget,
+        },
+    )
 }
 
 pub fn register_adapter_with_proxy(
@@ -180,31 +192,47 @@ pub fn register_adapter_with_proxy(
     proxy_no_proxy: Option<&str>,
 ) -> Result<(), DockerRegistrationError> {
     let artifact_budget = ArtifactBudget::default();
-    register_adapter_with_proxy_and_budget(
+    register_adapter_with_options(
         registry,
         config,
         root_url,
         data_dir,
-        proxy_url,
-        proxy_no_proxy,
-        &artifact_budget,
+        DockerRegistrationOptions {
+            proxy_url,
+            proxy_no_proxy,
+            fetch_timeouts: FetchTimeouts::default(),
+            artifact_budget: &artifact_budget,
+        },
     )
 }
 
-pub fn register_adapter_with_proxy_and_budget(
+#[derive(Clone, Copy, Debug)]
+pub struct DockerRegistrationOptions<'a> {
+    pub proxy_url: Option<&'a Url>,
+    pub proxy_no_proxy: Option<&'a str>,
+    pub fetch_timeouts: FetchTimeouts,
+    pub artifact_budget: &'a ArtifactBudget,
+}
+
+pub fn register_adapter_with_options(
     registry: &mut AdapterRegistry,
     config: DockerConfig,
     root_url: Url,
     data_dir: impl Into<PathBuf>,
-    proxy_url: Option<&Url>,
-    proxy_no_proxy: Option<&str>,
-    artifact_budget: &ArtifactBudget,
+    options: DockerRegistrationOptions<'_>,
 ) -> Result<(), DockerRegistrationError> {
+    let DockerRegistrationOptions {
+        proxy_url,
+        proxy_no_proxy,
+        fetch_timeouts,
+        artifact_budget,
+    } = options;
     registry.register(
         "docker",
         Arc::new(
             SourcePool::new_with_proxy("docker", config.sources, proxy_url, proxy_no_proxy)?
-                .with_artifact_budget(artifact_budget.clone()),
+                .with_artifact_budget(artifact_budget.clone())
+                .with_fetch_timeouts(fetch_timeouts),
         ),
         Arc::new(DockerAdapter::new(root_url, data_dir)),
     )?;

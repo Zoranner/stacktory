@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, net::IpAddr, path::PathBuf};
+use std::{collections::BTreeMap, net::IpAddr, path::PathBuf, time::Duration};
 
 use serde::Deserialize;
 use thiserror::Error;
@@ -9,6 +9,7 @@ pub struct Config {
     pub server: ServerConfig,
     pub storage: StorageConfig,
     pub proxy: ProxyConfig,
+    pub upstream: UpstreamConfig,
     pub retention: RetentionConfig,
     pub rustup: RustupConfig,
     pub cargo: Option<CargoConfig>,
@@ -49,6 +50,38 @@ pub struct ProxyConfig {
     /// Comma-separated hosts that bypass the outbound proxy.
     #[serde(default)]
     pub no_proxy: Option<String>,
+}
+
+pub const DEFAULT_METADATA_TIMEOUT_SECS: u64 = 30;
+pub const DEFAULT_ARTIFACT_TIMEOUT_SECS: u64 = 600;
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+#[serde(default)]
+pub struct UpstreamConfig {
+    /// Total time allowed for an upstream metadata request.
+    pub metadata_timeout_secs: u64,
+    /// Total time allowed for one upstream artifact download.
+    pub artifact_timeout_secs: u64,
+}
+
+impl Default for UpstreamConfig {
+    fn default() -> Self {
+        Self {
+            metadata_timeout_secs: DEFAULT_METADATA_TIMEOUT_SECS,
+            artifact_timeout_secs: DEFAULT_ARTIFACT_TIMEOUT_SECS,
+        }
+    }
+}
+
+impl UpstreamConfig {
+    pub fn metadata_timeout(&self) -> Duration {
+        Duration::from_secs(self.metadata_timeout_secs)
+    }
+
+    pub fn artifact_timeout(&self) -> Duration {
+        Duration::from_secs(self.artifact_timeout_secs)
+    }
 }
 
 pub const DEFAULT_METADATA_RETENTION_SECS: u64 = 604_800;
@@ -297,6 +330,10 @@ pub enum ConfigError {
     InvalidProxyUrl,
     #[error("proxy.no_proxy requires proxy.url")]
     ProxyNoProxyWithoutProxy,
+    #[error("upstream.metadata_timeout_secs must be greater than zero")]
+    InvalidMetadataTimeout,
+    #[error("upstream.artifact_timeout_secs must be greater than zero")]
+    InvalidArtifactTimeout,
     #[error("sources must contain at least one source")]
     MissingSource,
     #[error("source name `{0}` is invalid")]
@@ -364,6 +401,8 @@ struct RawConfig {
     storage: StorageConfig,
     #[serde(default)]
     proxy: ProxyConfig,
+    #[serde(default)]
+    upstream: UpstreamConfig,
     #[serde(default)]
     retention: RetentionConfig,
     rustup: RawRustupConfig,
@@ -496,6 +535,12 @@ impl Config {
         } else if raw.proxy.no_proxy.is_some() {
             return Err(ConfigError::ProxyNoProxyWithoutProxy);
         }
+        if raw.upstream.metadata_timeout_secs == 0 {
+            return Err(ConfigError::InvalidMetadataTimeout);
+        }
+        if raw.upstream.artifact_timeout_secs == 0 {
+            return Err(ConfigError::InvalidArtifactTimeout);
+        }
         if raw.rustup.refresh_interval_secs == 0 {
             return Err(ConfigError::InvalidRustupRefreshInterval);
         }
@@ -534,6 +579,7 @@ impl Config {
             server: raw.server,
             storage: raw.storage,
             proxy: raw.proxy,
+            upstream: raw.upstream,
             retention: raw.retention,
             rustup: RustupConfig {
                 refresh_interval_secs: raw.rustup.refresh_interval_secs,
@@ -696,5 +742,60 @@ fn is_localhost(url: &Url) -> bool {
             .parse::<IpAddr>()
             .is_ok_and(|address| address.is_loopback()),
         None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Config, ConfigError};
+
+    const BASE: &str = r#"
+[server]
+address = "127.0.0.1"
+port = 18761
+public_url = "http://127.0.0.1:18761"
+
+[storage]
+data_dir = "./var/stacktory"
+
+[rustup]
+refresh_interval_secs = 3600
+channels = ["stable"]
+
+[[rustup.sources]]
+name = "official"
+type = "proxy"
+base_url = "https://static.rust-lang.org"
+"#;
+
+    #[test]
+    fn upstream_timeouts_default_and_can_be_overridden() {
+        let config = Config::from_toml(BASE).expect("default upstream timeouts");
+        assert_eq!(config.upstream.metadata_timeout_secs, 30);
+        assert_eq!(config.upstream.artifact_timeout_secs, 600);
+
+        let input = format!(
+            "{BASE}\n[upstream]\nmetadata_timeout_secs = 45\nartifact_timeout_secs = 900\n"
+        );
+        let config = Config::from_toml(&input).expect("configured upstream timeouts");
+        assert_eq!(config.upstream.metadata_timeout_secs, 45);
+        assert_eq!(config.upstream.artifact_timeout_secs, 900);
+    }
+
+    #[test]
+    fn zero_upstream_timeouts_are_rejected() {
+        let input = format!("{BASE}\n[upstream]\nmetadata_timeout_secs = 0\n");
+        let error = Config::from_toml(&input).expect_err("zero metadata timeout must fail");
+        assert!(matches!(error, ConfigError::InvalidMetadataTimeout));
+
+        let input = format!("{BASE}\n[upstream]\nartifact_timeout_secs = 0\n");
+        let error = Config::from_toml(&input).expect_err("zero artifact timeout must fail");
+        assert!(matches!(error, ConfigError::InvalidArtifactTimeout));
+    }
+
+    #[test]
+    fn deploy_example_parses() {
+        let input = include_str!("../deploy/app/config.example.toml");
+        Config::from_toml(input).expect("deploy example config must parse");
     }
 }

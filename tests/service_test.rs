@@ -11,7 +11,7 @@ use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
 use sha2::{Digest, Sha256};
 use stacktory::{
     Config, ProxyConfig, RetentionConfig, RustupConfig, ServerConfig, SourceConfig, SourceGraph,
-    SourceType, StorageConfig, rustup::DistPath, service::RustupService,
+    SourceType, StorageConfig, UpstreamConfig, rustup::DistPath, service::RustupService,
 };
 use tempfile::tempdir;
 use tokio::net::TcpListener;
@@ -63,6 +63,7 @@ async fn refresh_publishes_a_rewritten_manifest_snapshot() {
             log_dir: PathBuf::from("logs"),
         },
         proxy: ProxyConfig::default(),
+        upstream: UpstreamConfig::default(),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -261,6 +262,7 @@ async fn artifact_cache_is_shared_by_group_and_its_proxy() {
             log_dir: PathBuf::from("logs"),
         },
         proxy: ProxyConfig::default(),
+        upstream: UpstreamConfig::default(),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -378,6 +380,7 @@ async fn proxy_manifest_can_reference_another_configured_proxy() {
             log_dir: PathBuf::from("logs"),
         },
         proxy: ProxyConfig::default(),
+        upstream: UpstreamConfig::default(),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -486,6 +489,7 @@ async fn artifact_request_uses_the_source_matched_by_manifest_url() {
             log_dir: PathBuf::from("logs"),
         },
         proxy: ProxyConfig::default(),
+        upstream: UpstreamConfig::default(),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -703,6 +707,7 @@ async fn artifacts_follow_each_channel_snapshot_source_and_keep_separate_caches(
             log_dir: PathBuf::from("logs"),
         },
         proxy: ProxyConfig::default(),
+        upstream: UpstreamConfig::default(),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,
@@ -1037,6 +1042,7 @@ fn service_with_sources_and_root(
             log_dir: PathBuf::from("logs"),
         },
         proxy: ProxyConfig::default(),
+        upstream: UpstreamConfig::default(),
         retention: RetentionConfig::default(),
         rustup: RustupConfig {
             refresh_interval_secs: 3600,

@@ -9,4 +9,6 @@ pub(crate) use fallback::{
     source_error_is_not_found,
 };
 pub(crate) use policy::same_origin;
-pub use pool::{ArtifactBudget, FetchOperation, SourcePool, SourcePoolError, SourceResponse};
+pub use pool::{
+    ArtifactBudget, FetchOperation, FetchTimeouts, SourcePool, SourcePoolError, SourceResponse,
+};

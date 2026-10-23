@@ -20,6 +20,8 @@ pub struct SourcePool {
     graph: SourceGraph,
     fetcher: Arc<HttpFetcher>,
     artifact_budget: ArtifactBudget,
+    metadata_timeout: Duration,
+    artifact_timeout: Duration,
 }
 
 const MAX_CONCURRENT_ARTIFACTS: usize = 4;
@@ -32,6 +34,21 @@ pub struct ArtifactBudget {
 impl Default for ArtifactBudget {
     fn default() -> Self {
         Self::new(MAX_CONCURRENT_ARTIFACTS)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct FetchTimeouts {
+    pub metadata: Duration,
+    pub artifact: Duration,
+}
+
+impl Default for FetchTimeouts {
+    fn default() -> Self {
+        Self {
+            metadata: Duration::from_secs(crate::config::DEFAULT_METADATA_TIMEOUT_SECS),
+            artifact: Duration::from_secs(crate::config::DEFAULT_ARTIFACT_TIMEOUT_SECS),
+        }
     }
 }
 
@@ -61,15 +78,6 @@ impl ArtifactBudget {
 pub enum FetchOperation {
     Metadata,
     Artifact,
-}
-
-impl FetchOperation {
-    const fn timeout(self) -> Duration {
-        match self {
-            Self::Metadata => Duration::from_secs(30),
-            Self::Artifact => Duration::from_secs(300),
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -162,12 +170,27 @@ impl SourcePool {
                 fetcher.map_err(|error| SourcePoolError::FetcherBuild(error.to_string()))?,
             ),
             artifact_budget: ArtifactBudget::default(),
+            metadata_timeout: Duration::from_secs(crate::config::DEFAULT_METADATA_TIMEOUT_SECS),
+            artifact_timeout: Duration::from_secs(crate::config::DEFAULT_ARTIFACT_TIMEOUT_SECS),
         })
     }
 
     pub fn with_artifact_budget(mut self, budget: ArtifactBudget) -> Self {
         self.artifact_budget = budget;
         self
+    }
+
+    pub fn with_fetch_timeouts(mut self, timeouts: FetchTimeouts) -> Self {
+        self.metadata_timeout = timeouts.metadata;
+        self.artifact_timeout = timeouts.artifact;
+        self
+    }
+
+    fn timeout(&self, operation: FetchOperation) -> Duration {
+        match operation {
+            FetchOperation::Metadata => self.metadata_timeout,
+            FetchOperation::Artifact => self.artifact_timeout,
+        }
     }
 
     async fn artifact_permit(&self, operation: FetchOperation) -> Option<OwnedSemaphorePermit> {
@@ -244,7 +267,7 @@ impl SourcePool {
         let url = source_url_raw(source, &request_key)?;
         match self
             .fetcher
-            .fetch_with_headers(url, headers, operation.timeout())
+            .fetch_with_headers(url, headers, self.timeout(operation))
             .await
         {
             Ok(response) => Ok(SourceResponse {
@@ -290,7 +313,7 @@ impl SourcePool {
                 url.clone(),
                 source.require_https,
                 true,
-                operation.timeout(),
+                self.timeout(operation),
                 path,
             )
             .await
@@ -361,7 +384,7 @@ impl SourcePool {
                 url,
                 headers,
                 source.require_https,
-                operation.timeout(),
+                self.timeout(operation),
             )
             .await
         {
@@ -417,7 +440,7 @@ impl SourcePool {
         let url = source_url_raw(source, &request_key)?;
         match self
             .fetcher
-            .post_marketplace_query(url, body, FetchOperation::Metadata.timeout())
+            .post_marketplace_query(url, body, self.timeout(FetchOperation::Metadata))
             .await
         {
             Ok(response) => Ok(SourceResponse {
@@ -466,7 +489,7 @@ impl SourcePool {
                 url,
                 headers,
                 source.require_https,
-                operation.timeout(),
+                self.timeout(operation),
                 path,
             )
             .await
@@ -501,10 +524,10 @@ impl SourcePool {
         while let Some(source) = run.next_member() {
             let url = source_url(&source, &request_key)?;
             let result = match request {
-                SourceRequest::Get => self.fetcher.fetch(url, operation.timeout()).await,
+                SourceRequest::Get => self.fetcher.fetch(url, self.timeout(operation)).await,
                 SourceRequest::MarketplaceQuery(body) => {
                     self.fetcher
-                        .post_marketplace_query(url, body, operation.timeout())
+                        .post_marketplace_query(url, body, self.timeout(operation))
                         .await
                 }
             };
@@ -561,10 +584,12 @@ impl SourcePool {
             .as_ref()
             .is_some_and(|base_url| same_origin(base_url, &url));
         let result = if allow_private {
-            self.fetcher.fetch(url.clone(), operation.timeout()).await
+            self.fetcher
+                .fetch(url.clone(), self.timeout(operation))
+                .await
         } else {
             self.fetcher
-                .fetch_public(url.clone(), operation.timeout())
+                .fetch_public(url.clone(), self.timeout(operation))
                 .await
         };
         match result {
@@ -640,7 +665,7 @@ impl SourcePool {
                 url.clone(),
                 source.require_https,
                 allow_private,
-                operation.timeout(),
+                self.timeout(operation),
                 path,
             )
             .await
@@ -680,10 +705,12 @@ impl SourcePool {
             .as_ref()
             .is_some_and(|base_url| same_origin(base_url, &url));
         let result = if allow_private {
-            self.fetcher.fetch(url.clone(), operation.timeout()).await
+            self.fetcher
+                .fetch(url.clone(), self.timeout(operation))
+                .await
         } else {
             self.fetcher
-                .fetch_public(url.clone(), operation.timeout())
+                .fetch_public(url.clone(), self.timeout(operation))
                 .await
         };
         match result {
@@ -759,7 +786,7 @@ impl SourcePool {
                 url.clone(),
                 source.require_https,
                 allow_private,
-                operation.timeout(),
+                self.timeout(operation),
                 path,
             )
             .await
@@ -823,7 +850,7 @@ impl SourcePool {
                 url.clone(),
                 require_https,
                 allow_private_initial,
-                operation.timeout(),
+                self.timeout(operation),
             )
             .await
         {
