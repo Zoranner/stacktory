@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stacktory | 使用说明 | Cargo</title>
+  <link rel="stylesheet" href="preview.css">
+  <script src="preview.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brandline">
+        <a class="brand" href="landing.html" aria-label="Stacktory 首页">
+          <span class="brand-mark" aria-hidden="true">S</span>
+          <span class="brand-name">Stacktory</span>
+        </a>
+        <span class="separator" aria-hidden="true">|</span>
+        <span class="page-path">使用说明</span>
+        <span class="separator" aria-hidden="true">|</span>
+        <span class="page-path page-path-current">Cargo</span>
+      </div>
+      <div class="service">
+        <code>https://pkg.rd.kim</code>
+      </div>
+    </div>
+  </header>
+
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="技术栈导航">
+      <div class="side-head">
+        <span>技术栈</span>
+      </div>
+      <nav class="stack-nav">
+        <a href="cargo.html">Rustup</a>
+        <a href="cargo.html" aria-current="page">Cargo</a>
+        <a href="cargo.html">npm</a>
+        <a href="cargo.html">Bun</a>
+        <a href="cargo.html">NuGet</a>
+        <a href="cargo.html">UPM</a>
+        <a href="cargo.html">VS Code</a>
+        <a href="cargo.html">Docker</a>
+      </nav>
+    </aside>
+
+    <main id="main" class="main">
+      <div class="detail-header">
+        <a class="back-link" href="index.html"><span aria-hidden="true">←</span> 返回技术栈</a>
+        <h1>Cargo</h1>
+      </div>
+
+      <section class="endpoint-panel" aria-labelledby="endpoint-title">
+        <div class="endpoint-label" id="endpoint-title">地址</div>
+        <code class="endpoint-code">https://pkg.rd.kim/mirror/cargo/group/</code>
+      </section>
+
+      <section class="content-panel config-panel" aria-label="Cargo 配置方式">
+        <div class="mode-switch" role="tablist" aria-label="配置方式">
+          <button class="mode-tab" id="tab-auto" type="button" role="tab" aria-selected="true" aria-controls="panel-auto" tabindex="0">自动配置</button>
+          <button class="mode-tab" id="tab-manual" type="button" role="tab" aria-selected="false" aria-controls="panel-manual" tabindex="-1">手动配置</button>
+        </div>
+
+        <div class="tab-panel prompt-panel" id="panel-auto" role="tabpanel" aria-labelledby="tab-auto" tabindex="0">
+          <div class="panel-head">
+            <h2>提示词</h2>
+            <button class="copy-button" type="button" data-copy-target="prompt-cargo">
+              <span class="copy-icon" aria-hidden="true"></span>
+              <span class="button-label">复制提示词</span>
+            </button>
+          </div>
+          <pre id="prompt-cargo"><code>请把本机 Cargo 的 crates.io 源切换到 Stacktory。
+
+目标地址：https://pkg.rd.kim/mirror/cargo/group/
+要求：
+1. 先读取 ~/.cargo/config.toml，确认当前格式并保留无关配置；
+2. 修改前备份原文件，并在结果中报告备份路径；
+3. 只修改 crates.io 的 source replacement，不删除其他 source；
+4. 保持幂等，重复执行不要重复追加配置；
+5. 修改后执行 cargo fetch 验证；
+6. 输出实际修改的文件、备份路径和验证结果；
+7. 如果路径、权限或配置格式不确定，停止并报告，不要猜测。</code></pre>
+          <div class="copy-status" id="copy-status" aria-live="polite"></div>
+        </div>
+
+        <div class="tab-panel" id="panel-manual" role="tabpanel" aria-labelledby="tab-manual" tabindex="0" hidden>
+          <div class="panel-head">
+            <h2>配置</h2>
+            <code class="file-path">~/.cargo/config.toml</code>
+          </div>
+          <pre class="config-snippet"><code>[source.crates-io]
+replace-with = "stacktory"
+
+[source.stacktory]
+registry = "sparse+https://pkg.rd.kim/mirror/cargo/group/"</code></pre>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

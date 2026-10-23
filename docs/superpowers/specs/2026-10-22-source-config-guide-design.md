@@ -1,0 +1,200 @@
+# Stacktory 客户端源配置文档页设计
+
+## 目标
+
+为开发机用户提供一个只读的在线文档页面，覆盖各技术栈的源配置方法。人可以直接阅读
+手动步骤，也可以复制提示词交给智能体；页面同时提供原始 Markdown，方便智能体读取。
+不引入 CLI、PowerShell 脚本、Shell 脚本或 MCP 工具。
+
+## 非目标
+
+- 不在服务端执行或修改用户本机配置。
+- 不提供 `irm | iex`、`curl | sh` 或其他远程代码执行入口。
+- 不实现 CLI、MCP、客户端守护进程或配置同步服务。
+- 不增加任何运行时配置字段。
+- 不替用户决定 Unity scope、Docker 管理员地址或项目级 NuGet 配置。
+- 不暴露上游制品库地址、凭据、内部日志或缓存路径。
+- 不实现首页 landing 原型中的三维背景、动效或首页路由；本设计只覆盖 `/docs`。
+
+## 页面
+
+提供索引和详情两类只读地址：
+
+```text
+GET /docs
+GET /docs.md
+GET /docs/{stack}
+GET /docs/{stack}/index.md
+```
+
+`/docs` 是面向人的使用说明索引页；`/docs/{stack}` 是单个技术栈的详情页。
+`/docs.md` 和 `/docs/{stack}/index.md` 是同一份内容模型渲染出的 Markdown。所有地址共用
+一份结构化内容，不允许手工维护多份文案。
+
+浏览器标题规则：
+
+```text
+/docs              Stacktory | 使用说明
+/docs/rustup       Stacktory | 使用说明 | Rustup
+/docs/cargo        Stacktory | 使用说明 | Cargo
+```
+
+页面头部固定显示 `Stacktory | 使用说明`；详情页在右侧追加当前技术栈子标题。
+子标题来自当前 `GuideSection`，由服务端渲染，不能由客户端脚本猜测或硬编码。
+未知 `stack` 返回 `404`。
+
+页面默认使用当前请求的 Host 和协议生成服务地址；如果没有请求 Host，则使用服务配置
+中的 `server.public_url`。通过 `https://pkg.rd.kim/docs` 访问时，页面中的地址和提示词
+都使用 `pkg.rd.kim`。
+
+## 信息架构
+
+页面由以下部分组成：
+
+- 页头：产品名、当前服务地址、页面说明和使用边界。
+- 使用说明：先备份、只改目标配置、完成后验证、失败时停止。
+- 技术栈导航：Rustup、Cargo、npm、Bun、NuGet、UPM、VS Code、Docker。
+- 索引页：技术栈卡片，包含简介、状态和进入详情页的链接。
+- 详情页：入口地址、适用条件、给智能体的提示词、手动步骤、验证命令和注意事项。
+- 页尾：配置失败时保留备份并报告；页面不执行本地命令。
+
+### 技术栈内容
+
+| 技术栈 | 默认入口 | 提示词目标 | 必须说明的边界 |
+| --- | --- | --- | --- |
+| Rustup | `/mirror/rustup/group` | 设置 `RUSTUP_DIST_SERVER` | 用户级环境变量；重新打开终端 |
+| Cargo | `/mirror/cargo/group/` | 修改 `~/.cargo/config.toml` 的 source replacement | 保留现有 source；不覆盖无关配置 |
+| npm | `/mirror/npm/group/` | 设置 npm registry | 用户级 `.npmrc`；项目级配置可能覆盖 |
+| Bun | `/mirror/npm/group/` | 修改用户级 `.bunfig.toml` | 与 npm 分开；项目级 `bunfig.toml` 优先 |
+| NuGet | `/mirror/nuget/group/v3/index.json` | 修改用户级 `NuGet.Config` | 项目级 `NuGet.Config` 可能覆盖；不要添加凭据 |
+| UPM | `/mirror/upm/group` | 修改当前 Unity 项目 `Packages/manifest.json` | 需要项目根目录；scope 由项目决定 |
+| VS Code | `/mirror/vscode/group` | 修改 VS Code `product.json` 的 Gallery 三项 | 必须备份；升级后可能被覆盖 |
+| Docker | 管理员提供的 Docker Group 地址 | 修改 Docker `registry-mirrors` | 需要管理员权限和重启；不猜测地址 |
+
+没有实现的后端生态（PyPI、Winget）不出现在可执行卡片中，只保留在页面说明里。
+
+## 给智能体的提示词
+
+每个提示词必须包含以下约束：
+
+1. 先读取目标配置的当前内容，确认文件位置和格式；
+2. 修改前备份，并在结果中报告备份路径；
+3. 只改本技术栈需要改的键或条目，不删除其他来源；
+4. 保持幂等，重复执行不重复追加；
+5. 不写入凭据、token、密码或用户隐私信息；
+6. 修改后执行可观察的验证命令；无法验证时明确报告未验证；
+7. 路径、权限、格式或客户端版本不确定时停止，不猜测；
+8. 不修改无关项目、全局代理或其他技术栈配置。
+
+提示词示例：
+
+```text
+请把本机 Cargo 的 crates.io 源切换到 Stacktory。
+
+目标地址：{base_url}/mirror/cargo/group/
+要求：
+1. 先读取 ~/.cargo/config.toml，保留无关配置；
+2. 修改前备份原文件；
+3. 只修改 crates.io 的 source replacement，不删除其他 source；
+4. 修改后执行 cargo fetch 验证；
+5. 输出实际修改的文件、备份路径和验证结果；
+6. 如果路径、权限或配置格式不确定，停止并报告，不要猜测。
+```
+
+页面渲染时把 `{base_url}` 替换为当前服务地址；不得把未替换的占位符发给用户。
+
+## 人看的页面
+
+页面不依赖外部 CSS、字体、脚本或前端框架，使用服务端渲染的单个 HTML 文档。
+
+布局：
+
+- 桌面端左侧固定导航，右侧内容区；移动端导航变为顶部横向可滚动列表。
+- 页头显示当前服务地址和“可以手动配置，也可以复制提示词给智能体”的简短说明。
+- 每个技术栈是一张卡片，卡片头部有状态标签和入口地址。
+- 提示词放在 `<pre><code>` 中，旁边有复制按钮；复制成功通过 `aria-live` 提示。
+- 详情页提供“自动配置”和“手动配置”两个标签，默认显示自动配置；标签支持点击、
+  左右方向键、`Home` 和 `End` 切换。
+- 自动配置区显示提示词和复制按钮；手动配置区显示配置文件路径、配置片段、验证命令
+  和注意事项。
+- 没有 JavaScript 时两个标签面板都展开，提示词仍然可以被选中复制。
+- 注意事项使用短列表，不使用大段说明文字。
+
+视觉：
+
+- 使用系统字体和中性背景，蓝绿色作为主操作色。
+- 代码块使用等宽字体、浅色底和可横向滚动。
+- 卡片边界清晰，状态标签使用“可用”“需项目目录”“需管理员”等文字。
+- 焦点样式清晰，复制按钮可键盘操作，颜色对比满足可读性。
+- 不加载网络资源，避免离线或内网环境出现布局缺失。
+
+## 技术设计
+
+新增 `src/docs/source_config_guide/`，定义稳定的内容结构：
+
+```rust
+pub(crate) struct GuideSection {
+    pub(crate) id: &'static str,
+    pub(crate) title: &'static str,
+    pub(crate) status: &'static str,
+    pub(crate) summary: &'static str,
+    pub(crate) target: Target,
+    pub(crate) prompt: &'static str,
+    pub(crate) manual_steps: &'static str,
+    pub(crate) verify: &'static str,
+    pub(crate) notes: &'static [&'static str],
+}
+
+pub(crate) enum Target {
+    ServicePath(&'static str),
+    AdminProvided(&'static str),
+}
+```
+
+渲染函数：
+
+```rust
+pub(crate) fn render_index_markdown(base_url: &str) -> String;
+pub(crate) fn render_section_markdown(
+    section: &GuideSection,
+    base_url: &str,
+) -> String;
+pub(crate) fn render_index_html(base_url: &str) -> String;
+pub(crate) fn render_section_html(section: &GuideSection, base_url: &str) -> String;
+```
+
+两个渲染器只读取同一组 `GuideSection`，并且：
+
+- 对 HTML 文本、属性、提示词和 URL 使用 HTML 转义。
+- 对 `{base_url}` 做一次明确替换，渲染后检查页面中不存在该占位符。
+- Markdown 和 HTML 的标题、顺序、提示词和验证命令保持一致。
+- 索引页和详情页共享同一个页面骨架、侧边导航和 CSS；详情页的浏览器标题追加当前 section 标题。
+- HTML 内联的复制脚本只读取 `data-copy-target` 指向的文本，不使用 `innerHTML`。
+
+HTTP 路由放在主服务路由中：
+
+```text
+GET /docs
+GET /docs.md
+GET /docs/{stack}
+GET /docs/{stack}/index.md
+```
+
+Docker listener 不提供这两个页面。页面不增加配置；服务地址来自请求或 `public_url`。
+
+## 验收
+
+- `/docs` 返回 `200` 和 `text/html; charset=utf-8`，标题为 `Stacktory | 使用说明`。
+- `/docs/rustup` 返回 `200`，标题为 `Stacktory | 使用说明 | Rustup`。
+- `/docs/cargo` 返回 `200`，标题为 `Stacktory | 使用说明 | Cargo`。
+- `/docs/unknown` 返回 `404`。
+- `/docs.md` 返回 `200` 和 `text/markdown; charset=utf-8`。
+- `/docs/rustup/index.md` 返回 `200` 和 `text/markdown; charset=utf-8`。
+- 页面包含全部可用技术栈，且每个卡片有可复制提示词。
+- 通过 `pkg.rd.kim` 访问时，未替换的 `{base_url}` 不出现，地址指向 `pkg.rd.kim`。
+- 页面不包含上游 URL、token、密码或本地缓存路径。
+- 复制按钮可用；没有 JavaScript 时，提示词仍然可以被选中复制。
+- 页面在窄屏下不出现水平溢出；代码块可独立横向滚动。
+- 现有旧脚本端点和 `src/tools/vscode-gallery.ps1` 被移除。
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets --all-features -- -D warnings`、
+  `cargo test --all-targets --all-features`、`cargo build --release --locked` 通过。
