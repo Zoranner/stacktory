@@ -41,6 +41,24 @@ async fn health_route_reports_service_availability() {
 }
 
 #[tokio::test]
+async fn removed_vscode_script_endpoint_returns_not_found() {
+    let data_dir = tempdir().expect("data directory");
+    let log_dir = tempdir().expect("log directory");
+    let service = rustup_service(data_dir.path().to_path_buf(), log_dir.path().to_path_buf());
+
+    let response = router_with_rustup(Arc::new(service))
+        .oneshot(
+            Request::get("/tools/vscode-gallery.ps1")
+                .body(Body::empty())
+                .expect("removed script request"),
+        )
+        .await
+        .expect("removed script response");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn readiness_checks_data_and_log_directories() {
     let data_dir = tempdir().expect("data directory");
     let log_dir = tempdir().expect("log directory");
