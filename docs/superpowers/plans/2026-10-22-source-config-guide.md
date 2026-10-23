@@ -18,8 +18,7 @@
 - 不修改 Docker listener 路由；`/docs` 和 `/docs.md` 只挂在主服务路由。
 - 所有内容使用中文；文件路径、命令、配置键和代码标识使用反引号。
 - HTML 中所有动态文本必须转义；Markdown 和 HTML 必须来自同一组 `GuideSection`。
-- 当前工作区已有 NuGet 图标、配置端口等未提交改动；本计划只暂存本功能明确列出的文件，不清理、不回退、不混入其他改动。
-- `README.md` 当前已有与端口调整有关的未提交改动。不能整文件暂存；若不能只暂存本功能的段落，先跳过 README 入口，等该改动由用户处理后再补。
+- 实施前先核对当前工作树；本计划只暂存本功能明确列出的文件，不清理、不回退、不混入其他改动。
 - 先写失败测试，再实现，再运行完整门禁；不要用“页面看起来正常”代替测试。
 - 视觉和交互以 `docs/superpowers/mockups/2026-10-22-source-config/index.html`、`cargo.html`、`preview.css` 和 `preview.js` 为基线；`landing.html`、`landing.css`、`landing.js` 和 `vendor/three.min.js` 属于首页原型，不在本计划范围。
 
@@ -36,7 +35,7 @@
 | `tests/http_test.rs` | 索引/详情路由、标题、请求 Host、Markdown、未知 stack 和旧脚本 404 的集成测试 |
 | `docs/guides/vscode.md` | 增加源配置页面入口；旧脚本说明已经删除 |
 | `docs/guides/README.md` | 增加源配置文档入口 |
-| `README.md` | 在开始使用部分增加页面入口，但必须避开已有的端口改动 |
+| `README.md` | 在开始使用部分增加页面入口 |
 | `src/tools/vscode-gallery.ps1` | 已删除；实施时只验证旧入口保持 404 |
 
 ## Task: 建立内容模型和 Markdown 文档
@@ -745,8 +744,7 @@ git commit -m "接入客户端源配置页面"
 - [Stacktory | 使用说明](https://pkg.rd.kim/docs)
 ```
 
-在 `README.md` 的“开始使用”段落增加。该文件已有端口调整的未提交改动，提交时必须
-只暂存本段，不能把端口改动混入本功能：
+在 `README.md` 的“开始使用”段落增加：
 
 ```markdown
 需要配置本机开发工具源时，打开 [Stacktory | 使用说明](https://pkg.rd.kim/docs)。
@@ -794,7 +792,7 @@ git commit -m "补充客户端源配置文档入口"
 | 人看的页面、复制按钮、响应式布局 | 实现 HTML 页面 |
 | 当前请求 Host 或 `public_url` | 接入 HTTP 路由 |
 | 8 个技术栈及边界 | 建立内容模型和 Markdown |
-| 不执行远程脚本 | 删除旧脚本、页面只读 |
+| 不执行远程脚本 | 旧脚本入口保持 404、页面只读 |
 | 不暴露上游和凭据 | 内容模型验收测试 |
 | 文档入口 | 更新文档入口 |
 | 旧脚本入口保持 404 | 接入 HTTP 路由 |
