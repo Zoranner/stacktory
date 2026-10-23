@@ -41,6 +41,114 @@ async fn health_route_reports_service_availability() {
 }
 
 #[tokio::test]
+async fn landing_page_links_to_docs_and_serves_its_assets() {
+    let data_dir = tempdir().expect("data directory");
+    let log_dir = tempdir().expect("log directory");
+    let service = rustup_service(data_dir.path().to_path_buf(), log_dir.path().to_path_buf());
+    let router = router_with_rustup(Arc::new(service));
+
+    let page = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header("host", "pkg.rd.kim")
+                .header("x-forwarded-proto", "https")
+                .body(Body::empty())
+                .expect("landing request"),
+        )
+        .await
+        .expect("landing response");
+    assert_eq!(page.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(page.into_body(), usize::MAX)
+        .await
+        .expect("landing body");
+    let html = String::from_utf8(body.to_vec()).expect("landing UTF-8");
+    assert!(html.contains("<title>Stacktory</title>"));
+    assert!(html.contains("href=\"/docs\""));
+    assert!(html.contains("https://pkg.rd.kim"));
+    assert!(html.contains("href=\"/index.css\""));
+    assert!(html.contains("src=\"/vendor/three.min.js\""));
+
+    for (path, content_type) in [
+        ("/index.css", "text/css; charset=utf-8"),
+        ("/index.js", "text/javascript; charset=utf-8"),
+        ("/vendor/three.min.js", "text/javascript; charset=utf-8"),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::get(path)
+                    .body(Body::empty())
+                    .expect("asset request"),
+            )
+            .await
+            .expect("asset response");
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            Some(content_type),
+            "{path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn source_config_page_serves_external_assets() {
+    let data_dir = tempdir().expect("data directory");
+    let log_dir = tempdir().expect("log directory");
+    let service = rustup_service(data_dir.path().to_path_buf(), log_dir.path().to_path_buf());
+    let router = router_with_rustup(Arc::new(service));
+
+    let page = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/docs")
+                .header("host", "pkg.rd.kim")
+                .header("x-forwarded-proto", "https")
+                .body(Body::empty())
+                .expect("docs page request"),
+        )
+        .await
+        .expect("docs page response");
+    assert_eq!(page.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(page.into_body(), usize::MAX)
+        .await
+        .expect("docs page body");
+    let html = String::from_utf8(body.to_vec()).expect("docs page UTF-8");
+    assert!(html.contains("href=\"/docs/index.css\""));
+    assert!(html.contains("src=\"/docs/index.js\""));
+
+    for (path, content_type) in [
+        ("/docs/index.css", "text/css; charset=utf-8"),
+        ("/docs/index.js", "text/javascript; charset=utf-8"),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::get(path)
+                    .body(Body::empty())
+                    .expect("docs asset request"),
+            )
+            .await
+            .expect("docs asset response");
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            Some(content_type),
+            "{path}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn removed_vscode_script_endpoint_returns_not_found() {
     let data_dir = tempdir().expect("data directory");
     let log_dir = tempdir().expect("log directory");
@@ -56,6 +164,174 @@ async fn removed_vscode_script_endpoint_returns_not_found() {
         .expect("removed script response");
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn source_config_pages_use_the_request_host_and_stack_title() {
+    let data_dir = tempdir().expect("data directory");
+    let log_dir = tempdir().expect("log directory");
+    let service = rustup_service(data_dir.path().to_path_buf(), log_dir.path().to_path_buf());
+    let router = router_with_rustup(Arc::new(service));
+
+    let index = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/docs")
+                .header("host", "pkg.rd.kim")
+                .header("x-forwarded-proto", "https")
+                .body(Body::empty())
+                .expect("docs request"),
+        )
+        .await
+        .expect("docs response");
+    assert_eq!(index.status(), StatusCode::OK);
+    assert_eq!(
+        index
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("text/html; charset=utf-8")
+    );
+    let body = axum::body::to_bytes(index.into_body(), usize::MAX)
+        .await
+        .expect("docs body");
+    let html = String::from_utf8(body.to_vec()).expect("docs UTF-8");
+    assert!(html.contains("<title>Stacktory | 使用说明</title>"));
+    assert!(html.contains("href=\"/docs/cargo\""));
+    assert!(html.contains("https://pkg.rd.kim"));
+
+    let detail = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/docs/cargo")
+                .header("host", "pkg.rd.kim")
+                .header("x-forwarded-proto", "https")
+                .body(Body::empty())
+                .expect("cargo detail request"),
+        )
+        .await
+        .expect("cargo detail response");
+    assert_eq!(detail.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(detail.into_body(), usize::MAX)
+        .await
+        .expect("cargo detail body");
+    let html = String::from_utf8(body.to_vec()).expect("cargo detail UTF-8");
+    assert!(html.contains("<title>Stacktory | 使用说明 | Cargo</title>"));
+    assert!(html.contains("https://pkg.rd.kim/mirror/cargo/group/"));
+    assert!(html.contains("data-copy-target=\"prompt-cargo\""));
+    assert!(!html.contains("{base_url}"));
+
+    let markdown = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/docs/cargo/index.md")
+                .header("host", "pkg.rd.kim")
+                .header("x-forwarded-proto", "https")
+                .body(Body::empty())
+                .expect("cargo markdown request"),
+        )
+        .await
+        .expect("cargo markdown response");
+    assert_eq!(markdown.status(), StatusCode::OK);
+    assert_eq!(
+        markdown
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("text/markdown; charset=utf-8")
+    );
+    let body = axum::body::to_bytes(markdown.into_body(), usize::MAX)
+        .await
+        .expect("cargo markdown body");
+    let markdown = String::from_utf8(body.to_vec()).expect("cargo markdown UTF-8");
+    assert!(markdown.contains("# Stacktory | 使用说明 | Cargo"));
+    assert!(markdown.contains("https://pkg.rd.kim/mirror/cargo/group/"));
+
+    let unknown = router
+        .oneshot(
+            Request::get("/docs/unknown")
+                .body(Body::empty())
+                .expect("unknown section request"),
+        )
+        .await
+        .expect("unknown section response");
+    assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn source_config_pages_fall_back_to_the_configured_public_url() {
+    let data_dir = tempdir().expect("data directory");
+    let log_dir = tempdir().expect("log directory");
+    let service = rustup_service(data_dir.path().to_path_buf(), log_dir.path().to_path_buf());
+
+    let response = router_with_rustup(Arc::new(service))
+        .oneshot(
+            Request::get("/docs/cargo")
+                .body(Body::empty())
+                .expect("fallback docs request"),
+        )
+        .await
+        .expect("fallback docs response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("fallback docs body");
+    let html = String::from_utf8(body.to_vec()).expect("fallback docs UTF-8");
+    assert!(html.contains("http://127.0.0.1:18761/mirror/cargo/group/"));
+}
+
+#[tokio::test]
+async fn source_config_pages_preserve_the_configured_public_path() {
+    let data_dir = tempdir().expect("data directory");
+    let log_dir = tempdir().expect("log directory");
+    let service = rustup_service_with_public_url(
+        data_dir.path().to_path_buf(),
+        log_dir.path().to_path_buf(),
+        Url::parse("http://127.0.0.1:18761/artifacts/").expect("public URL"),
+    );
+
+    let router = router_with_rustup(Arc::new(service));
+    let index = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/docs")
+                .header("host", "pkg.rd.kim")
+                .header("x-forwarded-proto", "https")
+                .body(Body::empty())
+                .expect("prefixed docs index request"),
+        )
+        .await
+        .expect("prefixed docs index response");
+    assert_eq!(index.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(index.into_body(), usize::MAX)
+        .await
+        .expect("prefixed docs index body");
+    let html = String::from_utf8(body.to_vec()).expect("prefixed docs index UTF-8");
+    assert!(html.contains("href=\"/artifacts/docs/cargo\""));
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/docs/cargo")
+                .header("host", "pkg.rd.kim")
+                .header("x-forwarded-proto", "https")
+                .body(Body::empty())
+                .expect("prefixed docs request"),
+        )
+        .await
+        .expect("prefixed docs response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("prefixed docs body");
+    let html = String::from_utf8(body.to_vec()).expect("prefixed docs UTF-8");
+    assert!(html.contains("https://pkg.rd.kim/artifacts/mirror/cargo/group/"));
+    assert!(html.contains("href=\"/artifacts/docs\""));
+    assert!(html.contains("href=\"/artifacts/docs/cargo\""));
 }
 
 #[tokio::test]
@@ -703,11 +979,23 @@ fn source(name: &str, base_url: impl Into<String>) -> SourceConfig {
 }
 
 fn rustup_service(data_dir: PathBuf, log_dir: PathBuf) -> RustupService {
+    rustup_service_with_public_url(
+        data_dir,
+        log_dir,
+        Url::parse("http://127.0.0.1:18761").expect("public URL"),
+    )
+}
+
+fn rustup_service_with_public_url(
+    data_dir: PathBuf,
+    log_dir: PathBuf,
+    public_url: Url,
+) -> RustupService {
     RustupService::new(Config {
         server: ServerConfig {
             address: "127.0.0.1".parse().expect("address"),
             port: 18761,
-            public_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+            public_url,
         },
         storage: StorageConfig { data_dir, log_dir },
         proxy: ProxyConfig::default(),

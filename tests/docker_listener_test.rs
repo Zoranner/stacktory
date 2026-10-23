@@ -92,6 +92,23 @@ async fn standard_registry_root_serves_probe_and_nested_paths() {
     assert_eq!(nested.status(), axum::http::StatusCode::METHOD_NOT_ALLOWED);
 }
 
+#[tokio::test]
+async fn docker_listener_does_not_serve_source_config_pages() {
+    let data_dir = tempdir().expect("data directory");
+    let registry = docker_registry(data_dir.path());
+
+    let response = router_with_docker_entry(registry, "official")
+        .oneshot(
+            Request::get("/docs")
+                .body(Body::empty())
+                .expect("docs request"),
+        )
+        .await
+        .expect("docs response");
+
+    assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+}
+
 fn docker_registry(data_dir: &std::path::Path) -> AdapterRegistry {
     AdapterRegistry::new()
         .with_adapter(

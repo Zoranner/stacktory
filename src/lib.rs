@@ -4,6 +4,7 @@ pub mod audit;
 pub mod cargo;
 mod config;
 pub mod docker;
+mod docs;
 mod fsutil;
 pub mod http;
 pub mod layout;
