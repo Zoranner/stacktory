@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust 2024, Axum 0.8, Reqwest 0.12, Serde JSON/TOML, Tokio, VS Code 1.136.1.
 
-**Spec:** `docs/superpowers/specs/2026-09-11-vscode-marketplace-adapter-design.md`
+**Spec:** `docs/specs/2026-09-11-vscode-marketplace-adapter-design.md`
 
 ## Global Constraints
 

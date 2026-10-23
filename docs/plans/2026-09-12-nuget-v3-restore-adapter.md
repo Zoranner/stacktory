@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust 2024, Axum 0.8, Reqwest 0.12, Serde JSON/TOML, Tokio, SHA-256/SHA-512, local HTTP integration tests, dotnet CLI.
 
-**Spec:** `docs/superpowers/specs/2026-09-12-nuget-v3-restore-adapter-design.md`
+**Spec:** `docs/specs/2026-09-12-nuget-v3-restore-adapter-design.md`
 
 ## Global Constraints
 

@@ -2,13 +2,16 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **历史记录：** `docs/guides/` 已在后续清理中移除；当前产品内容统一位于
+> `web/docs/content/`，本文中的旧路径只用于记录当时的实施步骤。
+
 **Goal:** 提供一个只读的 `/docs` 索引页、`/docs/{stack}` 详情页和对应的 Markdown 文档，覆盖各技术栈的手动源配置和智能体提示词；生产页面不依赖远程脚本，旧脚本入口保持 404。
 
 **Architecture:** 用 Rust 结构化内容模型作为唯一事实来源，服务端从同一组数据分别渲染 HTML 和 Markdown。HTML 使用编译期嵌入的 CSS 和脚本，提供提示词复制与“自动配置/手动配置”切换，不引入前端依赖；所有服务地址由当前请求的 Host/协议生成，缺少 Host 时回退到 `server.public_url`。
 
 **Tech Stack:** Rust 1.98、Axum 0.8、现有 `RustupService`、无新增依赖、服务端渲染 HTML/Markdown。
 
-**Spec:** `docs/superpowers/specs/2026-10-22-source-config-guide-design.md`
+**Spec:** `docs/specs/2026-10-22-source-config-guide-design.md`
 
 ## Global Constraints
 
@@ -20,7 +23,7 @@
 - HTML 中所有动态文本必须转义；Markdown 和 HTML 必须来自同一组 `GuideSection`。
 - 实施前先核对当前工作树；本计划只暂存本功能明确列出的文件，不清理、不回退、不混入其他改动。
 - 先写失败测试，再实现，再运行完整门禁；不要用“页面看起来正常”代替测试。
-- 视觉和交互以 `docs/superpowers/mockups/2026-10-22-source-config/index.html`、`cargo.html`、`preview.css` 和 `preview.js` 为基线；`landing.html`、`landing.css`、`landing.js` 和 `vendor/three.min.js` 属于首页原型，不在本计划范围。
+- 视觉和交互以 `docs/archive/mockups/2026-10-22-source-config/index.html`、`cargo.html`、`preview.css` 和 `preview.js` 为基线；`landing.html`、`landing.css`、`landing.js` 和 `vendor/three.min.js` 属于首页原型，不在本计划范围。
 
 ## File Structure
 
