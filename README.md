@@ -17,9 +17,7 @@ Stacktory 为公司内网开发机提供统一的工具链和软件包下载入�
 
 ## 开始使用
 
-请阅读 [Stacktory 使用指南](docs/guides/README.md)。
-
-需要配置本机开发工具源时，打开 [Stacktory | 文档](https://pkg.rd.kim/docs)。
+打开 [Stacktory | 文档](https://pkg.rd.kim/docs)。
 页面按技术栈提供手动步骤和可复制提示词，不执行远程脚本。
 
 管理员需要提供：

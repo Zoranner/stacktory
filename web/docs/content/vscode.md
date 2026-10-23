@@ -33,5 +33,6 @@ Get-Content -Raw product.json | ConvertFrom-Json
 
 ## 注意
 - 修改前必须备份 product.json，VS Code 升级后可能覆盖该配置。
-- 普通 VS Code 不使用 settings.json 切换扩展市场，修改后需要完全重启。
+- 扩展市场应使用公司提供的专用 VS Code 产品版本；普通 VS Code 不要通过 settings.json 切换扩展市场。
+- 修改 product.json 后需要完全退出并重新打开 VS Code。
 - Group 优先尝试官方来源，失败后按成员顺序回退。
