@@ -24,7 +24,7 @@ async fn registers_docker_adapter_for_configured_sources() {
                 members: vec![],
             }])
             .expect("source graph"),
-            cli_listen_ports: std::collections::BTreeMap::new(),
+            registry_endpoints: std::collections::BTreeMap::new(),
         },
         Url::parse("http://127.0.0.1:18761").expect("root URL"),
         PathBuf::from(data_dir.path()),

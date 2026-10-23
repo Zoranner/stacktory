@@ -341,10 +341,10 @@ fn configured_registry_with_budget(
         )?;
     }
     if let Some(docker) = config.docker.clone() {
-        docker_listeners.extend(docker.cli_listen_ports.clone().into_iter().map(
-            |(entry_name, port)| DockerListener {
+        docker_listeners.extend(docker.registry_endpoints.clone().into_iter().map(
+            |(entry_name, endpoint)| DockerListener {
                 address: config.server.address,
-                port,
+                port: endpoint.listen_port,
                 entry_name,
             },
         ));

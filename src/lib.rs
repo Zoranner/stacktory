@@ -23,9 +23,9 @@ pub mod vscode;
 mod timeformat;
 
 pub use config::{
-    CargoConfig, Config, ConfigError, DockerConfig, EcosystemConfig, NpmConfig, NugetConfig,
-    ProxyConfig, RetentionConfig, RustupConfig, ServerConfig, SourceConfig, SourceGraph,
-    SourceType, StorageConfig, UpmConfig, VscodeConfig,
+    CargoConfig, Config, ConfigError, DockerConfig, DockerRegistryEndpoint, EcosystemConfig,
+    NpmConfig, NugetConfig, ProxyConfig, RetentionConfig, RustupConfig, ServerConfig, SourceConfig,
+    SourceGraph, SourceType, StorageConfig, UpmConfig, VscodeConfig,
 };
 pub use http::{
     router_with_docker_entry, router_with_rustup_and_cargo, router_with_rustup_and_registry,

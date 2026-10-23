@@ -72,48 +72,57 @@ members = ["official", "ustc"]
 
 [docker]
 
+# 标准 Docker Registry 入口必须同时配置监听端口和客户端可见地址。
+# 客户端地址不包含路径，通常由 DNS、端口映射或反向代理发布。
+
 [[docker.sources]]
 name = "official"
 type = "proxy"
 base_url = "https://registry-1.docker.io"
-# 可选：为此来源启动标准 Docker CLI 监听端口。
-# cli_listen_port = 19001
+# registry_listen_port = 19001
+# registry_public_url = "https://docker.example.internal:19001"
 
 [[docker.sources]]
 name = "microsoft"
 type = "proxy"
 base_url = "https://mcr.microsoft.com"
-# cli_listen_port = 19002
+# registry_listen_port = 19002
+# registry_public_url = "https://docker.example.internal:19002"
 
 [[docker.sources]]
 name = "ghcr"
 type = "proxy"
 base_url = "https://ghcr.io"
-# cli_listen_port = 19003
+# registry_listen_port = 19003
+# registry_public_url = "https://docker.example.internal:19003"
 
 [[docker.sources]]
 name = "quay"
 type = "proxy"
 base_url = "https://quay.io"
-# cli_listen_port = 19004
+# registry_listen_port = 19004
+# registry_public_url = "https://docker.example.internal:19004"
 
 [[docker.sources]]
 name = "aliyun"
 type = "proxy"
 base_url = "https://registry.cn-hangzhou.aliyuncs.com"
-# cli_listen_port = 19005
+# registry_listen_port = 19005
+# registry_public_url = "https://docker.example.internal:19005"
 
 [[docker.sources]]
 name = "xuanyuan"
 type = "proxy"
 base_url = "https://docker.xuanyuan.me"
-# cli_listen_port = 19006
+# registry_listen_port = 19006
+# registry_public_url = "https://docker.example.internal:19006"
 
 [[docker.sources]]
 name = "unstructured"
 type = "proxy"
 base_url = "https://downloads.unstructured.io"
-# cli_listen_port = 19007
+# registry_listen_port = 19007
+# registry_public_url = "https://docker.example.internal:19007"
 
 [[docker.sources]]
 name = "group"
@@ -128,8 +137,9 @@ members = [
   "xuanyuan",
   "unstructured",
 ]
-# group 入口的标准 Docker CLI 监听端口。
-cli_listen_port = 19000
+# group 入口的标准 Docker Registry 监听端口和客户端地址。
+registry_listen_port = 19000
+registry_public_url = "https://docker.example.internal:19000"
 
 [npm]
 

@@ -376,11 +376,13 @@ Docker source 的 `base_url` 是一个 Registry V2 根地址。Stacktory 对外�
 等协议路径由适配器生成，不增加 `/mirror/docker/v2/...` 内部命名空间，也不向
 Docker 客户端返回上游 Registry host。
 
-为兼容标准 Docker CLI，Docker source 可以配置可选的 `cli_listen_port`。Stacktory
-为每个配置端口启动独立 listener，并将该 listener 的根 `/v2/...` 固定绑定到
-对应 source；未配置端口的 source 不增加根 Registry 入口。多个 source 的端口
-必须唯一且不能占用 `server.port`。域名绑定由外部 DNS、端口映射或反向
-代理完成。
+为兼容标准 Docker Registry 客户端，Docker source 可以成对配置可选的
+`registry_listen_port` 和 `registry_public_url`。Stacktory 为每个配置端口启动
+独立 listener，并将该 listener 的根 `/v2/...` 固定绑定到对应 source；客户端
+可见地址来自 `registry_public_url`。两个字段必须同时存在，多个 source 的端口和
+公开地址必须唯一，端口不能占用 `server.port`。公开地址不能包含路径、查询参数
+或片段，域名和 TLS 终止由外部 DNS、端口映射或反向代理完成。未配置这对字段的
+source 不增加根 Registry 入口。
 Docker listener 与主监听共享关闭信号；主监听退出后，服务会等待 Docker listener
 完成在途请求再结束进程。
 

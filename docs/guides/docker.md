@@ -32,17 +32,18 @@ Stacktory 不向 Docker 客户端返回上游 Registry host。上游协议请求
 /v2/{repository}/blobs/{digest}
 ```
 
-为支持标准 Docker CLI，可为 Docker source 配置独立监听端口：
+为支持标准 Docker Registry 客户端，Docker source 需要同时配置监听端口和客户端可见地址：
 
 ```toml
 [[docker.sources]]
 name = "group"
 type = "group"
 members = ["official", "ghcr", "quay", "microsoft", "aliyun", "xuanyuan", "unstructured"]
-cli_listen_port = 19000
+registry_listen_port = 19000
+registry_public_url = "https://docker.example.com:19000"
 ```
 
-配置后，该端口的根路径固定绑定到 `group`：
+配置后，该监听端口的根路径固定绑定到 `group`，客户端使用 `registry_public_url`：
 
 ```text
 docker.example.com:19000/v2/...
@@ -54,8 +55,9 @@ docker.example.com:19000/v2/...
 Docker group 会按成员顺序回退 `401`、`403`、`404`、`408`、`429`、`5xx` 和网络
 失败；其他 `4xx` 直接返回。直接 source 入口不会向兄弟来源回退。
 
-可以由外部 DNS、端口映射或反向代理将域名绑定到该端口。未配置
-`cli_listen_port` 的 source 仍只能通过 `/mirror/docker/{name}/v2/...` 访问。
+`registry_public_url` 必须是客户端可访问的地址，不能包含路径、查询参数或片段；
+它可以由外部 DNS、端口映射或反向代理发布。未配置这对字段的 source 仍只能通过
+`/mirror/docker/{name}/v2/...` 访问。
 仓库的 `deploy/app/config.example.toml` 已为 `group` 显式配置 `19000`，
 `deploy/docker-compose.yml` 也映射了该端口；其他 source 需要按同样方式自行增加。
 

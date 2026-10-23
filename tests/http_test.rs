@@ -17,8 +17,9 @@ use axum::{
 };
 use sha2::{Digest, Sha256};
 use stacktory::{
-    Config, DockerConfig, EcosystemConfig, NugetConfig, ProxyConfig, RetentionConfig, RustupConfig,
-    ServerConfig, SourceConfig, SourceGraph, SourceType, StorageConfig, UpmConfig, VscodeConfig,
+    Config, DockerConfig, DockerRegistryEndpoint, EcosystemConfig, NugetConfig, ProxyConfig,
+    RetentionConfig, RustupConfig, ServerConfig, SourceConfig, SourceGraph, SourceType,
+    StorageConfig, UpmConfig, VscodeConfig,
     http::{router, router_with_rustup},
     service::RustupService,
 };
@@ -1034,7 +1035,13 @@ fn rustup_service_with_public_url(
                 group("group", &["official"]),
             ])
             .expect("docker sources"),
-            cli_listen_ports: BTreeMap::from([("group".to_owned(), 19000)]),
+            registry_endpoints: BTreeMap::from([(
+                "group".to_owned(),
+                DockerRegistryEndpoint {
+                    listen_port: 19000,
+                    public_url: Url::parse("http://127.0.0.1:19000").expect("Docker registry URL"),
+                },
+            )]),
         }),
         npm: Some(EcosystemConfig {
             sources: SourceGraph::new(vec![

@@ -101,7 +101,13 @@ pub type VscodeConfig = EcosystemConfig;
 #[derive(Clone, Debug)]
 pub struct DockerConfig {
     pub sources: SourceGraph,
-    pub cli_listen_ports: BTreeMap<String, u16>,
+    pub registry_endpoints: BTreeMap<String, DockerRegistryEndpoint>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DockerRegistryEndpoint {
+    pub listen_port: u16,
+    pub public_url: Url,
 }
 pub type NpmConfig = EcosystemConfig;
 pub type NugetConfig = EcosystemConfig;
@@ -154,20 +160,18 @@ impl SourceGraph {
 
     fn from_raw_docker(
         sources: Vec<RawDockerSourceConfig>,
-    ) -> Result<(Self, BTreeMap<String, u16>), ConfigError> {
-        let mut cli_listen_ports = BTreeMap::new();
-        let sources = sources
-            .into_iter()
-            .map(|source| {
-                let (source, port) = source.into_parts();
-                if let Some(port) = port {
-                    cli_listen_ports.insert(source.name.clone(), port);
-                }
-                source
-            })
-            .collect();
-        let graph = Self::from_raw(sources)?;
-        Ok((graph, cli_listen_ports))
+    ) -> Result<(Self, BTreeMap<String, DockerRegistryEndpoint>), ConfigError> {
+        let mut registry_endpoints = BTreeMap::new();
+        let mut normalized = Vec::with_capacity(sources.len());
+        for source in sources {
+            let (source, endpoint) = source.into_parts()?;
+            if let Some(endpoint) = endpoint {
+                registry_endpoints.insert(source.name.clone(), endpoint);
+            }
+            normalized.push(source);
+        }
+        let graph = Self::from_raw(normalized)?;
+        Ok((graph, registry_endpoints))
     }
 
     pub fn new(sources: Vec<SourceConfig>) -> Result<Self, ConfigError> {
@@ -321,12 +325,20 @@ pub enum ConfigError {
     InsecureHttpSource(String),
     #[error("NuGet source `{0}` base_url must be an actual `/v3/index.json` service index")]
     InvalidNugetServiceIndexUrl(String),
-    #[error("Docker source `{0}` has an invalid cli_listen_port")]
-    InvalidDockerCliPort(String),
-    #[error("Docker source `{source_name}` uses duplicate cli_listen_port {port}")]
-    DuplicateDockerCliPort { source_name: String, port: u16 },
-    #[error("Docker source `{source_name}` cli_listen_port {port} conflicts with server.port")]
-    DockerCliPortConflictsWithServer { source_name: String, port: u16 },
+    #[error("Docker source `{0}` has an invalid registry_listen_port")]
+    InvalidDockerRegistryPort(String),
+    #[error("Docker source `{0}` sets registry_listen_port without registry_public_url")]
+    DockerRegistryPublicUrlMissing(String),
+    #[error("Docker source `{0}` sets registry_public_url without registry_listen_port")]
+    DockerRegistryListenPortMissing(String),
+    #[error("Docker source `{0}` has an invalid registry_public_url")]
+    InvalidDockerRegistryPublicUrl(String),
+    #[error("Docker source `{source_name}` uses duplicate registry_listen_port {port}")]
+    DuplicateDockerRegistryPort { source_name: String, port: u16 },
+    #[error("Docker source `{source_name}` uses duplicate registry_public_url `{url}`")]
+    DuplicateDockerRegistryPublicUrl { source_name: String, url: String },
+    #[error("Docker source `{source_name}` registry_listen_port {port} conflicts with server.port")]
+    DockerRegistryPortConflictsWithServer { source_name: String, port: u16 },
     #[error("rustup.channels must contain at least one channel")]
     MissingRustupChannel,
     #[error("rustup channel `{0}` is invalid")]
@@ -397,21 +409,37 @@ struct RawDockerSourceConfig {
     #[serde(default)]
     members: Vec<String>,
     #[serde(default)]
-    cli_listen_port: Option<u16>,
+    registry_listen_port: Option<u16>,
+    #[serde(default)]
+    registry_public_url: Option<Url>,
 }
 
 impl RawDockerSourceConfig {
-    fn into_parts(self) -> (RawSourceConfig, Option<u16>) {
-        (
+    fn into_parts(self) -> Result<(RawSourceConfig, Option<DockerRegistryEndpoint>), ConfigError> {
+        let name = self.name;
+        let endpoint = match (self.registry_listen_port, self.registry_public_url) {
+            (None, None) => None,
+            (Some(_), None) => {
+                return Err(ConfigError::DockerRegistryPublicUrlMissing(name));
+            }
+            (None, Some(_)) => {
+                return Err(ConfigError::DockerRegistryListenPortMissing(name));
+            }
+            (Some(listen_port), Some(public_url)) => Some(DockerRegistryEndpoint {
+                listen_port,
+                public_url,
+            }),
+        };
+        Ok((
             RawSourceConfig {
-                name: self.name,
+                name,
                 source_type: self.source_type,
                 base_url: self.base_url,
                 allow_http: self.allow_http,
                 members: self.members,
             },
-            self.cli_listen_port,
-        )
+            endpoint,
+        ))
     }
 }
 
@@ -537,31 +565,48 @@ fn docker_config(
     let Some(raw) = raw else {
         return Ok(None);
     };
-    let (sources, cli_listen_ports) = SourceGraph::from_raw_docker(raw.sources)?;
+    let (sources, registry_endpoints) = SourceGraph::from_raw_docker(raw.sources)?;
     let mut used_ports = BTreeMap::new();
+    let mut used_urls = BTreeMap::new();
     for source in sources.entries.values() {
-        let Some(port) = cli_listen_ports.get(&source.name).copied() else {
+        let Some(endpoint) = registry_endpoints.get(&source.name) else {
             continue;
         };
+        let port = endpoint.listen_port;
         if port == 0 {
-            return Err(ConfigError::InvalidDockerCliPort(source.name.clone()));
+            return Err(ConfigError::InvalidDockerRegistryPort(source.name.clone()));
         }
         if port == server_port {
-            return Err(ConfigError::DockerCliPortConflictsWithServer {
+            return Err(ConfigError::DockerRegistryPortConflictsWithServer {
                 source_name: source.name.clone(),
                 port,
             });
         }
         if used_ports.insert(port, source.name.clone()).is_some() {
-            return Err(ConfigError::DuplicateDockerCliPort {
+            return Err(ConfigError::DuplicateDockerRegistryPort {
                 source_name: source.name.clone(),
                 port,
+            });
+        }
+        if !is_valid_docker_registry_public_url(&endpoint.public_url) {
+            return Err(ConfigError::InvalidDockerRegistryPublicUrl(
+                source.name.clone(),
+            ));
+        }
+        let public_url = endpoint.public_url.as_str().to_owned();
+        if used_urls
+            .insert(public_url.clone(), source.name.clone())
+            .is_some()
+        {
+            return Err(ConfigError::DuplicateDockerRegistryPublicUrl {
+                source_name: source.name.clone(),
+                url: public_url,
             });
         }
     }
     Ok(Some(DockerConfig {
         sources,
-        cli_listen_ports,
+        registry_endpoints,
     }))
 }
 
@@ -604,6 +649,17 @@ fn validate_public_url(url: &Url) -> Result<(), ConfigError> {
         return Err(ConfigError::PublicUrlMustUseHttps);
     }
     Ok(())
+}
+
+fn is_valid_docker_registry_public_url(url: &Url) -> bool {
+    matches!(url.scheme(), "http" | "https")
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.path() == "/"
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.port() != Some(0)
 }
 
 fn is_valid_channel(channel: &str) -> bool {

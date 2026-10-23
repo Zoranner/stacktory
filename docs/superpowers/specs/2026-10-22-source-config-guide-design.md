@@ -73,9 +73,11 @@ GET /docs/{stack}/index.md
 | Docker | Docker | 修改 Docker `registry-mirrors` | 需要管理员权限和重启；不猜测地址 |
 
 入口不是写死的 `group`。每个详情页从当前服务配置读取对应生态的全部 source，展示
-入口名、`Group`/`Proxy` 类型、Group 成员、解析后的地址和 Docker CLI 端口。Proxy 和
+入口名、`Group`/`Proxy` 类型、Group 成员、解析后的地址和 Docker 客户端地址。Proxy 和
 Group 分开展示；页面初始选择第一个 Group，没有 Group 时选择第一个 Proxy。该初始值
 只用于生成首屏配置步骤，用户可以在详情页切换当前入口，不表示推荐。
+Docker 的独立 Registry 入口用 `registry_listen_port` 和 `registry_public_url` 成对配置，
+页面只展示客户端可访问的完整地址，不单独展示监听端口。
 
 没有实现的后端生态（PyPI、Winget）不出现在可执行目录中，只保留在页面说明里。
 
@@ -225,7 +227,7 @@ Docker listener 不提供这两个页面。页面不增加配置；服务地址�
 - `/docs/rustup/index.md` 返回 `200` 和 `text/markdown; charset=utf-8`。
 - 页面包含全部可用技术栈，且每个卡片有可复制提示词。
 - npm 和 Bun 位于同一个 Node.js 分组，共用当前 npm 生态的入口列表。
-- 详情页列出当前生态配置的全部 Group/Proxy 入口、成员、地址和 Docker CLI 端口，
+- 详情页列出当前生态配置的全部 Group/Proxy 入口、成员、地址和 Docker 客户端地址，
   不再只显示一个写死的 `group`。
 - Unity 页面的入口列表来自 UPM 配置，而不是单一的 `group` 字符串。
 - 用户修改 `web/docs/content/*.md` 后，页面文案和提示词随构建更新。

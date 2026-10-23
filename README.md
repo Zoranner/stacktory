@@ -9,7 +9,7 @@ Stacktory 为公司内网开发机提供统一的工具链和软件包下载入�
 | Rustup | 可用 | 配置 `RUSTUP_DIST_SERVER` 后安装 Rust 工具链 |
 | Cargo | 可用 | 配置 Cargo source replacement 后正常使用 Cargo |
 | VS Code 扩展 | 可用 | 使用公司提供的专用 VS Code，在扩展面板中安装 |
-| Docker 镜像 | 公开无认证 Registry V2 只读可用 | 使用 source 的独立 CLI 端口或 `/mirror/docker/{name}/v2/...` |
+| Docker 镜像 | 公开无认证 Registry V2 只读可用 | 使用 source 的独立 Registry 入口或 `/mirror/docker/{name}/v2/...` |
 | npm 包 | 可用 | 配置 npm registry 后使用 `npm install` 或 `npm ci` |
 | Unity UPM 包 | 可用 | 在 Unity 项目中配置 Stacktory scoped registry |
 | PyPI 包 | 暂不可用 | 请勿配置 pip |
@@ -78,8 +78,9 @@ docker compose -f deploy/docker-compose.yml up -d
 `storage.data_dir`、`storage.log_dir` 应分别保持为 `/app/data`、`/app/logs`。
 
 compose 默认发布主服务端口 `18000` 和 Docker `group` 入口的 `19000`。如果需要为其他
-Docker source 开放标准 CLI 端口，在 `deploy/app/config.toml` 中设置对应
-`cli_listen_port`，并在 `deploy/docker-compose.yml` 中增加相同的端口映射。
+Docker source 开放标准 Registry 入口，在 `deploy/app/config.toml` 中同时设置
+`registry_listen_port` 和 `registry_public_url`，并在 `deploy/docker-compose.yml` 中
+增加相同的端口映射。`registry_public_url` 必须是客户端实际访问的完整地址。
 compose 会通过容器内 `127.0.0.1:18000` 的 TCP 连接检查服务是否在监听。
 需要区分存活和就绪时，`/healthz` 只报告进程可响应，`/readyz` 会检查数据目录和
 日志目录可写；就绪检查失败返回 `503`。

@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 
-use crate::{Config, SourceGraph, SourceType};
+use crate::{Config, DockerRegistryEndpoint, SourceGraph, SourceType};
 
 #[derive(Clone, Debug)]
 pub(crate) struct SourceEntry {
     pub(crate) name: String,
     pub(crate) source_type: SourceType,
     pub(crate) members: Vec<String>,
-    pub(crate) cli_port: Option<u16>,
+    pub(crate) registry_public_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -35,7 +35,7 @@ impl SourceCatalog {
             catalog.add("vscode", &vscode.sources, None);
         }
         if let Some(docker) = config.docker.as_ref() {
-            catalog.add("docker", &docker.sources, Some(&docker.cli_listen_ports));
+            catalog.add("docker", &docker.sources, Some(&docker.registry_endpoints));
         }
         catalog
     }
@@ -44,7 +44,7 @@ impl SourceCatalog {
         &mut self,
         ecosystem: &'static str,
         graph: &SourceGraph,
-        ports: Option<&BTreeMap<String, u16>>,
+        endpoints: Option<&BTreeMap<String, DockerRegistryEndpoint>>,
     ) {
         self.ecosystems.insert(
             ecosystem,
@@ -54,7 +54,15 @@ impl SourceCatalog {
                     name: source.name.clone(),
                     source_type: source.source_type,
                     members: source.members.clone(),
-                    cli_port: ports.and_then(|ports| ports.get(&source.name).copied()),
+                    registry_public_url: endpoints
+                        .and_then(|endpoints| endpoints.get(&source.name))
+                        .map(|endpoint| {
+                            endpoint
+                                .public_url
+                                .as_str()
+                                .trim_end_matches('/')
+                                .to_owned()
+                        }),
                 })
                 .collect(),
         );
@@ -69,6 +77,18 @@ impl SourceCatalog {
 
     pub(crate) fn initial(&self, ecosystem: &str) -> Option<&SourceEntry> {
         let sources = self.sources(ecosystem);
+        if ecosystem == "docker" {
+            return sources
+                .iter()
+                .find(|source| {
+                    source.source_type == SourceType::Group && source.registry_public_url.is_some()
+                })
+                .or_else(|| {
+                    sources
+                        .iter()
+                        .find(|source| source.registry_public_url.is_some())
+                });
+        }
         sources
             .iter()
             .find(|source| source.source_type == SourceType::Group)
@@ -77,11 +97,16 @@ impl SourceCatalog {
 
     #[cfg(test)]
     pub(crate) fn sample() -> Self {
-        let entry = |name: &str, source_type: SourceType, members: &[&str], cli_port| SourceEntry {
-            name: name.to_owned(),
-            source_type,
-            members: members.iter().map(|member| (*member).to_owned()).collect(),
-            cli_port,
+        let entry = |name: &str,
+                     source_type: SourceType,
+                     members: &[&str],
+                     registry_public_url: Option<&str>| {
+            SourceEntry {
+                name: name.to_owned(),
+                source_type,
+                members: members.iter().map(|member| (*member).to_owned()).collect(),
+                registry_public_url: registry_public_url.map(str::to_owned),
+            }
         };
         let mut catalog = Self::default();
         catalog.ecosystems.insert(
@@ -131,7 +156,12 @@ impl SourceCatalog {
             "docker",
             vec![
                 entry("official", SourceType::Proxy, &[], None),
-                entry("group", SourceType::Group, &["official"], Some(19000)),
+                entry(
+                    "group",
+                    SourceType::Group,
+                    &["official"],
+                    Some("http://docker.example.test:19000"),
+                ),
             ],
         );
         catalog

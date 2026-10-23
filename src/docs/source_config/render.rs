@@ -40,14 +40,30 @@ pub(crate) fn render_section_markdown(
     output.push_str(&replace_template(&section.summary, base_url, &endpoint));
     output.push_str("\n\n");
     if let Some(source) = catalog.initial(&section.ecosystem) {
+        let other_entries = if section.ecosystem == "docker" {
+            "其他入口的 Docker 客户端地址见下方入口列表。"
+        } else {
+            "如需其他入口，请按下方入口列表替换地址。"
+        };
         output.push_str(&format!(
-            "Markdown 页面使用入口 `{}`（{}）。如需其他入口，请按下方入口列表替换地址。\n\n",
+            "Markdown 页面使用入口 `{}`（{}）。{other_entries}\n\n",
             source.name,
             source_type_label(source.source_type)
         ));
     }
     output.push_str("## 入口\n\n");
     output.push_str(&render_sources_markdown(section, base_url, catalog));
+    if section.ecosystem == "docker"
+        && !catalog
+            .sources(&section.ecosystem)
+            .iter()
+            .any(|source| source.registry_public_url.is_some())
+    {
+        output.push_str(
+            "\n## 配置\n\n当前配置未提供 Docker 客户端地址。请为入口同时设置 `registry_listen_port` 和 `registry_public_url`。\n",
+        );
+        return output;
+    }
     output.push_str("\n## 给智能体的提示词\n\n```text\n");
     output.push_str(&replace_template(&section.prompt, base_url, &endpoint));
     output.push_str("\n```\n\n## 手动步骤\n\n");
@@ -200,6 +216,43 @@ fn render_index_body(base_url: &str, catalog: &SourceCatalog) -> String {
 }
 
 fn render_section_body(section: &GuideSection, base_url: &str, catalog: &SourceCatalog) -> String {
+    let sources = render_sources_html(section, base_url, catalog);
+    let config = render_config_html(section, base_url, catalog);
+    format!(
+        r#"<nav class="breadcrumb" aria-label="面包屑"><a href="{docs_home}">使用说明</a><span class="breadcrumb-separator" aria-hidden="true">/</span><span>{group_title}</span><span class="breadcrumb-separator" aria-hidden="true">/</span><span>{title}</span></nav>
+<header class="article-header">
+  <p class="eyebrow">{group_title}</p>
+  <h1>{title}</h1>
+  <p class="article-summary">{summary}</p>
+</header>
+<section class="article-section" aria-labelledby="sources-title">
+  <div class="section-heading"><h2 id="sources-title">入口</h2></div>
+  {sources}
+</section>
+{config}"#,
+        docs_home = escape_html(&site_href(base_url, "/docs")),
+        group_title = escape_html(&section.group_title),
+        title = escape_html(&section.title),
+        summary = escape_html(&section.summary),
+        sources = sources,
+        config = config,
+    )
+}
+
+fn render_config_html(section: &GuideSection, base_url: &str, catalog: &SourceCatalog) -> String {
+    let has_endpoint = section.ecosystem != "docker"
+        || catalog
+            .sources(&section.ecosystem)
+            .iter()
+            .any(|source| source.registry_public_url.is_some());
+    if !has_endpoint {
+        return r#"<section class="article-section" aria-labelledby="config-title">
+  <div class="section-heading"><h2 id="config-title">配置</h2></div>
+  <p class="config-empty">当前配置未提供 Docker 客户端地址。请为入口同时设置 <code>registry_listen_port</code> 和 <code>registry_public_url</code>。</p>
+</section>"#
+            .to_owned();
+    }
+
     let endpoint = initial_endpoint(section, base_url, catalog);
     let prompt = escape_html(&replace_template(&section.prompt, base_url, &endpoint));
     let manual = escape_html(&replace_template(
@@ -215,20 +268,9 @@ fn render_section_body(section: &GuideSection, base_url: &str, catalog: &SourceC
             escape_html(&replace_template(note, base_url, &endpoint))
         ));
     }
-    let sources = render_sources_html(section, base_url, catalog);
     let entry_picker = render_entry_picker(section, base_url, catalog);
     format!(
-        r#"<nav class="breadcrumb" aria-label="面包屑"><a href="{docs_home}">使用说明</a><span class="breadcrumb-separator" aria-hidden="true">/</span><span>{group_title}</span><span class="breadcrumb-separator" aria-hidden="true">/</span><span>{title}</span></nav>
-<header class="article-header">
-  <p class="eyebrow">{group_title}</p>
-  <h1>{title}</h1>
-  <p class="article-summary">{summary}</p>
-</header>
-<section class="article-section" aria-labelledby="sources-title">
-  <div class="section-heading"><h2 id="sources-title">入口</h2></div>
-  {sources}
-</section>
-<section class="article-section" aria-labelledby="config-title">
+        r#"<section class="article-section" aria-labelledby="config-title">
   <div class="section-heading"><h2 id="config-title">配置</h2></div>
   {entry_picker}
   <div class="mode-switch" role="tablist" aria-label="配置方式">
@@ -246,13 +288,8 @@ fn render_section_body(section: &GuideSection, base_url: &str, catalog: &SourceC
     <div class="notes"><h2>注意</h2><ul>{notes}</ul></div>
   </div>
 </section>"#,
-        docs_home = escape_html(&site_href(base_url, "/docs")),
-        group_title = escape_html(&section.group_title),
-        title = escape_html(&section.title),
-        summary = escape_html(&section.summary),
-        entry_picker = entry_picker,
-        sources = sources,
         id = section.id,
+        entry_picker = entry_picker,
         prompt = prompt,
         manual = manual,
         verify = verify,
@@ -276,14 +313,22 @@ fn render_sources_markdown(
         .iter()
         .filter(|source| source.source_type == SourceType::Group);
     let docker = section.ecosystem == "docker";
+    let show_registry = docker
+        && sources
+            .iter()
+            .any(|source| source.registry_public_url.is_some());
     let mut output = String::new();
 
     output.push_str("### Proxy 入口（直接来源）\n\n");
     let proxies = proxies.collect::<Vec<_>>();
     if proxies.is_empty() {
         output.push_str("当前未配置 Proxy 入口。\n");
-    } else if docker && proxies.iter().any(|source| source.cli_port.is_some()) {
-        output.push_str("| 入口 | 地址 | CLI 端口 |\n| --- | --- | --- |\n");
+    } else if show_registry
+        && proxies
+            .iter()
+            .any(|source| source.registry_public_url.is_some())
+    {
+        output.push_str("| 入口 | 服务地址 | Docker 客户端地址 |\n| --- | --- | --- |\n");
         for source in proxies {
             let endpoint = endpoint_for(&section.ecosystem, &source.name, base_url)
                 .unwrap_or_else(|| "—".to_owned());
@@ -291,7 +336,7 @@ fn render_sources_markdown(
                 "| `{}` | `{}` | {} |\n",
                 source.name,
                 endpoint,
-                source_port(source)
+                source_registry_url(source)
             ));
         }
     } else {
@@ -307,8 +352,14 @@ fn render_sources_markdown(
     let groups = groups.collect::<Vec<_>>();
     if groups.is_empty() {
         output.push_str("当前未配置 Group 入口。\n");
-    } else if docker && groups.iter().any(|source| source.cli_port.is_some()) {
-        output.push_str("| 入口 | 成员 | 地址 | CLI 端口 |\n| --- | --- | --- | --- |\n");
+    } else if show_registry
+        && groups
+            .iter()
+            .any(|source| source.registry_public_url.is_some())
+    {
+        output.push_str(
+            "| 入口 | 成员 | 服务地址 | Docker 客户端地址 |\n| --- | --- | --- | --- |\n",
+        );
         for source in groups {
             let endpoint = endpoint_for(&section.ecosystem, &source.name, base_url)
                 .unwrap_or_else(|| "—".to_owned());
@@ -317,7 +368,7 @@ fn render_sources_markdown(
                 source.name,
                 source_members(source),
                 endpoint,
-                source_port(source)
+                source_registry_url(source)
             ));
         }
     } else {
@@ -334,9 +385,13 @@ fn render_sources_markdown(
         }
     }
 
-    if docker && sources.iter().any(|source| source.cli_port.is_some()) {
+    if show_registry {
         output.push_str(
-            "\nCLI 端口是 Docker 客户端直连该入口的独立监听端口；未配置时使用 `/mirror/docker/{name}/v2/`。\n",
+            "\nDocker 客户端地址来自每个入口的 `registry_public_url`，可直接用于 Docker `registry-mirrors`。\n",
+        );
+    } else if docker {
+        output.push_str(
+            "\n当前未配置 Docker 客户端地址。请在入口上同时设置 `registry_listen_port` 和 `registry_public_url`。\n",
         );
     }
     output
@@ -356,26 +411,33 @@ fn render_sources_html(section: &GuideSection, base_url: &str, catalog: &SourceC
         .filter(|source| source.source_type == SourceType::Group)
         .collect::<Vec<_>>();
     let docker = section.ecosystem == "docker";
+    let show_registry = docker
+        && sources
+            .iter()
+            .any(|source| source.registry_public_url.is_some());
     let mut output = String::new();
 
     output.push_str(r#"<h3 class="subsection-title">Proxy 入口（直接来源）</h3>"#);
     if proxies.is_empty() {
         output.push_str(r#"<p class="source-empty">当前未配置 Proxy 入口。</p>"#);
     } else {
-        let show_cli_port = docker && proxies.iter().any(|source| source.cli_port.is_some());
-        let port_header = if show_cli_port {
-            "<th>CLI 端口</th>"
+        let show_registry_proxy = show_registry
+            && proxies
+                .iter()
+                .any(|source| source.registry_public_url.is_some());
+        let additional_header = if show_registry_proxy {
+            "<th>服务地址</th><th>Docker 客户端地址</th>"
         } else {
-            ""
+            "<th>地址</th>"
         };
         let mut rows = String::new();
         for source in proxies {
             let endpoint = endpoint_for(&section.ecosystem, &source.name, base_url)
                 .unwrap_or_else(|| "—".to_owned());
-            let port_cell = if show_cli_port {
+            let registry_cell = if show_registry_proxy {
                 format!(
-                    r#"<td class="source-port">{}</td>"#,
-                    escape_html(&source_port(source))
+                    r#"<td><code class="source-url registry-url">{}</code></td>"#,
+                    escape_html(&source_registry_url(source))
                 )
             } else {
                 String::new()
@@ -384,11 +446,11 @@ fn render_sources_html(section: &GuideSection, base_url: &str, catalog: &SourceC
                 r#"<tr><td><code class="source-name">{}</code></td><td><code class="source-url">{}</code></td>{}</tr>"#,
                 escape_html(&source.name),
                 escape_html(&endpoint),
-                port_cell,
+                registry_cell,
             ));
         }
         output.push_str(&format!(
-            r#"<div class="source-table-wrap"><table class="source-table"><thead><tr><th>入口</th><th>地址</th>{port_header}</tr></thead><tbody>{rows}</tbody></table></div>"#
+            r#"<div class="source-table-wrap"><table class="source-table"><thead><tr><th>入口</th>{additional_header}</tr></thead><tbody>{rows}</tbody></table></div>"#
         ));
     }
 
@@ -396,22 +458,25 @@ fn render_sources_html(section: &GuideSection, base_url: &str, catalog: &SourceC
     if groups.is_empty() {
         output.push_str(r#"<p class="source-empty">当前未配置 Group 入口。</p>"#);
     } else {
-        let show_cli_port = docker && groups.iter().any(|source| source.cli_port.is_some());
+        let show_registry_group = show_registry
+            && groups
+                .iter()
+                .any(|source| source.registry_public_url.is_some());
         output.push_str(r#"<div class="group-list">"#);
         for source in groups {
             let endpoint = endpoint_for(&section.ecosystem, &source.name, base_url)
                 .unwrap_or_else(|| "—".to_owned());
-            let port = if show_cli_port {
+            let registry = if show_registry_group {
                 format!(
-                    r#"<span class="source-port">CLI 端口 {}</span>"#,
-                    escape_html(&source_port(source))
+                    r#"<span class="registry-address">Docker 客户端地址 <code>{}</code></span>"#,
+                    escape_html(&source_registry_url(source))
                 )
             } else {
                 String::new()
             };
             let members = group_members_html(source);
             output.push_str(&format!(
-                r#"<div class="group-row"><div class="group-head"><code class="source-name">{name}</code><span class="group-members">成员：{members}</span></div><code class="source-url">{endpoint}</code>{port}</div>"#,
+                r#"<div class="group-row"><div class="group-head"><code class="source-name">{name}</code><span class="group-members">成员：{members}</span></div><code class="source-url">{endpoint}</code>{registry}</div>"#,
                 name = escape_html(&source.name),
                 members = members,
                 endpoint = escape_html(&endpoint),
@@ -420,9 +485,13 @@ fn render_sources_html(section: &GuideSection, base_url: &str, catalog: &SourceC
         output.push_str("</div>");
     }
 
-    if docker && sources.iter().any(|source| source.cli_port.is_some()) {
+    if show_registry {
         output.push_str(
-            r#"<p class="field-note">CLI 端口是 Docker 客户端直连该入口的独立监听端口；未配置时使用 <code>/mirror/docker/{name}/v2/</code>。</p>"#,
+            r#"<p class="field-note">Docker 客户端地址来自每个入口的 <code>registry_public_url</code>，可直接用于 Docker <code>registry-mirrors</code>。</p>"#,
+        );
+    } else if docker {
+        output.push_str(
+            r#"<p class="field-note">当前未配置 Docker 客户端地址；请在入口上同时设置 <code>registry_listen_port</code> 和 <code>registry_public_url</code>。</p>"#,
         );
     }
     output
@@ -433,14 +502,15 @@ fn render_entry_picker(section: &GuideSection, base_url: &str, catalog: &SourceC
     let Some(initial) = initial else {
         return String::new();
     };
-    let Some(initial_endpoint) = endpoint_for(&section.ecosystem, &initial.name, base_url) else {
+    let Some(initial_endpoint) = configurable_endpoint_for(&section.ecosystem, initial, base_url)
+    else {
         return String::new();
     };
 
     let mut groups = Vec::new();
     let mut proxies = Vec::new();
     for source in catalog.sources(&section.ecosystem) {
-        let Some(endpoint) = endpoint_for(&section.ecosystem, &source.name, base_url) else {
+        let Some(endpoint) = configurable_endpoint_for(&section.ecosystem, source, base_url) else {
             continue;
         };
         match source.source_type {
@@ -509,18 +579,29 @@ fn group_members_html(source: &SourceEntry) -> String {
     }
 }
 
-fn source_port(source: &SourceEntry) -> String {
+fn source_registry_url(source: &SourceEntry) -> String {
     source
-        .cli_port
-        .map(|port| format!(":{port}"))
+        .registry_public_url
+        .clone()
         .unwrap_or_else(|| "—".to_owned())
 }
 
 fn initial_endpoint(section: &GuideSection, base_url: &str, catalog: &SourceCatalog) -> String {
     catalog
         .initial(&section.ecosystem)
-        .and_then(|source| endpoint_for(&section.ecosystem, &source.name, base_url))
+        .and_then(|source| configurable_endpoint_for(&section.ecosystem, source, base_url))
         .unwrap_or_else(|| "当前配置未提供入口".to_owned())
+}
+
+fn configurable_endpoint_for(
+    ecosystem: &str,
+    source: &SourceEntry,
+    base_url: &str,
+) -> Option<String> {
+    if ecosystem == "docker" {
+        return source.registry_public_url.clone();
+    }
+    endpoint_for(ecosystem, &source.name, base_url)
 }
 
 fn source_type_label(source_type: SourceType) -> &'static str {

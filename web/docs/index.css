@@ -506,13 +506,6 @@ p {
   overflow-wrap: anywhere;
 }
 
-.source-port {
-  color: var(--paper-muted);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  white-space: nowrap;
-}
-
 .group-list {
   border-top: 1px solid var(--line-strong);
   border-bottom: 1px solid var(--line);
@@ -546,9 +539,15 @@ p {
   grid-column: 1 / -1;
 }
 
-.group-row .source-port {
-  grid-column: 2;
-  grid-row: 1;
+.registry-address {
+  grid-column: 1 / -1;
+  color: var(--paper-muted);
+  font-size: var(--text-xs);
+}
+
+.registry-address code {
+  color: var(--champagne);
+  overflow-wrap: anywhere;
 }
 
 .field-note {
@@ -563,6 +562,18 @@ p {
   border-bottom: 1px solid var(--line);
   color: var(--paper-muted);
   font-size: var(--text-md);
+}
+
+.config-empty {
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--line);
+  color: var(--paper-soft);
+  font-size: var(--text-md);
+}
+
+.config-empty code {
+  color: var(--champagne);
 }
 
 .mode-switch {
