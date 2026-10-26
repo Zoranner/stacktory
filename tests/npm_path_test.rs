@@ -27,9 +27,21 @@ fn parses_scoped_metadata_package_with_one_encoded_separator() {
 }
 
 #[test]
+fn parses_scoped_metadata_package_with_a_lowercase_encoded_separator() {
+    let path = parse_metadata_path("@scope%2fpackage").expect("valid scoped package");
+
+    assert_eq!(
+        path,
+        NpmPackagePath {
+            package: "@scope/package".to_owned(),
+        }
+    );
+}
+
+#[test]
 fn rejects_decoded_scoped_separator_and_other_encoded_slashes() {
     assert!(parse_metadata_path("@scope/package").is_err());
-    assert!(parse_metadata_path("@scope%2fpackage").is_err());
+    assert!(parse_metadata_path("@scope%2Fpackage%2fextra").is_err());
     assert!(parse_metadata_path("@scope%252Fpackage").is_err());
     assert!(parse_metadata_path("package%2Fextra").is_err());
 }

@@ -34,6 +34,16 @@ pub fn parse_metadata_path(path: &str) -> Result<NpmPackagePath, NpmPathError> {
         return Err(NpmPathError::InvalidPath(path.to_owned()));
     }
 
+    // Percent-encoded separators are case-insensitive on the wire. Bun emits
+    // `%2f` for scoped packages while some npm clients use `%2F`.
+    let normalized_path;
+    let path = if path.contains("%2f") {
+        normalized_path = path.replace("%2f", "%2F");
+        normalized_path.as_str()
+    } else {
+        path
+    };
+
     let package = if let Some((scope, package)) = path.split_once("%2F") {
         if path.matches("%2F").count() != 1 || scope.contains('%') || package.contains('%') {
             return Err(NpmPathError::InvalidPath(path.to_owned()));
