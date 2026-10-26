@@ -62,26 +62,27 @@ GET /mirror/npm/{name}/{package}/{version}
 GET /mirror/npm/{name}/-/package/{package}/dist-tags
 GET /mirror/npm/{name}/-/v1/search
 GET /mirror/npm/{name}/-/ping
-GET /mirror/npm/{name}/tarballs/{artifact-key}
+GET /mirror/npm/{name}/{package}/-/{file}.tgz
+GET /mirror/npm/{name}/@scope/{package}/-/{file}.tgz
 ```
 
 版本查询、dist-tags、search 和 ping 是只读查询接口：search 仅透传官方支持的查询
 参数，版本与 dist-tags 从已重写的 metadata 派生，不新增缓存表示。
 
 上面的 `<package>`、`<version>` 和 scoped package 路径只是协议对象键；实现必须
-按 npm package name 规则校验路径。scoped metadata 的原始请求路径只允许
-`@scope%2Fpackage` 中作为 scope 分隔符的 `%2F`；适配器先按原始路径识别这一
-特例，再分别校验 scope 和 package。其他编码斜杠、空段、路径穿越和客户端
-指定的 URL 一律拒绝。
+按 npm package name 规则校验路径。scoped 路径允许 `@scope/package`，也允许
+`@scope%2Fpackage` 或 `@scope%2fpackage` 中作为 scope 分隔符的编码斜杠；
+适配器先按原始路径识别这一特例，再分别校验 scope 和 package。其他编码斜杠、
+空段、路径穿越和客户端指定的 URL 一律拒绝。
 
 首期适配器读取 npm registry metadata，并保留客户端 restore/install 所需的
 package name、版本对象、dist 信息和其他未禁止的 metadata 字段。版本对象中的
-tarball 地址必须重写为当前入口的
-`/mirror/npm/{name}/tarballs/{artifact-key}` 路径，不向客户端暴露上游 registry
-地址。`artifact-key` 由适配器从 metadata 的 dist 记录生成并绑定当前版本和
-selected proxy，不复用客户端传入的 tarball 路径。`dist.integrity` 或可用的
-`dist.shasum` 是制品校验期望值；缺少上游摘要时只能记录本地摘要，不能声称
-完成上游完整性证明。
+tarball 地址必须重写为当前入口的 npm 标准路径
+`/mirror/npm/{name}/{package}/-/{file}.tgz`，不向客户端暴露上游 registry
+地址。适配器从 metadata 的 dist 记录生成内部 `artifact-key`，绑定当前版本和
+selected proxy；标准 tarball 请求按 package name 和文件名查回该 descriptor，
+不复用客户端传入的任意路径。`dist.integrity` 或可用的 `dist.shasum` 是制品
+校验期望值；缺少上游摘要时只能记录本地摘要，不能声称完成上游完整性证明。
 
 metadata 命中某个 proxy 后，版本对象和 tarball 请求必须保留
 `selected_proxy` 绑定。group 不合并多个 proxy 的版本集合；只有当前来源不可用

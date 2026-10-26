@@ -46,7 +46,10 @@ async fn upm_serves_metadata_and_tarball_through_its_own_route() {
     let tarball = metadata["versions"]["1.0.0"]["dist"]["tarball"]
         .as_str()
         .expect("UPM tarball URL");
-    assert!(tarball.starts_with("http://127.0.0.1:18761/mirror/upm/group/tarballs/"));
+    assert_eq!(
+        tarball,
+        "http://127.0.0.1:18761/mirror/upm/group/com.company.package/-/com.company.package-1.0.0.tgz"
+    );
 
     let tarball_path = Url::parse(tarball)
         .expect("UPM tarball URL")
@@ -104,8 +107,8 @@ async fn upm_supports_search_version_dist_tags_and_ping_reads() {
     assert!(
         version["dist"]["tarball"]
             .as_str()
-            .expect("UPM internal tarball")
-            .contains("/mirror/upm/group/tarballs/")
+            .expect("UPM standard tarball")
+            .contains("/mirror/upm/group/com.company.package/-/com.company.package-1.0.0.tgz")
     );
 
     let tags = router

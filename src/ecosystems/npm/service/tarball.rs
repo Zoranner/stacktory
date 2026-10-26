@@ -1,6 +1,34 @@
 use super::*;
+use crate::ecosystems::npm::path::{NpmTarballPath, tarball_file_name};
 
 impl NpmService {
+    pub(super) async fn standard_tarball(
+        &self,
+        entry_name: &str,
+        request: &NpmTarballPath,
+        pool: &SourcePool,
+    ) -> Result<ArtifactFile, NpmError> {
+        if !(self.flavor.is_valid_package)(&request.package) {
+            return Err(NpmError::MissingArtifact(request.file_name.clone()));
+        }
+        let _ = self.metadata(entry_name, &request.package, pool).await?;
+        let snapshot = self
+            .storage
+            .read_metadata(entry_name, &request.package)?
+            .ok_or_else(|| NpmError::MissingArtifact(request.file_name.clone()))?;
+        let descriptor = snapshot
+            .descriptors
+            .iter()
+            .find(|descriptor| {
+                descriptor.package == request.package
+                    && tarball_file_name(&descriptor.package, &descriptor.version)
+                        == request.file_name
+            })
+            .ok_or_else(|| NpmError::MissingArtifact(request.file_name.clone()))?;
+        self.tarball(entry_name, &descriptor.artifact_key, pool)
+            .await
+    }
+
     pub(super) async fn tarball(
         &self,
         entry_name: &str,

@@ -34,7 +34,7 @@ use super::{
         ArtifactFile, IntegrityExpectation, NpmCacheKey, NpmStorage, StorageError, StoredMetadata,
     },
     metadata::{NpmArtifactDescriptor, NpmMetadataError},
-    path::{parse_artifact_path, parse_metadata_path},
+    path::{parse_metadata_path, parse_tarball_path},
 };
 
 mod metadata;
@@ -186,12 +186,8 @@ impl NpmService {
                 Err(error) => npm_error_response(&error),
             };
         }
-        if let Some(artifact_key) = path.strip_prefix("tarballs/") {
-            let artifact_key = match parse_artifact_path(artifact_key) {
-                Ok(path) => path.artifact_key,
-                Err(_) => return StatusCode::NOT_FOUND.into_response(),
-            };
-            return match self.tarball(entry_name, &artifact_key, pool).await {
+        if let Ok(tarball) = parse_tarball_path(path) {
+            return match self.standard_tarball(entry_name, &tarball, pool).await {
                 Ok(file) => artifact_response(file).await,
                 Err(error) => npm_error_response(&error),
             };

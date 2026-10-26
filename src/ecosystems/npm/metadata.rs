@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use url::Url;
 
-use super::path::{NpmPathError, validate_package_name};
+use super::path::{NpmPathError, tarball_file_name, validate_package_name};
 
 #[derive(Clone, Debug)]
 pub struct NpmMetadata {
@@ -205,13 +205,9 @@ pub fn rewrite_compatible_metadata(
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         };
-        let internal_url = internal_tarball_url(
-            root_url,
-            route_ecosystem,
-            entry_name,
-            &descriptor.artifact_key,
-        );
-        dist.insert("tarball".to_owned(), Value::String(internal_url));
+        let tarball_url =
+            standard_tarball_url(root_url, route_ecosystem, entry_name, &package, version);
+        dist.insert("tarball".to_owned(), Value::String(tarball_url));
         descriptors.push(descriptor);
     }
 
@@ -232,16 +228,18 @@ fn artifact_key(
     format!("{:x}", Sha256::digest(identity.as_bytes()))
 }
 
-fn internal_tarball_url(
+fn standard_tarball_url(
     root_url: &Url,
     route_ecosystem: &str,
     entry_name: &str,
-    artifact_key: &str,
+    package: &str,
+    version: &str,
 ) -> String {
     let mut url = root_url.clone();
     let base_path = root_url.path().trim_end_matches('/');
+    let file_name = tarball_file_name(package, version);
     url.set_path(&format!(
-        "{base_path}/mirror/{route_ecosystem}/{entry_name}/tarballs/{artifact_key}"
+        "{base_path}/mirror/{route_ecosystem}/{entry_name}/{package}/-/{file_name}"
     ));
     url.set_query(None);
     url.set_fragment(None);

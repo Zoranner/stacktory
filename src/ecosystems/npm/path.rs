@@ -10,6 +10,12 @@ pub struct NpmArtifactPath {
     pub artifact_key: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NpmTarballPath {
+    pub package: String,
+    pub file_name: String,
+}
+
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum NpmPathError {
     #[error("npm path `{0}` is invalid")]
@@ -91,6 +97,38 @@ pub fn parse_artifact_path(path: &str) -> Result<NpmArtifactPath, NpmPathError> 
     Ok(NpmArtifactPath {
         artifact_key: path.to_owned(),
     })
+}
+
+pub fn parse_tarball_path(path: &str) -> Result<NpmTarballPath, NpmPathError> {
+    let (package_path, file_name) = path
+        .split_once("/-/")
+        .ok_or_else(|| NpmPathError::InvalidPath(path.to_owned()))?;
+    if package_path.is_empty() || !is_safe_tarball_file_name(file_name) {
+        return Err(NpmPathError::InvalidPath(path.to_owned()));
+    }
+    let package = if package_path.contains('%') {
+        parse_metadata_path(package_path)?.package
+    } else {
+        validate_package_name(package_path)?;
+        package_path.to_owned()
+    };
+    Ok(NpmTarballPath {
+        package,
+        file_name: file_name.to_owned(),
+    })
+}
+
+pub(crate) fn tarball_file_name(package: &str, version: &str) -> String {
+    let name = package.rsplit('/').next().unwrap_or(package);
+    format!("{name}-{version}.tgz")
+}
+
+fn is_safe_tarball_file_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.ends_with(".tgz")
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+'))
 }
 
 fn validate_name_part(value: &str) -> Result<(), NpmPathError> {

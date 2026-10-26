@@ -29,7 +29,7 @@ use tower::ServiceExt;
 use url::Url;
 
 #[tokio::test]
-async fn serves_unscoped_and_scoped_metadata_with_internal_tarball_urls() {
+async fn serves_unscoped_and_scoped_metadata_with_standard_tarball_urls() {
     let package_body = b"verified npm tarball".to_vec();
     let artifact_requests = Arc::new(AtomicUsize::new(0));
     let (upstream, _) = start_npm_server(
@@ -56,8 +56,11 @@ async fn serves_unscoped_and_scoped_metadata_with_internal_tarball_urls() {
     .expect("metadata JSON");
     let tarball = metadata["versions"]["1.0.0"]["dist"]["tarball"]
         .as_str()
-        .expect("internal tarball URL");
-    assert!(tarball.starts_with("http://127.0.0.1:18761/mirror/npm/official/tarballs/"));
+        .expect("standard tarball URL");
+    assert_eq!(
+        tarball,
+        "http://127.0.0.1:18761/mirror/npm/official/left-pad/-/left-pad-1.0.0.tgz"
+    );
     assert!(!tarball.contains("registry.example"));
 
     let tarball_path = Url::parse(tarball).expect("tarball URL").path().to_owned();
@@ -111,6 +114,42 @@ async fn serves_unscoped_and_scoped_metadata_with_internal_tarball_urls() {
 }
 
 #[tokio::test]
+async fn serves_standard_tarball_paths_without_prior_metadata_requests() {
+    let package_body = b"verified npm tarball".to_vec();
+    let metadata_requests = Arc::new(AtomicUsize::new(0));
+    let artifact_requests = Arc::new(AtomicUsize::new(0));
+    let (upstream, _) = start_npm_server(
+        "left-pad",
+        package_body.clone(),
+        metadata_requests.clone(),
+        artifact_requests.clone(),
+    )
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = npm_router(vec![proxy("official", upstream.as_str())], data_dir.path());
+
+    for path in [
+        "/mirror/npm/official/left-pad/-/left-pad-1.0.0.tgz",
+        "/mirror/npm/official/@scope/package/-/package-1.0.0.tgz",
+    ] {
+        let response = router
+            .clone()
+            .oneshot(get_request(path))
+            .await
+            .expect("standard tarball response");
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("standard tarball body"),
+            package_body
+        );
+    }
+    assert_eq!(metadata_requests.load(Ordering::SeqCst), 2);
+    assert_eq!(artifact_requests.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
 async fn cached_metadata_repairs_a_missing_tarball_binding() {
     let package_body = b"verified npm tarball".to_vec();
     let metadata_requests = Arc::new(AtomicUsize::new(0));
@@ -145,15 +184,15 @@ async fn cached_metadata_repairs_a_missing_tarball_binding() {
     .expect("tarball URL")
     .path()
     .to_owned();
-    let artifact_key = tarball_path
-        .rsplit('/')
-        .next()
-        .expect("artifact key")
-        .to_owned();
-    let descriptor = data_dir
+    let descriptor_dir = data_dir
         .path()
-        .join("stores/npm/metadata/official/descriptors")
-        .join(format!("{artifact_key}.json"));
+        .join("stores/npm/metadata/official/descriptors");
+    let descriptor = fs::read_dir(&descriptor_dir)
+        .expect("descriptor directory")
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
+        .expect("metadata descriptor");
     assert!(descriptor.exists());
     fs::remove_file(&descriptor).expect("remove descriptor");
 
@@ -256,7 +295,7 @@ async fn falls_back_after_tarball_integrity_failure_and_keeps_metadata_source_bi
 }
 
 #[tokio::test]
-async fn rejects_unbound_artifacts_and_invalid_scoped_paths() {
+async fn rejects_unknown_and_legacy_artifact_paths() {
     let (upstream, _) = start_npm_server(
         "left-pad",
         b"verified npm tarball".to_vec(),
@@ -536,6 +575,7 @@ async fn revalidated_metadata_replaces_a_republished_version() {
         .as_str()
         .expect("first tarball URL")
         .to_owned();
+    let first_descriptors = descriptor_file_names(data_dir.path());
     age_metadata_pointer(data_dir.path(), "npm", "official", "left-pad");
 
     let second = router
@@ -552,8 +592,12 @@ async fn revalidated_metadata_replaces_a_republished_version() {
     let tarball = second["versions"]["1.0.0"]["dist"]["tarball"]
         .as_str()
         .expect("republished tarball URL");
-    assert!(tarball.contains("/tarballs/"));
-    assert_ne!(tarball, first_tarball);
+    assert_eq!(
+        tarball,
+        "http://127.0.0.1:18761/mirror/npm/official/left-pad/-/left-pad-1.0.0.tgz"
+    );
+    assert_eq!(tarball, first_tarball);
+    assert_ne!(descriptor_file_names(data_dir.path()), first_descriptors);
 }
 
 #[tokio::test]
@@ -616,19 +660,19 @@ async fn changed_source_base_url_does_not_reuse_canonical_metadata() {
         .as_str()
         .expect("second tarball URL");
 
-    assert_ne!(first_tarball, second_tarball);
+    assert_eq!(first_tarball, second_tarball);
     assert_eq!(first_requests.load(Ordering::SeqCst), 1);
     assert_eq!(second_requests.load(Ordering::SeqCst), 1);
 
-    let old_tarball_path = Url::parse(&first_tarball)
-        .expect("old tarball URL")
+    let tarball_path = Url::parse(second_tarball)
+        .expect("tarball URL")
         .path()
         .to_owned();
-    let old_tarball = second_router
-        .oneshot(get_request(&old_tarball_path))
+    let tarball = second_router
+        .oneshot(get_request(&tarball_path))
         .await
-        .expect("old tarball response");
-    assert_eq!(old_tarball.status(), StatusCode::NOT_FOUND);
+        .expect("tarball response");
+    assert_eq!(tarball.status(), StatusCode::OK);
 }
 
 async fn start_metadata_then_not_found_server(metadata_requests: Arc<AtomicUsize>) -> Url {
@@ -733,6 +777,17 @@ fn group(name: &str, members: &[&str]) -> SourceConfig {
         require_https: false,
         members: members.iter().map(|member| (*member).to_owned()).collect(),
     }
+}
+
+fn descriptor_file_names(data_dir: &Path) -> Vec<String> {
+    let directory = data_dir.join("stores/npm/metadata/official/descriptors");
+    let mut names = fs::read_dir(directory)
+        .expect("descriptor directory")
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    names.sort();
+    names
 }
 
 async fn start_npm_server(

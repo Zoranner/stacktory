@@ -43,7 +43,10 @@ fn preserves_npm_metadata_and_rewrites_version_tarball_urls() {
     let tarball = rewritten.body["versions"]["1.0.0"]["dist"]["tarball"]
         .as_str()
         .expect("rewritten tarball");
-    assert!(tarball.starts_with("http://127.0.0.1:18761/mirror/npm/group/tarballs/"));
+    assert_eq!(
+        tarball,
+        "http://127.0.0.1:18761/mirror/npm/group/@scope/package/-/package-1.0.0.tgz"
+    );
     assert_eq!(
         rewritten.body["versions"]["1.0.0"]["dist"]["integrity"],
         "sha512-YWJj"
