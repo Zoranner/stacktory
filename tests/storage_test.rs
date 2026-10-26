@@ -1,8 +1,7 @@
 use std::collections::BTreeMap;
 
-use stacktory::{
-    rustup::{ArtifactSource, DistPath, RewrittenManifest},
-    storage::{SnapshotStore, StorageError},
+use stacktory::ecosystems::rustup::{
+    ArtifactSource, DistPath, RewrittenManifest, SnapshotStore, StorageError,
 };
 use tempfile::tempdir;
 

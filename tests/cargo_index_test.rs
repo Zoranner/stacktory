@@ -1,4 +1,4 @@
-use stacktory::cargo::{
+use stacktory::ecosystems::cargo::{
     CargoIndexError, parse_index_lines, parse_registry_config, render_download_url,
     render_download_url_for_source, rewrite_crate_download_url, rewrite_index_lines, sparse_prefix,
 };

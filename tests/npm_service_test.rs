@@ -1,4 +1,5 @@
 use std::{
+    fs,
     net::SocketAddr,
     path::Path,
     sync::{
@@ -19,8 +20,8 @@ use axum::{
 };
 use sha2::{Digest, Sha512};
 use stacktory::{
-    SourceConfig, SourceGraph, SourcePool, SourceType, http::router_with_registry, npm::NpmAdapter,
-    sources::registry::AdapterRegistry,
+    SourceConfig, SourceGraph, SourcePool, SourceType, ecosystems::npm::NpmAdapter,
+    http::router_with_registry, upstream::registry::AdapterRegistry,
 };
 use tempfile::tempdir;
 use tokio::net::TcpListener;
@@ -107,6 +108,76 @@ async fn serves_unscoped_and_scoped_metadata_with_internal_tarball_urls() {
         .await
         .expect("scoped metadata response");
     assert_eq!(scoped.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn cached_metadata_repairs_a_missing_tarball_binding() {
+    let package_body = b"verified npm tarball".to_vec();
+    let metadata_requests = Arc::new(AtomicUsize::new(0));
+    let artifact_requests = Arc::new(AtomicUsize::new(0));
+    let (upstream, _) = start_npm_server(
+        "left-pad",
+        package_body.clone(),
+        metadata_requests.clone(),
+        artifact_requests.clone(),
+    )
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = npm_router(vec![proxy("official", upstream.as_str())], data_dir.path());
+
+    let first = router
+        .clone()
+        .oneshot(get_request("/mirror/npm/official/left-pad"))
+        .await
+        .expect("metadata response");
+    assert_eq!(first.status(), StatusCode::OK);
+    let first: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(first.into_body(), usize::MAX)
+            .await
+            .expect("metadata body"),
+    )
+    .expect("metadata JSON");
+    let tarball_path = Url::parse(
+        first["versions"]["1.0.0"]["dist"]["tarball"]
+            .as_str()
+            .expect("tarball URL"),
+    )
+    .expect("tarball URL")
+    .path()
+    .to_owned();
+    let artifact_key = tarball_path
+        .rsplit('/')
+        .next()
+        .expect("artifact key")
+        .to_owned();
+    let descriptor = data_dir
+        .path()
+        .join("stores/npm/metadata/official/descriptors")
+        .join(format!("{artifact_key}.json"));
+    assert!(descriptor.exists());
+    fs::remove_file(&descriptor).expect("remove descriptor");
+
+    let second = router
+        .clone()
+        .oneshot(get_request("/mirror/npm/official/left-pad"))
+        .await
+        .expect("cached metadata response");
+    assert_eq!(second.status(), StatusCode::OK);
+    assert!(descriptor.exists(), "metadata hit must restore the binding");
+    assert_eq!(metadata_requests.load(Ordering::SeqCst), 1);
+
+    let artifact = router
+        .oneshot(get_request(&tarball_path))
+        .await
+        .expect("tarball response");
+    assert_eq!(artifact.status(), StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(artifact.into_body(), usize::MAX)
+            .await
+            .expect("tarball body"),
+        package_body
+    );
+    assert_eq!(artifact_requests.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

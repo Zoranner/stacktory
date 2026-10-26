@@ -1,4 +1,4 @@
-use stacktory::rustup::DistPath;
+use stacktory::ecosystems::rustup::DistPath;
 
 #[test]
 fn accepts_a_single_relative_dist_artifact_path() {

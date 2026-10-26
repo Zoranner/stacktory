@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use axum::{body::Body, http::Request};
 use stacktory::{
-    DockerConfig, SourceConfig, SourceGraph, SourceType, docker::register_adapter,
-    http::router_with_registry, sources::registry::AdapterRegistry,
+    DockerConfig, SourceConfig, SourceGraph, SourceType, ecosystems::docker::register_adapter,
+    http::router_with_registry, upstream::registry::AdapterRegistry,
 };
 use tempfile::tempdir;
 use tower::ServiceExt;

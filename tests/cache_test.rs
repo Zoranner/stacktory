@@ -1,5 +1,5 @@
 use sha2::{Digest, Sha256};
-use stacktory::{rustup::DistPath, storage::ArtifactCache};
+use stacktory::ecosystems::rustup::{ArtifactCache, DistPath};
 use tempfile::tempdir;
 
 #[test]

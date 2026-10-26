@@ -1,4 +1,4 @@
-use stacktory::upm::path::{UpmPackagePath, parse_metadata_path};
+use stacktory::ecosystems::upm::path::{UpmPackagePath, parse_metadata_path};
 
 #[test]
 fn parses_unity_reverse_domain_package_name() {

@@ -12,7 +12,7 @@ use axum::{
 use stacktory::{
     SourceConfig, SourceGraph, SourcePool, SourceType,
     http::router_with_registry,
-    sources::registry::{Adapter, AdapterRegistry, AdapterRequest, RegistryError},
+    upstream::registry::{Adapter, AdapterRegistry, AdapterRequest, RegistryError},
 };
 use tower::ServiceExt;
 use url::Url;

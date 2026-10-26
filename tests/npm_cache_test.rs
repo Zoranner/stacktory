@@ -1,8 +1,10 @@
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
-use stacktory::npm::metadata::NpmArtifactDescriptor;
-use stacktory::npm::storage::{IntegrityExpectation, NpmCacheKey, NpmStorage, StorageError};
+use stacktory::ecosystems::npm::cache::{
+    IntegrityExpectation, NpmCacheKey, NpmStorage, StorageError,
+};
+use stacktory::ecosystems::npm::metadata::NpmArtifactDescriptor;
 use tempfile::tempdir;
 
 #[test]

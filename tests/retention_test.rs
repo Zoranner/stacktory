@@ -8,7 +8,8 @@ use stacktory::{
     RetentionConfig,
     audit::AuditSink,
     logging::LogFile,
-    retention::{note_access, prune_legacy_layout, sweep},
+    retention::{Maintainer, SweepReport, prune_legacy_layout, sweep, sweep_with_maintainer},
+    storage::access::note_access,
 };
 use tempfile::tempdir;
 
@@ -27,6 +28,21 @@ fn retention_config() -> RetentionConfig {
         artifact_idle_secs: 30 * DAY,
         log_retention_days: 30,
     }
+}
+
+fn sweep_with_rustup(data_dir: &Path, now: SystemTime, audit: &AuditSink) -> SweepReport {
+    let maintainer = Maintainer::new(|data_dir, keep_revisions| {
+        stacktory::ecosystems::rustup::maintain::prune_snapshots(data_dir, keep_revisions)
+            .map_err(|error| error.to_string())
+    });
+    sweep_with_maintainer(
+        data_dir,
+        &log_file(data_dir),
+        &retention_config(),
+        now,
+        audit,
+        &maintainer,
+    )
 }
 
 fn write_file_with_mtime(path: &Path, contents: &str, modified: SystemTime) {
@@ -67,6 +83,40 @@ fn removes_expired_metadata_and_keeps_fresh_files() {
     assert!(!expired_index.exists());
     assert!(!expired_query.exists());
     assert!(fresh_index.exists());
+}
+
+#[test]
+fn keeps_artifact_bindings_when_metadata_expires() {
+    let directory = tempdir().expect("temporary directory");
+    let data_dir = directory.path();
+    let now = SystemTime::now();
+    let old = now - Duration::from_secs(8 * DAY);
+    let expired_metadata = data_dir.join("stores/npm/metadata/group/left-pad/1.0.0-metadata.json");
+    let npm_descriptor = data_dir.join("stores/npm/metadata/group/descriptors/abc.json");
+    let nuget_binding = data_dir.join("stores/nuget/metadata/group/bindings/left-pad/1.0.0.json");
+    let vscode_asset = data_dir.join("stores/vscode/metadata/group/marketplace/assets/asset.toml");
+    let docker_blob =
+        data_dir.join("stores/docker/metadata/group/library/alpine/blobs/sha256-abc.json");
+    write_file_with_mtime(&expired_metadata, "old", old);
+    write_file_with_mtime(&npm_descriptor, "binding", old);
+    write_file_with_mtime(&nuget_binding, "binding", old);
+    write_file_with_mtime(&vscode_asset, "binding", old);
+    write_file_with_mtime(&docker_blob, "binding", old);
+
+    let report = sweep(
+        data_dir,
+        &log_file(data_dir),
+        &retention_config(),
+        now,
+        &AuditSink::new(data_dir),
+    );
+
+    assert_eq!(report.removed_metadata_files, 1);
+    assert!(!expired_metadata.exists());
+    assert!(npm_descriptor.exists());
+    assert!(nuget_binding.exists());
+    assert!(vscode_asset.exists());
+    assert!(docker_blob.exists());
 }
 
 #[test]
@@ -250,7 +300,7 @@ fn tolerates_a_missing_data_directory() {
         &AuditSink::new(&data_dir),
     );
 
-    assert_eq!(report, stacktory::retention::SweepReport::default());
+    assert_eq!(report, SweepReport::default());
 }
 
 fn write_snapshot_revision(channel_dir: &Path, revision: &str, modified: SystemTime) {
@@ -291,13 +341,7 @@ fn keeps_recent_rustup_snapshot_revisions() {
     }
     write_current_pointer(&channel_dir, &revisions[3]);
 
-    let report = sweep(
-        data_dir,
-        &log_file(data_dir),
-        &retention_config(),
-        now,
-        &AuditSink::new(data_dir),
-    );
+    let report = sweep_with_rustup(data_dir, now, &AuditSink::new(data_dir));
 
     assert_eq!(report.removed_snapshot_revisions, 2);
     assert!(!channel_dir.join(&revisions[0]).exists());
@@ -326,13 +370,7 @@ fn keeps_the_current_snapshot_revision_beyond_the_keep_window() {
     }
     write_current_pointer(&channel_dir, &revisions[0]);
 
-    let report = sweep(
-        data_dir,
-        &log_file(data_dir),
-        &retention_config(),
-        now,
-        &AuditSink::new(data_dir),
-    );
+    let report = sweep_with_rustup(data_dir, now, &AuditSink::new(data_dir));
 
     assert_eq!(report.removed_snapshot_revisions, 1);
     assert!(channel_dir.join(&revisions[0]).exists());
@@ -360,13 +398,7 @@ fn skips_snapshot_cleanup_when_the_current_pointer_is_unreadable() {
     }
     fs::write(channel_dir.join("current.toml"), "revision =").expect("broken pointer");
 
-    let report = sweep(
-        data_dir,
-        &log_file(data_dir),
-        &retention_config(),
-        now,
-        &AuditSink::new(data_dir),
-    );
+    let report = sweep_with_rustup(data_dir, now, &AuditSink::new(data_dir));
 
     assert_eq!(report.removed_snapshot_revisions, 0);
     for revision in &revisions {

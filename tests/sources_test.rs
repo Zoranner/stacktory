@@ -7,8 +7,8 @@ use axum::{
 };
 use stacktory::{
     SourceConfig, SourceGraph, SourcePool, SourceType,
-    sources::FetchOperation,
-    sources::pool::{SourcePoolError, SourceResponse},
+    upstream::FetchOperation,
+    upstream::pool::{SourcePoolError, SourceResponse},
 };
 use tokio::net::TcpListener;
 use url::Url;

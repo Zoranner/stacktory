@@ -3,9 +3,9 @@ use std::sync::Arc;
 use axum::{body::Body, http::Request};
 use stacktory::{
     SourceConfig, SourceGraph, SourcePool, SourceType,
-    docker::DockerAdapter,
+    ecosystems::docker::DockerAdapter,
     http::{router_with_docker_entry, router_with_registry},
-    sources::registry::AdapterRegistry,
+    upstream::registry::AdapterRegistry,
 };
 use tempfile::tempdir;
 use tower::ServiceExt;

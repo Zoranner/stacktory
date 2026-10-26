@@ -14,8 +14,8 @@ use axum::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use sha2::{Digest, Sha512};
 use stacktory::{
-    SourceConfig, SourceGraph, SourcePool, SourceType, http::router_with_registry,
-    sources::registry::AdapterRegistry, upm::UpmAdapter,
+    SourceConfig, SourceGraph, SourcePool, SourceType, ecosystems::upm::UpmAdapter,
+    http::router_with_registry, upstream::registry::AdapterRegistry,
 };
 use tempfile::tempdir;
 use tokio::net::TcpListener;

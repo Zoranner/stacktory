@@ -20,8 +20,8 @@ use stacktory::{
     Config, DockerConfig, DockerRegistryEndpoint, EcosystemConfig, NugetConfig, ProxyConfig,
     RetentionConfig, RustupConfig, ServerConfig, SourceConfig, SourceGraph, SourceType,
     StorageConfig, UpmConfig, UpstreamConfig, VscodeConfig,
+    ecosystems::rustup::RustupService,
     http::{router, router_with_rustup},
-    service::RustupService,
 };
 use tempfile::tempdir;
 use tokio::net::TcpListener;

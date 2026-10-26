@@ -17,8 +17,8 @@ use axum::{
 };
 use sha2::{Digest, Sha256};
 use stacktory::{
-    SourceConfig, SourceGraph, SourcePool, SourceType, cargo::CargoAdapter,
-    http::router_with_registry, sources::registry::AdapterRegistry,
+    SourceConfig, SourceGraph, SourcePool, SourceType, ecosystems::cargo::CargoAdapter,
+    http::router_with_registry, upstream::registry::AdapterRegistry,
 };
 use tempfile::tempdir;
 use tokio::net::TcpListener;

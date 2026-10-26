@@ -11,7 +11,8 @@ use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
 use sha2::{Digest, Sha256};
 use stacktory::{
     Config, ProxyConfig, RetentionConfig, RustupConfig, ServerConfig, SourceConfig, SourceGraph,
-    SourceType, StorageConfig, UpstreamConfig, rustup::DistPath, service::RustupService,
+    SourceType, StorageConfig, UpstreamConfig,
+    ecosystems::rustup::{DistPath, RustupService},
 };
 use tempfile::tempdir;
 use tokio::net::TcpListener;

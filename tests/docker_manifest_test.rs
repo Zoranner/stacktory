@@ -10,13 +10,15 @@ use axum::{
 };
 use sha2::{Digest, Sha256};
 use stacktory::{
-    SourceConfig, SourceGraph, SourcePool, SourceType, docker::DockerAdapter,
-    http::router_with_registry, sources::registry::AdapterRegistry,
+    SourceConfig, SourceGraph, SourcePool, SourceType, ecosystems::docker::DockerAdapter,
+    http::router_with_registry, upstream::registry::AdapterRegistry,
 };
 use tempfile::tempdir;
 use tokio::net::TcpListener;
 use tower::ServiceExt;
 use url::Url;
+
+const FULL_MANIFEST_ACCEPT: &str = "application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json";
 
 #[tokio::test]
 async fn tag_manifest_forwards_accept_and_returns_registry_headers() {
@@ -120,6 +122,46 @@ async fn digest_manifest_verifies_the_requested_digest() {
     assert_eq!(
         observed_path.lock().expect("path observation").as_deref(),
         Some(format!("/v2/library/alpine/manifests/{digest}").as_str())
+    );
+}
+
+#[tokio::test]
+async fn digest_manifest_uses_full_accept_for_docker_v2_clients() {
+    let manifest =
+        br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#.to_vec();
+    let digest = sha256_digest(&manifest);
+    let observed_path = Arc::new(Mutex::new(None));
+    let observed_accept = Arc::new(Mutex::new(None));
+    let upstream = start_manifest_server(
+        manifest,
+        digest.clone(),
+        observed_path,
+        observed_accept.clone(),
+    )
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let response = docker_router(upstream, data_dir.path())
+        .oneshot(
+            Request::get(format!(
+                "/mirror/docker/official/v2/library/alpine/manifests/{digest}"
+            ))
+            .header(
+                header::ACCEPT,
+                "application/vnd.docker.distribution.manifest.v2+json",
+            )
+            .body(Body::empty())
+            .expect("digest manifest request"),
+        )
+        .await
+        .expect("digest manifest response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        observed_accept
+            .lock()
+            .expect("accept observation")
+            .as_deref(),
+        Some(FULL_MANIFEST_ACCEPT)
     );
 }
 

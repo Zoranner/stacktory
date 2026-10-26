@@ -185,7 +185,7 @@ MVP 不使用数据库。配置在启动时从本地文件加载；metadata、ar
 
 数据目录只分两类：`stores` 下按生态分片的数据，以及 `audit` 下的全局审计事实。
 适配器只负责在 `metadata` 或对象根之下拼接协议对象键，路径前缀由
-`src/layout.rs` 统一生成，不在各适配器重复拼接。
+`src/storage/layout.rs` 统一生成，不在各适配器重复拼接。
 
 ```text
 <data_dir>/stores/<ecosystem>/metadata/...                  入口拥有的元数据与来源绑定

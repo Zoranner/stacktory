@@ -2,16 +2,15 @@ use std::{
     ffi::OsStr,
     fs, io,
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
 use crate::{
     audit::{AuditDetails, AuditSink},
     config::RetentionConfig,
-    layout, logging,
-    logging::LogFile,
-    storage::SnapshotStore,
-    timeformat,
+    logging::{self, LogFile, rotation},
+    storage::layout,
 };
 
 const AUDIT_FILE: &str = "events.jsonl";
@@ -49,17 +48,53 @@ pub struct LegacyLayoutReport {
     pub dry_run: bool,
 }
 
+/// 各生态注册给保留清理的快照维护入口。
+///
+/// 回调返回 `(removed, failed)`；`retention` 不需要认识任何生态的缓存格式。
+#[derive(Clone, Default)]
+pub struct Maintainer(Option<Arc<MaintainerFn>>);
+
+type MaintainerFn = dyn Fn(&Path, u64) -> Result<(u64, u64), String> + Send + Sync;
+
+impl Maintainer {
+    pub fn new(
+        maintain: impl Fn(&Path, u64) -> Result<(u64, u64), String> + Send + Sync + 'static,
+    ) -> Self {
+        Self(Some(Arc::new(maintain)))
+    }
+
+    fn prune(&self, data_dir: &Path, keep_revisions: u64) -> Result<(u64, u64), String> {
+        match &self.0 {
+            Some(maintain) => maintain(data_dir, keep_revisions),
+            None => Ok((0, 0)),
+        }
+    }
+}
+
 /// 启动后台清理任务：首次执行立即开始，之后按配置间隔重复。
-pub fn spawn(data_dir: PathBuf, log_file: std::sync::Arc<LogFile>, config: RetentionConfig) {
+pub fn spawn(
+    data_dir: PathBuf,
+    log_file: std::sync::Arc<LogFile>,
+    config: RetentionConfig,
+    maintainer: Maintainer,
+) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(config.cleanup_interval_secs));
         loop {
             ticker.tick().await;
             let data_dir = data_dir.clone();
             let log_file = log_file.clone();
+            let maintainer = maintainer.clone();
             if let Err(error) = tokio::task::spawn_blocking(move || {
                 let audit = AuditSink::new(data_dir.clone());
-                sweep(&data_dir, &log_file, &config, SystemTime::now(), &audit);
+                sweep_with_maintainer(
+                    &data_dir,
+                    &log_file,
+                    &config,
+                    SystemTime::now(),
+                    &audit,
+                    &maintainer,
+                );
             })
             .await
             {
@@ -81,6 +116,25 @@ pub fn sweep(
     now: SystemTime,
     audit: &AuditSink,
 ) -> SweepReport {
+    sweep_with_maintainer(
+        data_dir,
+        log_file,
+        config,
+        now,
+        audit,
+        &Maintainer::default(),
+    )
+}
+
+/// 与 [`sweep`] 相同，并调用注入的快照维护入口。
+pub fn sweep_with_maintainer(
+    data_dir: &Path,
+    log_file: &LogFile,
+    config: &RetentionConfig,
+    now: SystemTime,
+    audit: &AuditSink,
+    maintainer: &Maintainer,
+) -> SweepReport {
     let mut report = SweepReport::default();
     rotate_and_prune_audit(
         &layout::audit_root(data_dir),
@@ -94,17 +148,18 @@ pub fn sweep(
     report.log_failed = log_outcome.failed;
     clean_metadata(data_dir, config, now, &mut report);
     evict_idle_artifacts(data_dir, config, now, &mut report);
-    prune_rustup_snapshots(data_dir, config.rustup_snapshot_revisions, &mut report);
+    match maintainer.prune(data_dir, config.rustup_snapshot_revisions) {
+        Ok((removed, failed)) => {
+            report.removed_snapshot_revisions += removed;
+            report.failed_snapshot_revisions += failed;
+        }
+        Err(error) => {
+            report.failed_snapshot_revisions += 1;
+            logging::error(format!("snapshot cleanup failed: {error}"));
+        }
+    }
     record(audit, &report);
     report
-}
-
-/// 更新对象访问时间。闲置淘汰以该时间为准，命中缓存的读取路径调用它。
-pub fn note_access(path: &Path) -> io::Result<()> {
-    fs::OpenOptions::new()
-        .write(true)
-        .open(path)?
-        .set_times(fs::FileTimes::new().set_modified(SystemTime::now()))
 }
 
 /// 删除旧数据布局留下的、当前代码不会再读取的缓存。
@@ -243,45 +298,6 @@ fn record_legacy(audit: &AuditSink, report: &LegacyLayoutReport) {
     );
 }
 
-fn prune_rustup_snapshots(data_dir: &Path, keep_revisions: u64, report: &mut SweepReport) {
-    let root = layout::snapshots_root(data_dir, "rustup");
-    let Ok(entries) = fs::read_dir(&root) else {
-        return;
-    };
-    let store = SnapshotStore::new(data_dir);
-    for entry in entries.flatten() {
-        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            continue;
-        }
-        let entry_name = entry.file_name();
-        let Some(entry_name) = entry_name.to_str() else {
-            continue;
-        };
-        let Ok(channels) = fs::read_dir(entry.path()) else {
-            continue;
-        };
-        for channel in channels.flatten() {
-            if !channel.file_type().is_ok_and(|kind| kind.is_dir()) {
-                continue;
-            }
-            let channel_name = channel.file_name();
-            let Some(channel_name) = channel_name.to_str() else {
-                continue;
-            };
-            match store.prune(entry_name, channel_name, keep_revisions) {
-                Ok(pruned) => {
-                    report.removed_snapshot_revisions += pruned.removed_revisions;
-                    report.failed_snapshot_revisions += pruned.failed_revisions;
-                }
-                Err(error) => {
-                    report.failed_snapshot_revisions += 1;
-                    logging::error(format!("snapshot cleanup failed: {error}"));
-                }
-            }
-        }
-    }
-}
-
 fn clean_metadata(
     data_dir: &Path,
     config: &RetentionConfig,
@@ -298,15 +314,22 @@ fn clean_metadata(
         if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
             continue;
         }
+        let ecosystem = entry.file_name().to_string_lossy().into_owned();
         let root = entry.path().join(layout::METADATA_DIR);
         if root.is_dir() {
-            remove_expired_files(
-                &root,
+            // Binding files map artifacts to upstream identities. They are
+            // artifact state and must outlive the metadata that references
+            // them, so metadata retention deliberately leaves those
+            // subdirectories untouched.
+            let mut cleanup = Cleanup {
+                ecosystem: &ecosystem,
                 cutoff,
-                "metadata",
-                &mut report.removed_metadata_files,
-                &mut report.failed_metadata_files,
-            );
+                label: "metadata",
+                preserve_bindings: true,
+                removed: &mut report.removed_metadata_files,
+                failed: &mut report.failed_metadata_files,
+            };
+            remove_expired_files(&root, Path::new(""), &mut cleanup);
         }
     }
 }
@@ -332,34 +355,43 @@ fn evict_idle_artifacts(
         }
         let root = entry.path().join(layout::ARTIFACTS_DIR);
         if root.is_dir() {
-            remove_expired_files(
-                &root,
+            let mut cleanup = Cleanup {
+                ecosystem: "",
                 cutoff,
-                "artifact",
-                &mut report.removed_artifact_files,
-                &mut report.failed_artifact_files,
-            );
+                label: "artifact",
+                preserve_bindings: false,
+                removed: &mut report.removed_artifact_files,
+                failed: &mut report.failed_artifact_files,
+            };
+            remove_expired_files(&root, Path::new(""), &mut cleanup);
         }
     }
 }
 
-fn remove_expired_files(
-    dir: &Path,
+struct Cleanup<'a> {
+    ecosystem: &'a str,
     cutoff: SystemTime,
-    label: &str,
-    removed: &mut u64,
-    failed: &mut u64,
-) {
+    label: &'a str,
+    preserve_bindings: bool,
+    removed: &'a mut u64,
+    failed: &'a mut u64,
+}
+
+fn remove_expired_files(dir: &Path, relative: &Path, cleanup: &mut Cleanup<'_>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        let relative = relative.join(entry.file_name());
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
         if file_type.is_dir() {
-            remove_expired_files(&path, cutoff, label, removed, failed);
+            if cleanup.preserve_bindings && layout::is_binding_dir(cleanup.ecosystem, &relative) {
+                continue;
+            }
+            remove_expired_files(&path, &relative, cleanup);
             continue;
         }
         if !file_type.is_file() {
@@ -368,16 +400,17 @@ fn remove_expired_files(
         let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) else {
             continue;
         };
-        if modified >= cutoff {
+        if modified >= cleanup.cutoff {
             continue;
         }
         match fs::remove_file(&path) {
-            Ok(()) => *removed += 1,
+            Ok(()) => *cleanup.removed += 1,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => {
-                *failed += 1;
+                *cleanup.failed += 1;
                 logging::error(format!(
-                    "{label} cleanup failed for `{}`: {error}",
+                    "{} cleanup failed for `{}`: {error}",
+                    cleanup.label,
                     path.display()
                 ));
             }
@@ -432,10 +465,10 @@ fn rotate_file(
     let Ok(modified) = modified else {
         return (None, false);
     };
-    let Some(label) = timeformat::date_label(modified) else {
+    let Some(label) = rotation::date_label(modified) else {
         return (None, false);
     };
-    if timeformat::date_label(now).as_deref() == Some(label.as_str()) {
+    if rotation::date_label(now).as_deref() == Some(label.as_str()) {
         return (None, false);
     }
     let rotated = format!("{rotated_prefix}{label}{rotated_suffix}");
@@ -463,7 +496,7 @@ fn prune_rotated_files(
         .checked_sub(Duration::from_secs(
             retention_days.saturating_mul(SECS_PER_DAY),
         ))
-        .and_then(timeformat::date_label)
+        .and_then(rotation::date_label)
     else {
         return 0;
     };
@@ -472,7 +505,7 @@ fn prune_rotated_files(
         let name = entry.file_name();
         let Some(label) = name
             .to_str()
-            .and_then(|name| rotated_label(name, rotated_prefix, rotated_suffix))
+            .and_then(|name| rotation::rotated_label(name, rotated_prefix, rotated_suffix))
         else {
             continue;
         };
@@ -486,13 +519,6 @@ fn prune_rotated_files(
         }
     }
     pruned
-}
-
-fn rotated_label(name: &str, rotated_prefix: &str, rotated_suffix: &str) -> Option<String> {
-    let label = name
-        .strip_prefix(rotated_prefix)?
-        .strip_suffix(rotated_suffix)?;
-    (label.len() == 8 && label.bytes().all(|byte| byte.is_ascii_digit())).then(|| label.to_owned())
 }
 
 fn record(audit: &AuditSink, report: &SweepReport) {
@@ -595,27 +621,5 @@ fn write_event(
 ) {
     if let Err(error) = audit.record_detailed(event, target, outcome, details) {
         logging::error(format!("audit write failed: {error}"));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::rotated_label;
-
-    #[test]
-    fn accepts_only_dated_audit_names() {
-        assert_eq!(
-            rotated_label("events.20260913.jsonl", "events.", ".jsonl").as_deref(),
-            Some("20260913")
-        );
-        assert_eq!(rotated_label("events.jsonl", "events.", ".jsonl"), None);
-        assert_eq!(
-            rotated_label("events.2026.jsonl", "events.", ".jsonl"),
-            None
-        );
-        assert_eq!(
-            rotated_label("stacktory.20260913.log", "stacktory.", ".log").as_deref(),
-            Some("20260913")
-        );
     }
 }

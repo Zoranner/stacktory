@@ -1,4 +1,4 @@
-use stacktory::npm::path::{
+use stacktory::ecosystems::npm::path::{
     NpmArtifactPath, NpmPackagePath, parse_artifact_path, parse_metadata_path,
 };
 

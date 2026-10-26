@@ -1,5 +1,5 @@
 use sha2::{Digest, Sha256};
-use stacktory::rustup::{ArtifactSource, DistPath, ManifestPolicy, rewrite_manifest};
+use stacktory::ecosystems::rustup::{ArtifactSource, DistPath, ManifestPolicy, rewrite_manifest};
 use url::Url;
 
 const SOURCE_MANIFEST: &str = r#"
@@ -75,7 +75,7 @@ hash-sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     ));
     assert_eq!(
         rewritten.artifact_sources.get(
-            &stacktory::rustup::DistPath::parse(
+            &stacktory::ecosystems::rustup::DistPath::parse(
                 "2026-09-03/rust-1.98.1-x86_64-pc-windows-msvc.msi"
             )
             .expect("artifact path")

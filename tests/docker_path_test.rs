@@ -3,12 +3,12 @@ use std::sync::Arc;
 use axum::{body::Body, http::Request};
 use stacktory::{
     SourceConfig, SourceGraph, SourcePool, SourceType,
-    docker::{
+    ecosystems::docker::{
         DockerAdapter,
         path::{DockerRequest, ManifestReference, parse_repository, parse_request},
     },
     http::router_with_registry,
-    sources::registry::AdapterRegistry,
+    upstream::registry::AdapterRegistry,
 };
 use tower::ServiceExt;
 use url::Url;

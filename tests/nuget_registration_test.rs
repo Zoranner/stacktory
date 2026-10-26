@@ -9,8 +9,8 @@ use std::{
 
 use axum::{Router, body::Body, http::Request, response::IntoResponse, routing::get};
 use stacktory::{
-    SourceConfig, SourceGraph, SourcePool, SourceType, http::router_with_registry,
-    nuget::NugetAdapter, sources::registry::AdapterRegistry,
+    SourceConfig, SourceGraph, SourcePool, SourceType, ecosystems::nuget::NugetAdapter,
+    http::router_with_registry, upstream::registry::AdapterRegistry,
 };
 use tempfile::tempdir;
 use tokio::net::TcpListener;

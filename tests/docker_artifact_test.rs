@@ -10,8 +10,8 @@ use axum::{
 };
 use sha2::{Digest, Sha256};
 use stacktory::{
-    SourceConfig, SourceGraph, SourcePool, SourceType, docker::DockerAdapter,
-    http::router_with_registry, sources::registry::AdapterRegistry,
+    SourceConfig, SourceGraph, SourcePool, SourceType, ecosystems::docker::DockerAdapter,
+    http::router_with_registry, upstream::registry::AdapterRegistry,
 };
 use tempfile::tempdir;
 use tokio::net::TcpListener;
@@ -116,6 +116,29 @@ async fn pulls_oci_index_config_and_layer_through_registry_v2_paths() {
         .expect("image manifest response");
     assert_eq!(image_response.status(), StatusCode::OK);
 
+    let blob_metadata_dir = data_dir
+        .path()
+        .join("stores/docker/metadata/official/library/demo/blobs");
+    std::fs::remove_dir_all(&blob_metadata_dir).expect("remove blob metadata");
+    let manifest_again = router
+        .clone()
+        .oneshot(
+            Request::get(format!(
+                "/mirror/docker/official/v2/library/demo/manifests/{image_digest}"
+            ))
+            .body(Body::empty())
+            .expect("second image manifest request"),
+        )
+        .await
+        .expect("second image manifest response");
+    assert_eq!(manifest_again.status(), StatusCode::OK);
+    assert!(
+        blob_metadata_dir
+            .join(format!("{}.json", config_digest.replace(':', "-")))
+            .exists(),
+        "cached manifest must restore its blob descriptors"
+    );
+
     let config_response = router
         .clone()
         .oneshot(
@@ -182,6 +205,68 @@ async fn pulls_oci_index_config_and_layer_through_registry_v2_paths() {
             format!("/v2/library/demo/blobs/{config_digest}"),
             format!("/v2/library/demo/blobs/{layer_digest}"),
         ]
+    );
+}
+
+#[tokio::test]
+async fn cold_blob_request_fetches_without_a_manifest() {
+    let config = br#"{"architecture":"amd64","os":"linux"}"#.to_vec();
+    let config_digest = sha256_digest(&config);
+    let index = b"unused index".to_vec();
+    let index_digest = sha256_digest(&index);
+    let manifest = b"unused manifest".to_vec();
+    let manifest_digest = sha256_digest(&manifest);
+    let layer = b"unused layer".to_vec();
+    let layer_digest = sha256_digest(&layer);
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let upstream = start_registry(
+        index,
+        index_digest,
+        manifest,
+        manifest_digest,
+        config.clone(),
+        config_digest.clone(),
+        layer,
+        layer_digest,
+        paths.clone(),
+    )
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let response = docker_router(upstream, data_dir.path())
+        .oneshot(
+            Request::get(format!(
+                "/mirror/docker/official/v2/library/demo/blobs/{config_digest}"
+            ))
+            .body(Body::empty())
+            .expect("config request"),
+        )
+        .await
+        .expect("config response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("application/vnd.oci.image.config.v1+json")
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("docker-content-digest")
+            .and_then(|value| value.to_str().ok()),
+        Some(config_digest.as_str())
+    );
+    assert_eq!(
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("config body"),
+        config
+    );
+    assert_eq!(
+        *paths.lock().expect("path observations"),
+        vec![format!("/v2/library/demo/blobs/{config_digest}")]
     );
 }
 

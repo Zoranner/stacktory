@@ -16,8 +16,8 @@ use axum::{
     routing::{get, post},
 };
 use stacktory::{
-    SourceConfig, SourceGraph, SourcePool, SourceType, http::router_with_registry,
-    sources::registry::AdapterRegistry, vscode::VscodeAdapter,
+    SourceConfig, SourceGraph, SourcePool, SourceType, ecosystems::vscode::VscodeAdapter,
+    http::router_with_registry, upstream::registry::AdapterRegistry,
 };
 use tempfile::tempdir;
 use tokio::net::TcpListener;

@@ -11,7 +11,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use crate::timeformat;
+pub(crate) mod rotation;
 
 pub const LOG_FILE: &str = "stacktory.log";
 const ROTATED_PREFIX: &str = "stacktory.";
@@ -77,10 +77,10 @@ impl LogFile {
         let Ok(modified) = modified else {
             return RotationOutcome::default();
         };
-        let Some(label) = timeformat::date_label(modified) else {
+        let Some(label) = rotation::date_label(modified) else {
             return RotationOutcome::default();
         };
-        if timeformat::date_label(now).as_deref() == Some(label.as_str()) {
+        if rotation::date_label(now).as_deref() == Some(label.as_str()) {
             return RotationOutcome::default();
         }
         let rotated = format!("{ROTATED_PREFIX}{label}{ROTATED_SUFFIX}");
@@ -112,7 +112,7 @@ impl LogFile {
             .checked_sub(Duration::from_secs(
                 retention_days.saturating_mul(SECS_PER_DAY),
             ))
-            .and_then(timeformat::date_label)
+            .and_then(rotation::date_label)
         else {
             return RotationOutcome::default();
         };
@@ -121,7 +121,7 @@ impl LogFile {
             let name = entry.file_name();
             let Some(label) = name
                 .to_str()
-                .and_then(|name| rotated_label(name, ROTATED_PREFIX, ROTATED_SUFFIX))
+                .and_then(|name| rotation::rotated_label(name, ROTATED_PREFIX, ROTATED_SUFFIX))
             else {
                 continue;
             };
@@ -158,7 +158,7 @@ impl LogFile {
 
     fn append(&self, level: &str, message: &str) -> io::Result<()> {
         let timestamp =
-            timeformat::timestamp_label(SystemTime::now()).unwrap_or_else(|| "unknown".to_owned());
+            rotation::timestamp_label(SystemTime::now()).unwrap_or_else(|| "unknown".to_owned());
         let mut file = OpenOptions::new()
             .append(true)
             .create(true)
@@ -210,13 +210,6 @@ fn emit(level: &str, message: &str) {
     if let Err(error) = log_file.write(level, message) {
         eprintln!("Stacktory ERROR: log write failed: {error}");
     }
-}
-
-fn rotated_label(name: &str, rotated_prefix: &str, rotated_suffix: &str) -> Option<String> {
-    let label = name
-        .strip_prefix(rotated_prefix)?
-        .strip_suffix(rotated_suffix)?;
-    (label.len() == 8 && label.bytes().all(|byte| byte.is_ascii_digit())).then(|| label.to_owned())
 }
 
 #[cfg(test)]

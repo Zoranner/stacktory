@@ -1,4 +1,4 @@
-use stacktory::npm::metadata::{NpmMetadata, parse_metadata, rewrite_metadata};
+use stacktory::ecosystems::npm::metadata::{NpmMetadata, parse_metadata, rewrite_metadata};
 use url::Url;
 
 #[test]

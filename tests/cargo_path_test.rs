@@ -1,4 +1,4 @@
-use stacktory::cargo::{CargoPath, normalize_crate_name, sparse_index_path};
+use stacktory::ecosystems::cargo::{CargoPath, normalize_crate_name, sparse_index_path};
 
 #[test]
 fn computes_sparse_index_path_for_short_crate_name() {
