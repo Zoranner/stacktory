@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#020305">
+  <title>{{TITLE}}</title>
+  <link rel="stylesheet" href="{{THEME}}">
+  <link rel="stylesheet" href="{{STYLESHEET}}">
+</head>
+<body class="docs-page">
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
+  <header class="site-header">
+    <div class="site-header__inner">
+      <div class="brandline">
+        <a class="brand" href="{{HOME}}" aria-label="Stacktory 首页">
+          <span class="brand__mark" aria-hidden="true">S</span>
+          <span class="brand__name">Stacktory</span>
+        </a>
+        <span class="docs-path">文档</span>
+      </div>
+      <span class="site-service">{{SERVICE_URL}}</span>
+    </div>
+  </header>
+
+  <div class="{{LAYOUT_CLASS}}">
+    {{NAV}}
+    <main id="main" class="docs-main">
+      {{CONTENT}}
+    </main>
+  </div>
+
+  <noscript><style>.mode-switch{display:none}.tab-panel[hidden]{display:block}</style></noscript>
+  <script src="{{SCRIPT}}" defer></script>
+</body>
+</html>
