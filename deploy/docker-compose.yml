@@ -1,6 +1,6 @@
 services:
   stacktory:
-    image: ghcr.io/zoranner/stacktory:0.3.0
+    image: ghcr.io/zoranner/stacktory:0.3.1
     container_name: stacktory
     restart: always
     ports:
