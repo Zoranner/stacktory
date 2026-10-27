@@ -15,6 +15,7 @@ use axum::{
 };
 use sha2::{Digest, Sha256};
 use tokio_util::io::ReaderStream;
+use url::Url;
 
 use crate::{
     SourcePool,
@@ -37,10 +38,11 @@ impl CargoService {
         crate_name: &str,
         version: &str,
         pool: &SourcePool,
+        base_url: &Url,
     ) -> Result<CrateFile, CargoError> {
         let index_path = sparse_index_path(crate_name)?;
         let snapshot = self
-            .index(entry_name, &index_path, crate_name, pool)
+            .index(entry_name, &index_path, crate_name, pool, base_url)
             .await?;
         let records = parse_index_lines(std::str::from_utf8(&snapshot.body).map_err(|_| {
             CargoIndexError::InvalidRecord {

@@ -1,7 +1,7 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{Arc, LazyLock, Mutex},
 };
 
 use axum::{
@@ -10,12 +10,16 @@ use axum::{
     response::Response,
 };
 use stacktory::{
-    SourceConfig, SourceGraph, SourcePool, SourceType,
+    PublicUrls, SourceConfig, SourceGraph, SourcePool, SourceType,
     http::router_with_registry,
     upstream::registry::{Adapter, AdapterRegistry, AdapterRequest, RegistryError},
 };
 use tower::ServiceExt;
 use url::Url;
+
+static TEST_PUBLIC_URLS: LazyLock<PublicUrls> = LazyLock::new(|| {
+    PublicUrls::from_primary(Url::parse("http://127.0.0.1:18761").expect("public URL"))
+});
 
 #[tokio::test]
 async fn route_uses_ecosystem_and_source_name() {
@@ -287,6 +291,10 @@ impl Adapter for EchoAdapter {
         self.ecosystem
     }
 
+    fn public_urls(&self) -> &PublicUrls {
+        &TEST_PUBLIC_URLS
+    }
+
     fn handle(
         &self,
         source_name: String,
@@ -313,6 +321,10 @@ impl Adapter for RawPathAdapter {
         "demo"
     }
 
+    fn public_urls(&self) -> &PublicUrls {
+        &TEST_PUBLIC_URLS
+    }
+
     fn handle(
         &self,
         _source_name: String,
@@ -330,6 +342,10 @@ impl Adapter for RawPathAdapter {
 impl Adapter for RecordingAdapter {
     fn ecosystem(&self) -> &str {
         self.ecosystem
+    }
+
+    fn public_urls(&self) -> &PublicUrls {
+        &TEST_PUBLIC_URLS
     }
 
     fn handle(

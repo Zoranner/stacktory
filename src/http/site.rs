@@ -11,25 +11,25 @@ use axum::{
 };
 use url::Url;
 
-use super::{html_response, text_response};
-use crate::config::SourceCatalog;
+use super::{html_response, public_base_url_for_request, text_response};
+use crate::config::{PublicUrls, SourceCatalog};
 
 #[derive(Debug)]
 pub(crate) struct SiteContext {
-    public_url: Url,
+    public_urls: PublicUrls,
     catalog: SourceCatalog,
 }
 
 impl SiteContext {
-    pub(crate) fn new(public_url: Url, catalog: SourceCatalog) -> Self {
+    pub(crate) fn new(public_urls: PublicUrls, catalog: SourceCatalog) -> Self {
         Self {
-            public_url,
+            public_urls,
             catalog,
         }
     }
 
-    pub(crate) fn public_url(&self) -> &Url {
-        &self.public_url
+    pub(crate) fn public_urls(&self) -> &PublicUrls {
+        &self.public_urls
     }
 
     pub(crate) fn catalog(&self) -> &SourceCatalog {
@@ -96,7 +96,7 @@ pub(super) async fn landing_page(
     State(site): State<Arc<SiteContext>>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    let base_url = public_base_url_for_request(&headers, site.public_url());
+    let base_url = public_base_url_for_request(&headers, site.public_urls());
     let home = site_href(&base_url, "/");
     let docs = site_href(&base_url, "/docs");
     let css = site_href(&base_url, "/index.css");
@@ -149,56 +149,6 @@ fn asset_response(content_type: &'static str, body: &'static str) -> axum::respo
         axum::http::HeaderValue::from_static("public, max-age=3600"),
     );
     response
-}
-
-/// 用请求头和配置的公开地址推导页面里的绝对地址。
-pub(super) fn public_base_url_for_request(headers: &HeaderMap, fallback: &Url) -> Url {
-    let host = forwarded_header(headers, "x-forwarded-host")
-        .or_else(|| forwarded_header(headers, "host"))
-        .filter(|host| is_valid_forwarded_host(host));
-    let scheme = forwarded_header(headers, "x-forwarded-proto")
-        .filter(|scheme| matches!(*scheme, "http" | "https"));
-    let fallback_path = match fallback.path().trim_end_matches('/') {
-        "" => "/",
-        path => path,
-    };
-    let mut url = host
-        .and_then(|host| {
-            let scheme =
-                scheme.unwrap_or_else(|| if is_local_host(host) { "http" } else { "https" });
-            Url::parse(&format!("{scheme}://{host}")).ok()
-        })
-        .unwrap_or_else(|| fallback.clone());
-    url.set_path(fallback_path);
-    url.set_query(None);
-    url.set_fragment(None);
-    url
-}
-
-fn forwarded_header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    headers
-        .get(name)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(',').next())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-}
-
-fn is_valid_forwarded_host(host: &str) -> bool {
-    host.len() <= 255
-        && host
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | ':' | '[' | ']'))
-}
-
-fn is_local_host(host: &str) -> bool {
-    let host = host.to_ascii_lowercase();
-    host == "localhost"
-        || host.starts_with("localhost:")
-        || host == "127.0.0.1"
-        || host.starts_with("127.0.0.1:")
-        || host == "[::1]"
-        || host.starts_with("[::1]:")
 }
 
 fn site_href(base_url: &Url, suffix: &str) -> String {

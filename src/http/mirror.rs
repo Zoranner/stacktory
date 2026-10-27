@@ -10,7 +10,10 @@ use axum::{
     routing::any,
 };
 
-use crate::upstream::registry::{AdapterRegistry, AdapterRequest};
+use crate::{
+    http::public_base_url_for_request,
+    upstream::registry::{AdapterRegistry, AdapterRequest},
+};
 
 #[derive(Clone)]
 struct RegistryRouteState {
@@ -53,11 +56,13 @@ async fn named_source(
     };
     let prefix = format!("/mirror/{ecosystem}/{name}/");
     let raw_path = uri.path().strip_prefix(&prefix).unwrap_or(&path).to_owned();
+    let base_url = public_base_url_for_request(&headers, registered.adapter.public_urls());
     registered
         .adapter
         .handle(
             name,
             AdapterRequest {
+                base_url,
                 method,
                 path,
                 raw_path,
@@ -95,11 +100,13 @@ async fn docker_root_source(
         .strip_prefix('/')
         .unwrap_or(uri.path())
         .to_owned();
+    let base_url = public_base_url_for_request(&headers, registered.adapter.public_urls());
     registered
         .adapter
         .handle(
             entry_name.to_owned(),
             AdapterRequest {
+                base_url,
                 method,
                 path: raw_path.clone(),
                 raw_path,

@@ -7,11 +7,14 @@ impl NpmService {
         entry_name: &str,
         request: &NpmTarballPath,
         pool: &SourcePool,
+        base_url: &Url,
     ) -> Result<ArtifactFile, NpmError> {
         if !(self.flavor.is_valid_package)(&request.package) {
             return Err(NpmError::MissingArtifact(request.file_name.clone()));
         }
-        let _ = self.metadata(entry_name, &request.package, pool).await?;
+        let _ = self
+            .metadata(entry_name, &request.package, pool, base_url)
+            .await?;
         let snapshot = self
             .storage
             .read_metadata(entry_name, &request.package)?
@@ -25,7 +28,7 @@ impl NpmService {
                         == request.file_name
             })
             .ok_or_else(|| NpmError::MissingArtifact(request.file_name.clone()))?;
-        self.tarball(entry_name, &descriptor.artifact_key, pool)
+        self.tarball(entry_name, &descriptor.artifact_key, pool, base_url)
             .await
     }
 
@@ -34,6 +37,7 @@ impl NpmService {
         entry_name: &str,
         artifact_key: &str,
         pool: &SourcePool,
+        base_url: &Url,
     ) -> Result<ArtifactFile, NpmError> {
         let descriptor = self
             .storage
@@ -66,6 +70,7 @@ impl NpmService {
                         &descriptor.version,
                         &member,
                         pool,
+                        base_url,
                     )
                     .await
                 {
@@ -177,6 +182,7 @@ impl NpmService {
         version: &str,
         member: &crate::SourceConfig,
         pool: &SourcePool,
+        base_url: &Url,
     ) -> Result<NpmArtifactDescriptor, NpmError> {
         let response = pool
             .fetch_proxy_path(
@@ -192,7 +198,7 @@ impl NpmService {
         )?;
         let mut rewritten = crate::ecosystems::npm::metadata::rewrite_compatible_metadata(
             &metadata,
-            &self.root_url,
+            base_url,
             self.flavor.ecosystem,
             self.flavor.route,
             entry_name,

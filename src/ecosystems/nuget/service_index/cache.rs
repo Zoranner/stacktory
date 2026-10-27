@@ -70,11 +70,12 @@ impl NugetService {
         &self,
         entry_name: &str,
         snapshot: &ServiceIndexSnapshot,
+        base_url: &Url,
     ) -> Result<(), NugetError> {
         let descriptor = ServiceIndexDescriptor {
             selected_proxy: snapshot.selected_proxy.clone(),
             source_fingerprint: snapshot.source_fingerprint.clone(),
-            public_base_url: self.root_url.to_string(),
+            public_base_url: base_url.to_string(),
             validated_at_unix_secs: now_unix_secs(),
             registration_url: snapshot.registration_url.as_ref().map(Url::to_string),
             registration_urls: snapshot

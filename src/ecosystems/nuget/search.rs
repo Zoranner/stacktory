@@ -17,8 +17,9 @@ pub(crate) async fn serve(
     entry_name: &str,
     query: &str,
     pool: &SourcePool,
+    base_url: &Url,
 ) -> Response {
-    match search(service, entry_name, query, pool).await {
+    match search(service, entry_name, query, pool, base_url).await {
         Ok(body) => response(StatusCode::OK, "application/json", body),
         Err(error) => error_response(&error),
     }
@@ -29,13 +30,14 @@ async fn search(
     entry_name: &str,
     query: &str,
     pool: &SourcePool,
+    base_url: &Url,
 ) -> Result<Vec<u8>, NugetError> {
     if query.len() > 16 * 1024 || query.chars().any(char::is_control) {
         return Err(NugetError::InvalidSearchRequest(
             "search query is too long or contains control characters".to_owned(),
         ));
     }
-    let initial = service.service_index(entry_name, pool).await?;
+    let initial = service.service_index(entry_name, pool, base_url).await?;
     let preferred = initial.selected_proxy.clone();
     let mut run = GroupRun::new(pool, entry_name, Some(&preferred))?;
     let is_group = run.is_group();
@@ -46,7 +48,7 @@ async fn search(
                 initial.clone()
             } else {
                 match service
-                    .service_index_from_source(entry_name, &member.name, pool)
+                    .service_index_from_source(entry_name, &member.name, pool, base_url)
                     .await
                 {
                     Ok(snapshot) => snapshot,
@@ -63,7 +65,7 @@ async fn search(
             }
         } else {
             match service
-                .service_index_from_source(entry_name, &member.name, pool)
+                .service_index_from_source(entry_name, &member.name, pool, base_url)
                 .await
             {
                 Ok(snapshot) => snapshot,
@@ -111,7 +113,7 @@ async fn search(
             }
         };
         if let Err(error) =
-            rewrite_registration_links(&mut body, &snapshot.registration_urls, service, entry_name)
+            rewrite_registration_links(&mut body, &snapshot.registration_urls, entry_name, base_url)
         {
             if is_group {
                 run.record_failure(&member.name, &error.to_string(), false);
@@ -157,8 +159,8 @@ async fn search(
 fn rewrite_registration_links(
     value: &mut Value,
     registration_bases: &[Url],
-    service: &NugetService,
     entry_name: &str,
+    base_url: &Url,
 ) -> Result<(), NugetError> {
     if registration_bases.is_empty() {
         return Ok(());
@@ -181,7 +183,7 @@ fn rewrite_registration_links(
                     "search context base URL is outside the discovered resource".to_owned(),
                 ));
             }
-            *value = Value::String(local_registration_base_url(&service.root_url, entry_name));
+            *value = Value::String(local_registration_base_url(base_url, entry_name));
             continue;
         }
         if key == "registration"
@@ -199,11 +201,7 @@ fn rewrite_registration_links(
                     )
                 })?;
             let relative = registration_relative_path(registration_base, &upstream)?;
-            *value = Value::String(local_registration_url(
-                &service.root_url,
-                entry_name,
-                &relative,
-            ));
+            *value = Value::String(local_registration_url(base_url, entry_name, &relative));
             continue;
         }
         if key == "@id"
@@ -221,11 +219,7 @@ fn rewrite_registration_links(
                     )
                 })?;
             let relative = registration_relative_path(registration_base, &upstream)?;
-            *value = Value::String(local_registration_url(
-                &service.root_url,
-                entry_name,
-                &relative,
-            ));
+            *value = Value::String(local_registration_url(base_url, entry_name, &relative));
             continue;
         }
         if key.ends_with("Url") {
@@ -233,11 +227,11 @@ fn rewrite_registration_links(
             continue;
         }
         if value.is_object() {
-            rewrite_registration_links(value, registration_bases, service, entry_name)?;
+            rewrite_registration_links(value, registration_bases, entry_name, base_url)?;
         } else if value.is_array() {
             for item in value.as_array_mut().expect("checked array") {
                 if item.is_object() || item.is_array() {
-                    rewrite_registration_links(item, registration_bases, service, entry_name)?;
+                    rewrite_registration_links(item, registration_bases, entry_name, base_url)?;
                 }
             }
         }

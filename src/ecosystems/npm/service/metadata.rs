@@ -15,12 +15,13 @@ impl NpmService {
         entry_name: &str,
         package: &str,
         pool: &SourcePool,
+        base_url: &Url,
     ) -> Result<Vec<u8>, NpmError> {
         if let Some(snapshot) = self.storage.read_metadata(entry_name, package)? {
             if is_allowed_source(pool, entry_name, &snapshot.key.selected_proxy) {
                 if !metadata_is_stale(snapshot.validated_at_unix_secs) {
                     if let Ok(body) =
-                        self.render_cached_metadata(entry_name, package, &snapshot, pool)
+                        self.render_cached_metadata(entry_name, package, &snapshot, pool, base_url)
                     {
                         self.record(
                             &self.event("metadata_read"),
@@ -40,6 +41,7 @@ impl NpmService {
                             package,
                             pool,
                             Some(&snapshot.key.selected_proxy),
+                            base_url,
                         )
                         .await
                     {
@@ -63,9 +65,9 @@ impl NpmService {
                                     "hit",
                                     None,
                                 );
-                                if let Ok(body) = self
-                                    .render_cached_metadata(entry_name, package, &snapshot, pool)
-                                {
+                                if let Ok(body) = self.render_cached_metadata(
+                                    entry_name, package, &snapshot, pool, base_url,
+                                ) {
                                     return Ok(body);
                                 }
                                 self.storage.remove_metadata(entry_name, package)?;
@@ -95,9 +97,9 @@ impl NpmService {
                                 "stale",
                                 Some("source_failed"),
                             );
-                            if let Ok(body) =
-                                self.render_cached_metadata(entry_name, package, &snapshot, pool)
-                            {
+                            if let Ok(body) = self.render_cached_metadata(
+                                entry_name, package, &snapshot, pool, base_url,
+                            ) {
                                 return Ok(body);
                             }
                             self.storage.remove_metadata(entry_name, package)?;
@@ -109,7 +111,9 @@ impl NpmService {
             }
         }
 
-        let fetched = self.fetch_metadata(entry_name, package, pool, None).await?;
+        let fetched = self
+            .fetch_metadata(entry_name, package, pool, None, base_url)
+            .await?;
         self.publish_fetched_metadata(entry_name, package, &fetched)?;
         Ok(fetched.rendered_body)
     }
@@ -120,6 +124,7 @@ impl NpmService {
         package: &str,
         pool: &SourcePool,
         preferred_source: Option<&str>,
+        base_url: &Url,
     ) -> Result<FetchedMetadata, NpmError> {
         let request_key = (self.flavor.upstream_package_path)(package);
         let mut run = GroupRun::new(pool, entry_name, preferred_source)?;
@@ -172,7 +177,7 @@ impl NpmService {
             };
             let mut rewritten = match crate::ecosystems::npm::metadata::rewrite_compatible_metadata(
                 &metadata,
-                &self.root_url,
+                base_url,
                 self.flavor.ecosystem,
                 self.flavor.route,
                 entry_name,
@@ -256,6 +261,7 @@ impl NpmService {
         package: &str,
         snapshot: &StoredMetadata,
         pool: &SourcePool,
+        base_url: &Url,
     ) -> Result<Vec<u8>, NpmError> {
         let metadata = crate::ecosystems::npm::metadata::parse_compatible_metadata(
             &snapshot.body,
@@ -264,7 +270,7 @@ impl NpmService {
         )?;
         let mut rewritten = crate::ecosystems::npm::metadata::rewrite_compatible_metadata(
             &metadata,
-            &self.root_url,
+            base_url,
             self.flavor.ecosystem,
             self.flavor.route,
             entry_name,

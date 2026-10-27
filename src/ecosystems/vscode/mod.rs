@@ -1,5 +1,13 @@
 use std::{collections::BTreeMap, io, path::PathBuf, sync::Arc};
 
+use crate::{
+    PublicUrls, SourcePool,
+    audit::AuditSink,
+    upstream::{
+        SourcePoolError,
+        registry::{Adapter, AdapterFuture, AdapterRequest},
+    },
+};
 use axum::{
     body::Body,
     http::{Method, StatusCode, header::CONTENT_TYPE},
@@ -8,16 +16,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use url::Url;
-
-use crate::{
-    SourcePool,
-    audit::AuditSink,
-    upstream::{
-        SourcePoolError,
-        registry::{Adapter, AdapterFuture, AdapterRequest},
-    },
-};
 
 mod assets;
 mod cache;
@@ -32,7 +30,7 @@ pub struct VscodeAdapter {
 
 #[derive(Debug)]
 pub struct VscodeService {
-    root_url: Url,
+    public_urls: PublicUrls,
     data_dir: PathBuf,
     audit: AuditSink,
 }
@@ -123,9 +121,9 @@ struct MarketplaceAsset {
 }
 
 impl VscodeAdapter {
-    pub fn new(root_url: Url, data_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(public_urls: impl Into<PublicUrls>, data_dir: impl Into<PathBuf>) -> Self {
         Self {
-            service: Arc::new(VscodeService::new(root_url, data_dir)),
+            service: Arc::new(VscodeService::new(public_urls, data_dir)),
         }
     }
 
@@ -135,14 +133,18 @@ impl VscodeAdapter {
 }
 
 impl VscodeService {
-    pub fn new(root_url: Url, data_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(public_urls: impl Into<PublicUrls>, data_dir: impl Into<PathBuf>) -> Self {
         let data_dir = data_dir.into();
         cleanup_temporary_assets(&data_dir);
         Self {
-            root_url,
+            public_urls: public_urls.into(),
             audit: AuditSink::new(data_dir.clone()),
             data_dir,
         }
+    }
+
+    pub fn public_urls(&self) -> &PublicUrls {
+        &self.public_urls
     }
 
     async fn handle_request(
@@ -169,7 +171,7 @@ impl VscodeService {
         }
         let result = match request.method {
             Method::POST if request.path == "extensionquery" => self
-                .query(entry_name, &request.body, pool)
+                .query(entry_name, &request.body, pool, &request.base_url)
                 .await
                 .map(|body| response(StatusCode::OK, "application/json", body)),
             Method::GET => match self.requested_asset(entry_name, &request.path, pool).await {
@@ -207,6 +209,10 @@ impl VscodeService {
 impl Adapter for VscodeAdapter {
     fn ecosystem(&self) -> &str {
         "vscode"
+    }
+
+    fn public_urls(&self) -> &PublicUrls {
+        self.service.public_urls()
     }
 
     fn handle(

@@ -57,7 +57,9 @@ async fn refresh_publishes_a_rewritten_manifest_snapshot() {
         server: ServerConfig {
             address: "127.0.0.1".parse().expect("address"),
             port: 18761,
-            public_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+            public_url: Url::parse("http://127.0.0.1:18761")
+                .expect("public URL")
+                .into(),
         },
         storage: StorageConfig {
             data_dir: PathBuf::from(directory.path()),
@@ -256,7 +258,9 @@ async fn artifact_cache_is_shared_by_group_and_its_proxy() {
         server: ServerConfig {
             address: "127.0.0.1".parse().expect("address"),
             port: 18761,
-            public_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+            public_url: Url::parse("http://127.0.0.1:18761")
+                .expect("public URL")
+                .into(),
         },
         storage: StorageConfig {
             data_dir: data_dir.path().to_path_buf(),
@@ -374,7 +378,9 @@ async fn proxy_manifest_can_reference_another_configured_proxy() {
         server: ServerConfig {
             address: "127.0.0.1".parse().expect("address"),
             port: 18761,
-            public_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+            public_url: Url::parse("http://127.0.0.1:18761")
+                .expect("public URL")
+                .into(),
         },
         storage: StorageConfig {
             data_dir: data_dir.path().to_path_buf(),
@@ -483,7 +489,9 @@ async fn artifact_request_uses_the_source_matched_by_manifest_url() {
         server: ServerConfig {
             address: "127.0.0.1".parse().expect("address"),
             port: 18761,
-            public_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+            public_url: Url::parse("http://127.0.0.1:18761")
+                .expect("public URL")
+                .into(),
         },
         storage: StorageConfig {
             data_dir: data_dir.path().to_path_buf(),
@@ -701,7 +709,9 @@ async fn artifacts_follow_each_channel_snapshot_source_and_keep_separate_caches(
         server: ServerConfig {
             address: "127.0.0.1".parse().expect("address"),
             port: 18761,
-            public_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+            public_url: Url::parse("http://127.0.0.1:18761")
+                .expect("public URL")
+                .into(),
         },
         storage: StorageConfig {
             data_dir: data_dir.path().to_path_buf(),
@@ -1036,7 +1046,7 @@ fn service_with_sources_and_root(
         server: ServerConfig {
             address: "127.0.0.1".parse().expect("address"),
             port: 18761,
-            public_url: root_url,
+            public_url: root_url.into(),
         },
         storage: StorageConfig {
             data_dir,

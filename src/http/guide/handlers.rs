@@ -11,8 +11,7 @@ use axum::{
 };
 
 use super::super::site::SiteContext;
-use super::super::site::public_base_url_for_request;
-use super::super::{html_response, text_response};
+use super::super::{html_response, public_base_url_for_request, text_response};
 use super::{
     render_index_html, render_index_markdown, render_section_html, render_section_markdown,
     section_by_id,
@@ -33,7 +32,7 @@ pub(crate) async fn index_page(
     State(site): State<Arc<SiteContext>>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    let base_url = public_base_url_for_request(&headers, site.public_url());
+    let base_url = public_base_url_for_request(&headers, site.public_urls());
     html_response(render_index_html(base_url.as_str(), site.catalog()))
 }
 
@@ -45,7 +44,7 @@ pub(crate) async fn section_page(
     let Some(section) = section_by_id(&stack) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let base_url = public_base_url_for_request(&headers, site.public_url());
+    let base_url = public_base_url_for_request(&headers, site.public_urls());
     html_response(render_section_html(
         section,
         base_url.as_str(),
@@ -57,7 +56,7 @@ pub(crate) async fn index_markdown(
     State(site): State<Arc<SiteContext>>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    let base_url = public_base_url_for_request(&headers, site.public_url());
+    let base_url = public_base_url_for_request(&headers, site.public_urls());
     text_response(
         "text/markdown; charset=utf-8",
         render_index_markdown(base_url.as_str(), site.catalog()),
@@ -72,7 +71,7 @@ pub(crate) async fn section_markdown(
     let Some(section) = section_by_id(&stack) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let base_url = public_base_url_for_request(&headers, site.public_url());
+    let base_url = public_base_url_for_request(&headers, site.public_urls());
     text_response(
         "text/markdown; charset=utf-8",
         render_section_markdown(section, base_url.as_str(), site.catalog()),

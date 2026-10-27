@@ -9,7 +9,10 @@ use serde::Deserialize;
 use thiserror::Error;
 use url::Url;
 
-use super::validate::{is_valid_source_name, is_valid_source_url};
+use super::{
+    public_url::PublicUrls,
+    validate::{is_valid_source_name, is_valid_source_url},
+};
 
 #[derive(Debug)]
 pub struct Config {
@@ -34,8 +37,11 @@ pub struct ServerConfig {
     pub address: IpAddr,
     /// Port the process binds to, not necessarily the port in `public_url`.
     pub port: u16,
-    /// Client-visible base URL used when rewriting protocol responses.
-    pub public_url: Url,
+    /// Client-visible base URLs used when rewriting protocol responses.
+    ///
+    /// The first entry is the default; the HTTP layer matches the current
+    /// request against the remaining entries.
+    pub public_url: PublicUrls,
 }
 
 #[derive(Debug, Deserialize)]
@@ -310,8 +316,6 @@ pub enum ConfigError {
         "server.public_url must include a host and must not include credentials, query or fragment"
     )]
     InvalidPublicUrl,
-    #[error("server.public_url must use https outside localhost")]
-    PublicUrlMustUseHttps,
     #[error("outbound proxy URL must use http or https")]
     InvalidProxyScheme,
     #[error(

@@ -17,8 +17,11 @@ use crate::{ecosystems::rustup::RustupService, upstream::registry::AdapterRegist
 
 pub(crate) mod guide;
 mod mirror;
+mod public_url;
 mod rustup_dist;
 mod site;
+
+pub(crate) use public_url::public_base_url_for_request;
 
 pub fn router() -> Router {
     Router::new().route("/healthz", get(health))
@@ -26,7 +29,7 @@ pub fn router() -> Router {
 
 pub fn router_with_rustup(service: Arc<RustupService>) -> Router {
     let site = Arc::new(site::SiteContext::new(
-        service.public_url().clone(),
+        service.public_urls().clone(),
         service.guide_catalog().clone(),
     ));
     let site_router = Router::new()

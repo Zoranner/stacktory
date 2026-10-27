@@ -5,6 +5,9 @@ use axum::{
     response::Response,
 };
 use thiserror::Error;
+use url::Url;
+
+use crate::PublicUrls;
 
 use super::SourcePool;
 
@@ -12,6 +15,9 @@ pub type AdapterFuture = Pin<Box<dyn Future<Output = Response> + Send>>;
 
 #[derive(Debug)]
 pub struct AdapterRequest {
+    /// Absolute base URL resolved from the current request and configured
+    /// `server.public_url` entries.
+    pub base_url: Url,
     pub method: Method,
     pub path: String,
     pub raw_path: String,
@@ -22,6 +28,8 @@ pub struct AdapterRequest {
 
 pub trait Adapter: Send + Sync + 'static {
     fn ecosystem(&self) -> &str;
+
+    fn public_urls(&self) -> &PublicUrls;
 
     fn handle(
         &self,

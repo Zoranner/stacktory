@@ -48,7 +48,10 @@ fn accepts_local_development_configuration() {
 
     assert_eq!(config.server.address.to_string(), "127.0.0.1");
     assert_eq!(config.server.port, 18761);
-    assert_eq!(config.server.public_url.as_str(), "http://127.0.0.1:18761/");
+    assert_eq!(
+        config.server.public_url.primary().as_str(),
+        "http://127.0.0.1:18761/"
+    );
     assert_eq!(config.rustup.refresh_interval_secs, 3600);
     assert_eq!(config.rustup.channels, ["stable", "beta"]);
     assert_eq!(
@@ -292,21 +295,62 @@ fn accepts_public_url_with_a_reverse_proxy_path_prefix() {
     let config = Config::from_toml(&configuration).expect("public URL path prefix");
 
     assert_eq!(
-        config.server.public_url.as_str(),
+        config.server.public_url.primary().as_str(),
         "https://stacktory.example.internal/artifacts"
     );
 }
 
 #[test]
-fn rejects_http_public_url_outside_localhost() {
+fn accepts_explicit_http_public_url_outside_localhost() {
     let configuration = LOCAL_DEVELOPMENT.replace(
         "public_url = \"http://127.0.0.1:18761\"",
         "public_url = \"http://stacktory.example.internal\"",
     );
 
-    let error = Config::from_toml(&configuration).expect_err("public HTTP URL");
+    let config = Config::from_toml(&configuration).expect("explicit public HTTP URL");
 
-    assert!(matches!(error, ConfigError::PublicUrlMustUseHttps));
+    assert_eq!(
+        config.server.public_url.primary().as_str(),
+        "http://stacktory.example.internal/"
+    );
+}
+
+#[test]
+fn accepts_multiple_public_urls_with_primary_first() {
+    let configuration = LOCAL_DEVELOPMENT.replace(
+        "public_url = \"http://127.0.0.1:18761\"",
+        "public_url = [\"https://pkg.example.internal\", \"http://pkg.example.internal\"]",
+    );
+
+    let config = Config::from_toml(&configuration).expect("public URL aliases");
+
+    assert_eq!(
+        config.server.public_url.primary().as_str(),
+        "https://pkg.example.internal/"
+    );
+    assert_eq!(config.server.public_url.iter().count(), 2);
+}
+
+#[test]
+fn rejects_empty_public_url_list() {
+    let configuration =
+        LOCAL_DEVELOPMENT.replace("public_url = \"http://127.0.0.1:18761\"", "public_url = []");
+
+    let error = Config::from_toml(&configuration).expect_err("empty public URL list");
+
+    assert!(error.to_string().contains("public_url"));
+}
+
+#[test]
+fn rejects_invalid_public_url_inside_a_list() {
+    let configuration = LOCAL_DEVELOPMENT.replace(
+        "public_url = \"http://127.0.0.1:18761\"",
+        "public_url = [\"https://pkg.example.internal\", \"ftp://pkg.example.internal\"]",
+    );
+
+    let error = Config::from_toml(&configuration).expect_err("invalid public URL alias");
+
+    assert!(matches!(error, ConfigError::PublicUrlUnsupportedScheme));
 }
 
 #[test]
@@ -495,6 +539,26 @@ public_url = \"https://docker.example.internal:19000\"\n"
         docker.registry_endpoints["official"].public_url.as_str(),
         "https://docker.example.internal:19001/"
     );
+}
+
+#[test]
+fn docker_public_url_does_not_accept_a_list() {
+    let configuration = format!(
+        "{LOCAL_DEVELOPMENT}\n\
+\n\
+[docker]\n\
+\n\
+[[docker.sources]]\n\
+name = \"official\"\n\
+type = \"proxy\"\n\
+base_url = \"https://registry.example\"\n\
+listen_port = 19000\n\
+public_url = [\"https://docker.example.internal:19000\", \"http://docker.example.internal:19000\"]\n"
+    );
+
+    let error = Config::from_toml(&configuration).expect_err("Docker public URL list");
+
+    assert!(matches!(error, ConfigError::Parse(_)));
 }
 
 #[test]

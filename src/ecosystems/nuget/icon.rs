@@ -45,8 +45,9 @@ pub(crate) async fn serve(
     entry_name: &str,
     path: &str,
     pool: &SourcePool,
+    base_url: &Url,
 ) -> Response {
-    match serve_icon(service, entry_name, path, pool).await {
+    match serve_icon(service, entry_name, path, pool, base_url).await {
         Ok((body, content_type)) => icon_response(body, &content_type),
         Err(error) => nuget_error_response(&error),
     }
@@ -57,9 +58,10 @@ async fn serve_icon(
     entry_name: &str,
     path: &str,
     pool: &SourcePool,
+    base_url: &Url,
 ) -> Result<(Vec<u8>, String), NugetError> {
     let (package_id, version) = parse_icon_path(path)?;
-    let initial_snapshot = service.service_index(entry_name, pool).await?;
+    let initial_snapshot = service.service_index(entry_name, pool, base_url).await?;
     let location = resolve_icon(
         service,
         entry_name,
@@ -67,6 +69,7 @@ async fn serve_icon(
         &version,
         &initial_snapshot,
         pool,
+        base_url,
     )
     .await?;
     let cache_path = icon_cache_path(
@@ -152,6 +155,7 @@ async fn resolve_icon(
     version: &str,
     snapshot: &ServiceIndexSnapshot,
     pool: &SourcePool,
+    base_url: &Url,
 ) -> Result<IconLocation, NugetError> {
     let stored: Option<PackageBinding> = read_json(&binding_path(
         &service.data_dir,
@@ -178,7 +182,7 @@ async fn resolve_icon(
     }
 
     if let Ok(binding) =
-        binding_for_source(service, entry_name, package_id, version, snapshot, pool).await
+        binding_for_source(entry_name, package_id, version, snapshot, pool, base_url).await
     {
         persist_binding(&service.data_dir, entry_name, &binding)?;
         if let Some(icon_url) = binding

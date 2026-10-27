@@ -75,8 +75,9 @@ pub(crate) async fn serve(
     entry_name: &str,
     path: &str,
     pool: &SourcePool,
+    base_url: &Url,
 ) -> Response {
-    match serve_registration(service, entry_name, path, pool).await {
+    match serve_registration(service, entry_name, path, pool, base_url).await {
         Ok(body) => response(StatusCode::OK, "application/json", body),
         Err(error) => registration_error_response(&error),
     }
@@ -87,9 +88,10 @@ async fn serve_registration(
     entry_name: &str,
     path: &str,
     pool: &SourcePool,
+    base_url: &Url,
 ) -> Result<Vec<u8>, NugetError> {
     let request = parse_registration_path(path)?;
-    let snapshot = service.service_index(entry_name, pool).await?;
+    let snapshot = service.service_index(entry_name, pool, base_url).await?;
     let cache_path = registration_path(&service.data_dir, entry_name, &request.relative);
     let descriptor_path =
         registration_descriptor_path(&service.data_dir, entry_name, &request.relative);
@@ -106,18 +108,15 @@ async fn serve_registration(
         }
         _ => None,
     };
-    if let Some((mut body, mut descriptor)) = cached {
-        if descriptor.public_base_url != service.root_url.as_str() {
-            if let Some(rebased) = crate::ecosystems::nuget::render::rebase_public_urls(
+    if let Some((mut body, descriptor)) = cached {
+        if descriptor.public_base_url != base_url.as_str()
+            && let Some(rebased) = crate::ecosystems::nuget::render::rebase_public_urls(
                 &body,
                 &descriptor.public_base_url,
-                service.root_url.as_str(),
-            )? {
-                atomic_write(&cache_path, &rebased)?;
-                body = rebased;
-            }
-            descriptor.public_base_url = service.root_url.to_string();
-            atomic_write(&descriptor_path, &serde_json::to_vec(&descriptor)?)?;
+                base_url.as_str(),
+            )?
+        {
+            body = rebased;
         }
         let stale = metadata_is_stale(descriptor.validated_at_unix_secs);
         if !stale {
@@ -134,7 +133,11 @@ async fn serve_registration(
             )?;
             return Ok(body);
         }
-        match fetch_registration(service, entry_name, &request, &snapshot, pool, true).await {
+        match fetch_registration(
+            service, entry_name, &request, &snapshot, pool, true, base_url,
+        )
+        .await
+        {
             Ok(body) => return Ok(body),
             Err(error) if is_not_found(&error) => {
                 let _ = fs::remove_file(&cache_path);
@@ -169,7 +172,10 @@ async fn serve_registration(
         }
     }
 
-    fetch_registration(service, entry_name, &request, &snapshot, pool, false).await
+    fetch_registration(
+        service, entry_name, &request, &snapshot, pool, false, base_url,
+    )
+    .await
 }
 
 async fn fetch_registration(
@@ -179,6 +185,7 @@ async fn fetch_registration(
     snapshot: &ServiceIndexSnapshot,
     pool: &SourcePool,
     revalidating: bool,
+    base_url: &Url,
 ) -> Result<Vec<u8>, NugetError> {
     let preferred = snapshot.selected_proxy.clone();
     let mut run = GroupRun::new(pool, entry_name, Some(&preferred))?;
@@ -191,7 +198,7 @@ async fn fetch_registration(
             snapshot.clone()
         } else {
             match service
-                .service_index_from_source(entry_name, &member.name, pool)
+                .service_index_from_source(entry_name, &member.name, pool, base_url)
                 .await
             {
                 Ok(snapshot) => snapshot,
@@ -240,10 +247,10 @@ async fn fetch_registration(
             &mut body,
             request,
             &source_snapshot,
-            service,
             entry_name,
             &registration_base,
             &mut bindings,
+            base_url,
         ) {
             run.record_failure(&member.name, &error.to_string(), false);
             continue;
@@ -257,7 +264,7 @@ async fn fetch_registration(
                 selected_proxy: source_snapshot.selected_proxy.clone(),
                 source_fingerprint: source_snapshot.source_fingerprint.clone(),
                 upstream_url: upstream_url.to_string(),
-                public_base_url: service.root_url.to_string(),
+                public_base_url: base_url.to_string(),
                 validated_at_unix_secs: now_unix_secs(),
             })?,
         )?;
@@ -265,7 +272,7 @@ async fn fetch_registration(
             persist_binding(&service.data_dir, entry_name, binding)?;
         }
         if source_snapshot.selected_proxy != preferred {
-            service.publish_service_index(entry_name, &source_snapshot)?;
+            service.publish_service_index(entry_name, &source_snapshot, base_url)?;
             service.record_object(
                 "nuget_registration_fallback",
                 NugetAuditDetails {
@@ -319,12 +326,12 @@ async fn fetch_registration(
 }
 
 pub(crate) async fn binding_for_source(
-    service: &NugetService,
     entry_name: &str,
     package_id: &str,
     version: &str,
     snapshot: &ServiceIndexSnapshot,
     pool: &SourcePool,
+    base_url: &Url,
 ) -> Result<PackageBinding, NugetError> {
     let registration_base = snapshot.registration_url.clone().ok_or_else(|| {
         NugetError::InvalidRegistration("service index has no registration resource".to_owned())
@@ -353,10 +360,10 @@ pub(crate) async fn binding_for_source(
         &mut body,
         &request,
         snapshot,
-        service,
         entry_name,
         &registration_base,
         &mut bindings,
+        base_url,
     )?;
     let binding = bindings
         .remove(&binding_key(package_id, version))
@@ -402,10 +409,10 @@ fn rewrite_object(
     object: &mut serde_json::Map<String, Value>,
     request: &RegistrationPath,
     snapshot: &ServiceIndexSnapshot,
-    service: &NugetService,
     entry_name: &str,
     registration_base: &Url,
     bindings: &mut BTreeMap<String, PackageBinding>,
+    base_url: &Url,
 ) -> Result<(), NugetError> {
     let catalog_identity = object
         .get("catalogEntry")
@@ -446,8 +453,8 @@ fn rewrite_object(
         object,
         icon_identity.as_ref(),
         snapshot,
-        service,
         entry_name,
+        base_url,
     );
 
     if object.contains_key("catalogEntry") {
@@ -526,7 +533,7 @@ fn rewrite_object(
         object.insert(
             "packageContent".to_owned(),
             Value::String(local_package_url(
-                &service.root_url,
+                base_url,
                 entry_name,
                 &package_id,
                 &version,
@@ -560,10 +567,10 @@ fn rewrite_object(
                     catalog,
                     request,
                     snapshot,
-                    service,
                     entry_name,
                     registration_base,
                     bindings,
+                    base_url,
                 )?;
             }
             continue;
@@ -585,11 +592,7 @@ fn rewrite_object(
             };
             match registration_relative_path(registration_base, &parsed) {
                 Ok(relative) => {
-                    *value = Value::String(local_registration_url(
-                        &service.root_url,
-                        entry_name,
-                        &relative,
-                    ));
+                    *value = Value::String(local_registration_url(base_url, entry_name, &relative));
                 }
                 Err(error) => {
                     if key != "@id" || page_like {
@@ -605,10 +608,10 @@ fn rewrite_object(
                 value.as_object_mut().expect("checked object"),
                 request,
                 snapshot,
-                service,
                 entry_name,
                 registration_base,
                 bindings,
+                base_url,
             )?;
         } else if value.is_array() {
             for item in value.as_array_mut().expect("checked array") {
@@ -617,10 +620,10 @@ fn rewrite_object(
                         item.as_object_mut().expect("checked object"),
                         request,
                         snapshot,
-                        service,
                         entry_name,
                         registration_base,
                         bindings,
+                        base_url,
                     )?;
                 }
             }
@@ -654,8 +657,8 @@ fn rewrite_icon_field(
     object: &mut serde_json::Map<String, Value>,
     identity: Option<&(String, String)>,
     snapshot: &ServiceIndexSnapshot,
-    service: &NugetService,
     entry_name: &str,
+    base_url: &Url,
 ) -> Option<String> {
     if !object.contains_key("iconUrl") {
         return None;
@@ -665,12 +668,7 @@ fn rewrite_icon_field(
         (Some(upstream), Some((package_id, version))) => {
             object.insert(
                 "iconUrl".to_owned(),
-                Value::String(local_icon_url(
-                    &service.root_url,
-                    entry_name,
-                    package_id,
-                    version,
-                )),
+                Value::String(local_icon_url(base_url, entry_name, package_id, version)),
             );
             Some(upstream)
         }

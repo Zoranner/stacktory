@@ -1,9 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
-use url::Url;
-
 use crate::{
-    SourcePool,
+    PublicUrls, SourcePool,
     ecosystems::npm::{NpmError, NpmService, RegistryFlavor},
     upstream::registry::{Adapter, AdapterFuture, AdapterRequest},
 };
@@ -17,10 +15,10 @@ pub type UpmError = NpmError;
 pub type UpmService = NpmService;
 
 impl UpmAdapter {
-    pub fn new(root_url: Url, data_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(public_urls: impl Into<PublicUrls>, data_dir: impl Into<PathBuf>) -> Self {
         Self {
             service: Arc::new(NpmService::new_with_flavor(
-                root_url,
+                public_urls,
                 data_dir,
                 RegistryFlavor::upm(),
             )),
@@ -35,6 +33,10 @@ impl UpmAdapter {
 impl Adapter for UpmAdapter {
     fn ecosystem(&self) -> &str {
         "upm"
+    }
+
+    fn public_urls(&self) -> &PublicUrls {
+        self.service.public_urls()
     }
 
     fn handle(

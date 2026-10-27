@@ -8,7 +8,7 @@ use super::{
         Config, ConfigError, DockerConfig, DockerRegistryEndpoint, EcosystemConfig, RustupConfig,
         SourceConfig, SourceGraph, SourceType,
     },
-    validate::{is_valid_channel, is_valid_docker_registry_public_url, validate_public_url},
+    validate::{is_valid_channel, is_valid_docker_registry_public_url, validate_public_urls},
 };
 
 #[derive(Deserialize)]
@@ -175,7 +175,7 @@ impl SourceGraph {
 impl Config {
     pub fn from_toml(input: &str) -> Result<Self, ConfigError> {
         let raw: RawConfig = toml::from_str(input)?;
-        validate_public_url(&raw.server.public_url)?;
+        validate_public_urls(&raw.server.public_url)?;
         if let Some(proxy_url) = &raw.proxy.url {
             if !matches!(proxy_url.scheme(), "http" | "https") {
                 return Err(ConfigError::InvalidProxyScheme);

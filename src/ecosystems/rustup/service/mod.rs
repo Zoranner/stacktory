@@ -11,7 +11,7 @@ use super::{
     StoredSnapshot, rewrite_manifest,
 };
 use crate::{
-    Config,
+    Config, PublicUrls,
     audit::{AuditDetails, AuditSink},
     config::SourceCatalog,
     storage::locks::ShardedLocks,
@@ -27,7 +27,7 @@ use artifact::cleanup_temporary_artifacts;
 pub struct RustupService {
     pub(super) channels: Vec<String>,
     pub(super) refresh_interval_secs: u64,
-    pub(super) root_url: url::Url,
+    pub(super) public_urls: PublicUrls,
     pub(super) docs_catalog: SourceCatalog,
     pub(super) sources: SourcePool,
     pub(super) snapshots: SnapshotStore,
@@ -54,8 +54,8 @@ pub enum ServiceError {
 }
 
 impl RustupService {
-    pub fn public_url(&self) -> &url::Url {
-        &self.root_url
+    pub fn public_urls(&self) -> &PublicUrls {
+        &self.public_urls
     }
 
     pub(crate) fn guide_catalog(&self) -> &SourceCatalog {
@@ -91,7 +91,7 @@ impl RustupService {
         Ok(Self {
             channels: config.rustup.channels,
             refresh_interval_secs: config.rustup.refresh_interval_secs,
-            root_url: config.server.public_url,
+            public_urls: config.server.public_url,
             docs_catalog,
             sources,
             snapshots: SnapshotStore::new(data_dir.clone()),
@@ -143,9 +143,18 @@ impl RustupService {
         source_name: &str,
         channel: &str,
     ) -> Result<StoredSnapshot, ServiceError> {
+        self.manifest_with_base(source_name, channel, self.public_urls.primary())
+    }
+
+    pub fn manifest_with_base(
+        &self,
+        source_name: &str,
+        channel: &str,
+        base_url: &url::Url,
+    ) -> Result<StoredSnapshot, ServiceError> {
         self.ensure_channel(channel)?;
         let snapshot = self.snapshots.current(source_name, channel)?;
-        self.render_snapshot(snapshot, source_name, channel)
+        self.render_snapshot(snapshot, source_name, channel, base_url)
     }
 
     fn render_snapshot(
@@ -153,11 +162,12 @@ impl RustupService {
         mut snapshot: StoredSnapshot,
         source_name: &str,
         channel: &str,
+        base_url: &url::Url,
     ) -> Result<StoredSnapshot, ServiceError> {
         let rewritten = rewrite_manifest(
             &snapshot.canonical_manifest,
             &self.manifest_policy(),
-            &self.entry_root_url(source_name),
+            &self.entry_root_url(base_url, source_name),
             channel,
         )?;
         snapshot.manifest = rewritten.manifest;
@@ -171,15 +181,25 @@ impl RustupService {
         source_name: &str,
         channel: &str,
     ) -> Result<StoredSnapshot, ServiceError> {
+        self.manifest_for_request_with_base(source_name, channel, self.public_urls.primary())
+            .await
+    }
+
+    pub async fn manifest_for_request_with_base(
+        &self,
+        source_name: &str,
+        channel: &str,
+        base_url: &url::Url,
+    ) -> Result<StoredSnapshot, ServiceError> {
         self.ensure_channel(channel)?;
         let _guard = self
             .refresh_locks
             .lock(&format!("{source_name}\0{channel}"))
             .await;
-        match self.manifest(source_name, channel) {
+        match self.manifest_with_base(source_name, channel, base_url) {
             Ok(snapshot) if self.is_snapshot_stale(&snapshot) => {
                 match self.refresh(source_name, channel).await {
-                    Ok(()) => self.manifest(source_name, channel),
+                    Ok(()) => self.manifest_with_base(source_name, channel, base_url),
                     Err(_) => Ok(snapshot),
                 }
             }
@@ -189,7 +209,7 @@ impl RustupService {
                 | ServiceError::Storage(StorageError::IncompatibleSnapshot(_)),
             ) => {
                 self.refresh(source_name, channel).await?;
-                self.manifest(source_name, channel)
+                self.manifest_with_base(source_name, channel, base_url)
             }
             Err(error) => Err(error),
         }
@@ -221,8 +241,8 @@ impl RustupService {
             .ok_or_else(|| SourcePoolError::UnknownEntry(entry_name.to_owned()).into())
     }
 
-    fn entry_root_url(&self, source_name: &str) -> url::Url {
-        let mut url = self.root_url.clone();
+    fn entry_root_url(&self, base_url: &url::Url, source_name: &str) -> url::Url {
+        let mut url = base_url.clone();
         let base_path = url.path().trim_end_matches('/');
         url.set_path(&format!("{base_path}/mirror/rustup/{source_name}"));
         url.set_query(None);

@@ -20,7 +20,7 @@ use axum::{
 };
 use sha2::{Digest, Sha512};
 use stacktory::{
-    SourceConfig, SourceGraph, SourcePool, SourceType, ecosystems::npm::NpmAdapter,
+    PublicUrls, SourceConfig, SourceGraph, SourcePool, SourceType, ecosystems::npm::NpmAdapter,
     http::router_with_registry, upstream::registry::AdapterRegistry,
 };
 use tempfile::tempdir;
@@ -427,6 +427,64 @@ async fn re_renders_metadata_for_a_new_public_root_without_upstream_refetch() {
 }
 
 #[tokio::test]
+async fn re_renders_metadata_for_each_public_url_alias() {
+    let metadata_requests = Arc::new(AtomicUsize::new(0));
+    let (upstream, _) = start_npm_server(
+        "left-pad",
+        b"verified npm tarball".to_vec(),
+        metadata_requests.clone(),
+        Arc::new(AtomicUsize::new(0)),
+    )
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let public_urls =
+        PublicUrls::from_primary(Url::parse("https://pkg.rd.kim").expect("primary URL"))
+            .with_aliases([Url::parse("http://pkg.rd.kim").expect("HTTP alias")]);
+    let router = npm_router_with_public_urls(
+        public_urls,
+        vec![proxy("official", upstream.as_str())],
+        data_dir.path(),
+    );
+
+    for (scheme, expected) in [
+        (
+            "http",
+            "http://pkg.rd.kim/mirror/npm/official/left-pad/-/left-pad-1.0.0.tgz",
+        ),
+        (
+            "https",
+            "https://pkg.rd.kim/mirror/npm/official/left-pad/-/left-pad-1.0.0.tgz",
+        ),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/mirror/npm/official/left-pad")
+                    .header("host", "pkg.rd.kim")
+                    .header("x-forwarded-proto", scheme)
+                    .body(Body::empty())
+                    .expect("alias metadata request"),
+            )
+            .await
+            .expect("alias metadata response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("alias metadata body");
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&body).expect("alias metadata JSON");
+        assert_eq!(
+            metadata["versions"]["1.0.0"]["dist"]["tarball"]
+                .as_str()
+                .expect("alias tarball URL"),
+            expected
+        );
+    }
+    assert_eq!(metadata_requests.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn corrupt_metadata_cache_is_removed_and_refetched() {
     let metadata_requests = Arc::new(AtomicUsize::new(0));
     let (upstream, _) = start_npm_server(
@@ -730,7 +788,7 @@ fn age_metadata_pointer(data_dir: &Path, ecosystem: &str, entry: &str, package: 
 }
 
 fn npm_router(sources: Vec<SourceConfig>, data_dir: &Path) -> axum::Router {
-    npm_router_with_root(
+    npm_router_with_public_urls(
         Url::parse("http://127.0.0.1:18761").expect("root URL"),
         sources,
         data_dir,
@@ -742,6 +800,14 @@ fn npm_router_with_root(
     sources: Vec<SourceConfig>,
     data_dir: &Path,
 ) -> axum::Router {
+    npm_router_with_public_urls(root_url, sources, data_dir)
+}
+
+fn npm_router_with_public_urls(
+    public_urls: impl Into<PublicUrls>,
+    sources: Vec<SourceConfig>,
+    data_dir: &Path,
+) -> axum::Router {
     let registry = AdapterRegistry::new()
         .with_adapter(
             "npm",
@@ -749,7 +815,7 @@ fn npm_router_with_root(
                 SourcePool::new("npm", SourceGraph::new(sources).expect("source graph"))
                     .expect("source pool"),
             ),
-            Arc::new(NpmAdapter::new(root_url, data_dir)),
+            Arc::new(NpmAdapter::new(public_urls, data_dir)),
         )
         .expect("registry");
     router_with_registry(registry)

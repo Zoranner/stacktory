@@ -15,7 +15,7 @@ use axum::{
     routing::get,
 };
 use stacktory::{
-    SourceConfig, SourceGraph, SourcePool, SourceType, ecosystems::nuget::NugetAdapter,
+    PublicUrls, SourceConfig, SourceGraph, SourcePool, SourceType, ecosystems::nuget::NugetAdapter,
     http::router_with_registry, upstream::registry::AdapterRegistry,
 };
 use tempfile::tempdir;
@@ -203,6 +203,65 @@ async fn service_index_rebases_cached_public_urls_without_refetching() {
         second_registration["@id"],
         "https://pkg2.example/mirror/nuget/official/registration/"
     );
+}
+
+#[tokio::test]
+async fn service_index_renders_each_public_url_alias_in_one_process() {
+    let upstream = start_service_index_with_body(|port| {
+        format!(
+            r#"{{"version":"3.0.0","resources":[
+                {{"@id":"http://127.0.0.1:{port}/v3/registration/","@type":"RegistrationsBaseUrl/3.6.0"}},
+                {{"@id":"http://127.0.0.1:{port}/v3-flatcontainer/","@type":"PackageBaseAddress/3.0.0"}}
+            ]}}"#
+        )
+    })
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let public_urls =
+        PublicUrls::from_primary(Url::parse("https://pkg.rd.kim").expect("primary URL"))
+            .with_aliases([Url::parse("http://pkg.rd.kim").expect("HTTP alias")]);
+    let router = nuget_router_with_root(upstream, data_dir.path(), public_urls);
+
+    for (scheme, expected) in [
+        (
+            "http",
+            "http://pkg.rd.kim/mirror/nuget/official/registration/",
+        ),
+        (
+            "https",
+            "https://pkg.rd.kim/mirror/nuget/official/registration/",
+        ),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/mirror/nuget/official/v3/index.json")
+                    .header("host", "pkg.rd.kim")
+                    .header("x-forwarded-proto", scheme)
+                    .body(Body::empty())
+                    .expect("alias service index request"),
+            )
+            .await
+            .expect("alias service index response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("alias service index body");
+        let index: serde_json::Value =
+            serde_json::from_slice(&body).expect("alias service index JSON");
+        let registration = index["resources"]
+            .as_array()
+            .expect("alias resources")
+            .iter()
+            .find(|resource| {
+                resource["@type"]
+                    .as_str()
+                    .is_some_and(|kind| kind.starts_with("RegistrationsBaseUrl"))
+            })
+            .expect("alias registration resource");
+        assert_eq!(registration["@id"], expected);
+    }
 }
 
 #[tokio::test]
@@ -693,7 +752,11 @@ fn nuget_router(upstream: Url, data_dir: &Path) -> axum::Router {
     )
 }
 
-fn nuget_router_with_root(upstream: Url, data_dir: &Path, root_url: Url) -> axum::Router {
+fn nuget_router_with_root(
+    upstream: Url,
+    data_dir: &Path,
+    public_urls: impl Into<PublicUrls>,
+) -> axum::Router {
     let registry = AdapterRegistry::new()
         .with_adapter(
             "nuget",
@@ -705,7 +768,7 @@ fn nuget_router_with_root(upstream: Url, data_dir: &Path, root_url: Url) -> axum
                 )
                 .expect("source pool"),
             ),
-            Arc::new(NugetAdapter::new(root_url, data_dir)),
+            Arc::new(NugetAdapter::new(public_urls, data_dir)),
         )
         .expect("registry");
     router_with_registry(registry)

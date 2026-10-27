@@ -18,7 +18,7 @@ use axum::{
 use sha2::{Digest, Sha256};
 use stacktory::{
     Config, DockerConfig, DockerRegistryEndpoint, EcosystemConfig, NugetConfig, ProxyConfig,
-    RetentionConfig, RustupConfig, ServerConfig, SourceConfig, SourceGraph, SourceType,
+    PublicUrls, RetentionConfig, RustupConfig, ServerConfig, SourceConfig, SourceGraph, SourceType,
     StorageConfig, UpmConfig, UpstreamConfig, VscodeConfig,
     ecosystems::rustup::RustupService,
     http::{router, router_with_rustup},
@@ -46,7 +46,11 @@ async fn health_route_reports_service_availability() {
 async fn landing_page_links_to_docs_and_serves_its_assets() {
     let data_dir = tempdir().expect("data directory");
     let log_dir = tempdir().expect("log directory");
-    let service = rustup_service(data_dir.path().to_path_buf(), log_dir.path().to_path_buf());
+    let service = rustup_service_with_public_url(
+        data_dir.path().to_path_buf(),
+        log_dir.path().to_path_buf(),
+        PublicUrls::from_primary(Url::parse("https://pkg.rd.kim").expect("public URL")),
+    );
     let router = router_with_rustup(Arc::new(service));
 
     let page = router
@@ -147,7 +151,11 @@ async fn landing_page_links_to_docs_and_serves_its_assets() {
 async fn source_config_page_serves_external_assets() {
     let data_dir = tempdir().expect("data directory");
     let log_dir = tempdir().expect("log directory");
-    let service = rustup_service(data_dir.path().to_path_buf(), log_dir.path().to_path_buf());
+    let service = rustup_service_with_public_url(
+        data_dir.path().to_path_buf(),
+        log_dir.path().to_path_buf(),
+        PublicUrls::from_primary(Url::parse("https://pkg.rd.kim").expect("public URL")),
+    );
     let router = router_with_rustup(Arc::new(service));
 
     let page = router
@@ -227,7 +235,11 @@ async fn removed_vscode_script_endpoint_returns_not_found() {
 async fn source_config_pages_use_the_request_host_and_stack_title() {
     let data_dir = tempdir().expect("data directory");
     let log_dir = tempdir().expect("log directory");
-    let service = rustup_service(data_dir.path().to_path_buf(), log_dir.path().to_path_buf());
+    let service = rustup_service_with_public_url(
+        data_dir.path().to_path_buf(),
+        log_dir.path().to_path_buf(),
+        PublicUrls::from_primary(Url::parse("https://pkg.rd.kim").expect("public URL")),
+    );
     let router = router_with_rustup(Arc::new(service));
 
     let index = router
@@ -371,7 +383,7 @@ async fn source_config_pages_preserve_the_configured_public_path() {
     let service = rustup_service_with_public_url(
         data_dir.path().to_path_buf(),
         log_dir.path().to_path_buf(),
-        Url::parse("http://127.0.0.1:18761/artifacts/").expect("public URL"),
+        PublicUrls::from_primary(Url::parse("https://pkg.rd.kim/artifacts/").expect("public URL")),
     );
 
     let router = router_with_rustup(Arc::new(service));
@@ -413,6 +425,61 @@ async fn source_config_pages_preserve_the_configured_public_path() {
     assert!(html.contains("https://pkg.rd.kim/artifacts/mirror/cargo/group/"));
     assert!(html.contains("href=\"/artifacts/docs\""));
     assert!(html.contains("href=\"/artifacts/docs/cargo\""));
+}
+
+#[tokio::test]
+async fn source_config_pages_use_the_matching_public_url_alias() {
+    let data_dir = tempdir().expect("data directory");
+    let log_dir = tempdir().expect("log directory");
+    let service = rustup_service_with_public_url(
+        data_dir.path().to_path_buf(),
+        log_dir.path().to_path_buf(),
+        PublicUrls::from_primary(Url::parse("https://pkg.rd.kim").expect("primary URL"))
+            .with_aliases([Url::parse("http://pkg.rd.kim").expect("HTTP alias")]),
+    );
+    let router = router_with_rustup(Arc::new(service));
+
+    for (scheme, expected) in [
+        ("https", "https://pkg.rd.kim/mirror/cargo/group/"),
+        ("http", "http://pkg.rd.kim/mirror/cargo/group/"),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/docs/cargo")
+                    .header("host", "pkg.rd.kim")
+                    .header("x-forwarded-proto", scheme)
+                    .body(Body::empty())
+                    .expect("alias docs request"),
+            )
+            .await
+            .expect("alias docs response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("alias docs body");
+        let html = String::from_utf8(body.to_vec()).expect("alias docs UTF-8");
+        assert!(html.contains(expected));
+    }
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/docs/cargo")
+                .header("host", "evil.example")
+                .header("x-forwarded-proto", "https")
+                .body(Body::empty())
+                .expect("unmatched docs request"),
+        )
+        .await
+        .expect("unmatched docs response");
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("unmatched docs body");
+    let html = String::from_utf8(body.to_vec()).expect("unmatched docs UTF-8");
+    assert!(html.contains("https://pkg.rd.kim/mirror/cargo/group/"));
+    assert!(!html.contains("evil.example"));
 }
 
 #[tokio::test]
@@ -476,7 +543,9 @@ async fn rustup_direct_source_not_found_preserves_the_upstream_status() {
         server: ServerConfig {
             address: "127.0.0.1".parse().expect("address"),
             port: 18761,
-            public_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+            public_url: Url::parse("http://127.0.0.1:18761")
+                .expect("public URL")
+                .into(),
         },
         storage: StorageConfig {
             data_dir: data_dir.path().to_path_buf(),
@@ -565,7 +634,9 @@ async fn public_rustup_artifact_route_serves_only_a_verified_published_artifact(
         server: ServerConfig {
             address: "127.0.0.1".parse().expect("address"),
             port: 18761,
-            public_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+            public_url: Url::parse("http://127.0.0.1:18761")
+                .expect("public URL")
+                .into(),
         },
         storage: StorageConfig {
             data_dir: PathBuf::from(data_dir.path()),
@@ -676,7 +747,9 @@ async fn rustup_group_route_serves_manifest() {
         server: ServerConfig {
             address: "127.0.0.1".parse().expect("address"),
             port: 18761,
-            public_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+            public_url: Url::parse("http://127.0.0.1:18761")
+                .expect("public URL")
+                .into(),
         },
         storage: StorageConfig {
             data_dir: data_dir.path().to_path_buf(),
@@ -798,7 +871,9 @@ async fn rustup_group_artifact_stays_with_the_manifest_source() {
         server: ServerConfig {
             address: "127.0.0.1".parse().expect("address"),
             port: 18761,
-            public_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+            public_url: Url::parse("http://127.0.0.1:18761")
+                .expect("public URL")
+                .into(),
         },
         storage: StorageConfig {
             data_dir: data_dir.path().to_path_buf(),
@@ -876,7 +951,9 @@ async fn rustup_proxy_route_serves_only_its_proxy() {
         server: ServerConfig {
             address: "127.0.0.1".parse().expect("address"),
             port: 18761,
-            public_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+            public_url: Url::parse("http://127.0.0.1:18761")
+                .expect("public URL")
+                .into(),
         },
         storage: StorageConfig {
             data_dir: data_dir.path().to_path_buf(),
@@ -923,7 +1000,9 @@ async fn unknown_rustup_artifact_source_returns_not_found_before_snapshot_lookup
         server: ServerConfig {
             address: "127.0.0.1".parse().expect("address"),
             port: 18761,
-            public_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+            public_url: Url::parse("http://127.0.0.1:18761")
+                .expect("public URL")
+                .into(),
         },
         storage: StorageConfig {
             data_dir: data_dir.path().to_path_buf(),
@@ -1018,7 +1097,9 @@ async fn legacy_rustup_route_returns_not_found() {
         server: ServerConfig {
             address: "127.0.0.1".parse().expect("address"),
             port: 18761,
-            public_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+            public_url: Url::parse("http://127.0.0.1:18761")
+                .expect("public URL")
+                .into(),
         },
         storage: StorageConfig {
             data_dir: data_dir.path().to_path_buf(),
@@ -1077,13 +1158,13 @@ fn rustup_service(data_dir: PathBuf, log_dir: PathBuf) -> RustupService {
 fn rustup_service_with_public_url(
     data_dir: PathBuf,
     log_dir: PathBuf,
-    public_url: Url,
+    public_url: impl Into<PublicUrls>,
 ) -> RustupService {
     RustupService::new(Config {
         server: ServerConfig {
             address: "127.0.0.1".parse().expect("address"),
             port: 18761,
-            public_url,
+            public_url: public_url.into(),
         },
         storage: StorageConfig { data_dir, log_dir },
         proxy: ProxyConfig::default(),

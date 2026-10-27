@@ -18,7 +18,10 @@ pub async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let config = read_config()?;
     let (log_file, rotated_log) =
         logging::init(config.storage.log_dir.clone(), std::time::SystemTime::now())?;
-    if record_public_url(&config.storage.data_dir, config.server.public_url.as_str())? {
+    if record_public_url(
+        &config.storage.data_dir,
+        &config.server.public_url.as_config_value(),
+    )? {
         logging::info("recorded the configured public_url; cached metadata will render lazily");
     }
     let mut docker_listeners = Vec::new();

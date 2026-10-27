@@ -5,16 +5,16 @@ use url::Url;
 
 use super::{NugetError, PackageBinding, RegistrationPath};
 use crate::ecosystems::nuget::path::is_safe_segment;
-use crate::ecosystems::nuget::service_index::{NugetService, ServiceIndexSnapshot};
+use crate::ecosystems::nuget::service_index::ServiceIndexSnapshot;
 
 pub(super) fn rewrite_registration(
     value: &mut Value,
     request: &RegistrationPath,
     snapshot: &ServiceIndexSnapshot,
-    service: &NugetService,
     entry_name: &str,
     registration_base: &Url,
     bindings: &mut BTreeMap<String, PackageBinding>,
+    base_url: &Url,
 ) -> Result<(), NugetError> {
     let object = value.as_object_mut().ok_or_else(|| {
         NugetError::InvalidRegistration("registration response is not an object".to_owned())
@@ -23,10 +23,10 @@ pub(super) fn rewrite_registration(
         object,
         request,
         snapshot,
-        service,
         entry_name,
         registration_base,
         bindings,
+        base_url,
     )
 }
 

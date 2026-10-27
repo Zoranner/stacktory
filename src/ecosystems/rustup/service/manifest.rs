@@ -15,7 +15,7 @@ impl RustupService {
         let is_group = run.is_group();
         let manifest_key = format!("dist/channel-rust-{channel}.toml");
         let checksum_key = format!("{manifest_key}.sha256");
-        let entry_root = self.entry_root_url(source_name);
+        let entry_root = self.entry_root_url(self.public_urls.primary(), source_name);
         let file_name = format!("channel-rust-{channel}.toml");
         let policy = self.manifest_policy();
         while let Some(member) = run.next_member() {

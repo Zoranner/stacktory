@@ -1,8 +1,6 @@
-use std::net::IpAddr;
-
 use url::Url;
 
-use super::model::ConfigError;
+use super::{model::ConfigError, public_url::PublicUrls};
 
 pub(super) fn validate_public_url(url: &Url) -> Result<(), ConfigError> {
     if !matches!(url.scheme(), "http" | "https") {
@@ -16,8 +14,12 @@ pub(super) fn validate_public_url(url: &Url) -> Result<(), ConfigError> {
     {
         return Err(ConfigError::InvalidPublicUrl);
     }
-    if url.scheme() != "https" && !is_localhost(url) {
-        return Err(ConfigError::PublicUrlMustUseHttps);
+    Ok(())
+}
+
+pub(super) fn validate_public_urls(urls: &PublicUrls) -> Result<(), ConfigError> {
+    for url in urls.iter() {
+        validate_public_url(url)?;
     }
     Ok(())
 }
@@ -58,14 +60,4 @@ pub(super) fn is_valid_source_url(url: &Url) -> bool {
         && url.password().is_none()
         && url.query().is_none()
         && url.fragment().is_none()
-}
-
-fn is_localhost(url: &Url) -> bool {
-    match url.host_str() {
-        Some("localhost") => true,
-        Some(host) => host
-            .parse::<IpAddr>()
-            .is_ok_and(|address| address.is_loopback()),
-        None => false,
-    }
 }

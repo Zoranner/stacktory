@@ -10,7 +10,7 @@ use thiserror::Error;
 use url::Url;
 
 use crate::{
-    SourcePool,
+    PublicUrls, SourcePool,
     audit::{AuditDetails, AuditError, AuditSink},
     upstream::{
         FetchOperation, GroupRun, SourcePoolError,
@@ -35,7 +35,7 @@ pub struct NugetAdapter {
 
 #[derive(Debug)]
 pub struct NugetService {
-    pub(crate) root_url: Url,
+    pub(crate) public_urls: PublicUrls,
     pub(crate) data_dir: PathBuf,
     pub(crate) audit: AuditSink,
 }
@@ -126,9 +126,9 @@ struct RewrittenServiceIndex {
 }
 
 impl NugetAdapter {
-    pub fn new(root_url: Url, data_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(public_urls: impl Into<PublicUrls>, data_dir: impl Into<PathBuf>) -> Self {
         Self {
-            service: Arc::new(NugetService::new(root_url, data_dir)),
+            service: Arc::new(NugetService::new(public_urls, data_dir)),
         }
     }
 
@@ -138,7 +138,7 @@ impl NugetAdapter {
 }
 
 impl NugetService {
-    pub fn new(root_url: Url, data_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(public_urls: impl Into<PublicUrls>, data_dir: impl Into<PathBuf>) -> Self {
         let data_dir = data_dir.into();
         let temporary_root = data_dir.join("tmp");
         let _ = fs::create_dir_all(&temporary_root);
@@ -152,10 +152,14 @@ impl NugetService {
             }
         }
         Self {
-            root_url,
+            public_urls: public_urls.into(),
             audit: AuditSink::new(data_dir.clone()),
             data_dir,
         }
+    }
+
+    pub fn public_urls(&self) -> &PublicUrls {
+        &self.public_urls
     }
 
     async fn handle_request(
@@ -168,14 +172,15 @@ impl NugetService {
             return StatusCode::METHOD_NOT_ALLOWED.into_response();
         }
         let path = request.path.trim_start_matches('/');
+        let base_url = &request.base_url;
         if path.starts_with("registration/") {
-            return super::registration::serve(self, entry_name, path, pool).await;
+            return super::registration::serve(self, entry_name, path, pool, base_url).await;
         }
         if path.starts_with("package/") {
-            return super::package::serve(self, entry_name, path, pool).await;
+            return super::package::serve(self, entry_name, path, pool, base_url).await;
         }
         if path.starts_with("icon/") {
-            return super::icon::serve(self, entry_name, path, pool).await;
+            return super::icon::serve(self, entry_name, path, pool, base_url).await;
         }
         if path == "search/query" {
             return super::search::serve(
@@ -183,16 +188,17 @@ impl NugetService {
                 entry_name,
                 request.query.as_deref().unwrap_or_default(),
                 pool,
+                base_url,
             )
             .await;
         }
         if path.starts_with("vulnerability/") {
-            return super::vulnerability::serve(self, entry_name, path, pool).await;
+            return super::vulnerability::serve(self, entry_name, path, pool, base_url).await;
         }
         if path != "v3/index.json" {
             return StatusCode::NOT_FOUND.into_response();
         }
-        match self.service_index(entry_name, pool).await {
+        match self.service_index(entry_name, pool, base_url).await {
             Ok(snapshot) => response(StatusCode::OK, "application/json", snapshot.body),
             Err(error) => nuget_error_response(&error),
         }
@@ -202,20 +208,18 @@ impl NugetService {
         &self,
         entry_name: &str,
         pool: &SourcePool,
+        base_url: &Url,
     ) -> Result<ServiceIndexSnapshot, NugetError> {
         let cached = self.read_cached_service_index(entry_name, pool)?;
-        if let Some((mut body, mut descriptor)) = cached {
-            if descriptor.public_base_url != self.root_url.as_str() {
-                if let Some(rebased) = crate::ecosystems::nuget::render::rebase_public_urls(
+        if let Some((mut body, descriptor)) = cached {
+            if descriptor.public_base_url != base_url.as_str()
+                && let Some(rebased) = crate::ecosystems::nuget::render::rebase_public_urls(
                     &body,
                     &descriptor.public_base_url,
-                    self.root_url.as_str(),
-                )? {
-                    self.write_service_index_body(entry_name, &rebased)?;
-                    body = rebased;
-                }
-                descriptor.public_base_url = self.root_url.to_string();
-                self.write_service_index_descriptor(entry_name, &descriptor)?;
+                    base_url.as_str(),
+                )?
+            {
+                body = rebased;
             }
             let stale = metadata_is_stale(descriptor.validated_at_unix_secs);
             let snapshot = snapshot_from_descriptor(body, descriptor.clone())?;
@@ -230,7 +234,13 @@ impl NugetService {
                 return Ok(snapshot);
             }
             match self
-                .fetch_service_index(entry_name, pool, Some(&descriptor.selected_proxy), true)
+                .fetch_service_index(
+                    entry_name,
+                    pool,
+                    Some(&descriptor.selected_proxy),
+                    true,
+                    base_url,
+                )
                 .await
             {
                 Ok(snapshot) => return Ok(snapshot),
@@ -258,7 +268,7 @@ impl NugetService {
             }
         }
 
-        self.fetch_service_index(entry_name, pool, None, false)
+        self.fetch_service_index(entry_name, pool, None, false, base_url)
             .await
     }
 
@@ -268,6 +278,7 @@ impl NugetService {
         pool: &SourcePool,
         preferred_source: Option<&str>,
         revalidating: bool,
+        request_base_url: &Url,
     ) -> Result<ServiceIndexSnapshot, NugetError> {
         let mut run = GroupRun::new(pool, entry_name, preferred_source)?;
         while let Some(member) = run.next_member() {
@@ -300,7 +311,7 @@ impl NugetService {
             };
             match rewrite_service_index(
                 &upstream.body,
-                &self.root_url,
+                request_base_url,
                 entry_name,
                 base_url,
                 member.require_https,
@@ -309,7 +320,7 @@ impl NugetService {
                     let descriptor = ServiceIndexDescriptor {
                         selected_proxy: upstream.source_name.clone(),
                         source_fingerprint: member.fingerprint(),
-                        public_base_url: self.root_url.to_string(),
+                        public_base_url: request_base_url.to_string(),
                         validated_at_unix_secs: now_unix_secs(),
                         registration_url: rewritten.registration_url.as_ref().map(Url::to_string),
                         registration_urls: rewritten
@@ -373,6 +384,7 @@ impl NugetService {
         entry_name: &str,
         source_name: &str,
         pool: &SourcePool,
+        request_base_url: &Url,
     ) -> Result<ServiceIndexSnapshot, NugetError> {
         let source = pool
             .proxy_members(entry_name)
@@ -400,7 +412,7 @@ impl NugetService {
             .await?;
         let rewritten = rewrite_service_index(
             &upstream.body,
-            &self.root_url,
+            request_base_url,
             entry_name,
             base_url,
             source.require_https,
@@ -470,6 +482,10 @@ impl NugetService {
 impl Adapter for NugetAdapter {
     fn ecosystem(&self) -> &str {
         "nuget"
+    }
+
+    fn public_urls(&self) -> &PublicUrls {
+        self.service.public_urls()
     }
 
     fn handle(

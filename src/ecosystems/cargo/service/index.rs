@@ -4,6 +4,8 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use url::Url;
+
 use crate::{
     SourcePool,
     storage::atomic::atomic_write,
@@ -23,6 +25,7 @@ impl CargoService {
         index_path: &str,
         crate_name: &str,
         pool: &SourcePool,
+        base_url: &Url,
     ) -> Result<IndexSnapshot, CargoError> {
         let cache_path = self.metadata_path(entry_name, index_path);
         let sidecar_path = self.metadata_sidecar_path(entry_name, index_path);
@@ -53,6 +56,7 @@ impl CargoService {
                             crate_name,
                             pool,
                             Some(&selected_proxy),
+                            base_url,
                         )
                         .await
                     {
@@ -151,7 +155,7 @@ impl CargoService {
         }
 
         let fetched = self
-            .fetch_index(entry_name, index_path, crate_name, pool, None)
+            .fetch_index(entry_name, index_path, crate_name, pool, None, base_url)
             .await?;
         self.publish_index_cache(
             &cache_path,
@@ -174,6 +178,7 @@ impl CargoService {
         crate_name: &str,
         pool: &SourcePool,
         preferred_source: Option<&str>,
+        base_url: &Url,
     ) -> Result<FetchedIndex, CargoError> {
         let request_key = index_path.to_owned();
         let mut run = GroupRun::new(pool, entry_name, preferred_source)?;
@@ -190,7 +195,7 @@ impl CargoService {
                         }
                     });
                     match source
-                        .and_then(|source| rewrite_index_lines(source, &self.root_url, entry_name))
+                        .and_then(|source| rewrite_index_lines(source, base_url, entry_name))
                     {
                         Ok(contents) => {
                             let records =

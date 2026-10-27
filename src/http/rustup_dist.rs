@@ -5,26 +5,32 @@ use std::sync::Arc;
 use axum::{
     body::Body,
     extract::{Path, State},
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::IntoResponse,
 };
 use tokio_util::io::ReaderStream;
 
 use crate::{
     ecosystems::rustup::{ArtifactFile, DistPath, RustupService, ServiceError, StorageError},
+    http::public_base_url_for_request,
     upstream::SourcePoolError,
 };
 
 pub(super) async fn dist(
     State(service): State<Arc<RustupService>>,
     Path((name, path)): Path<(String, String)>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
     let Some(path) = path.strip_prefix("dist/") else {
         return StatusCode::NOT_FOUND.into_response();
     };
 
     if let Some((channel, checksum)) = channel_request(path) {
-        return match service.manifest_for_request(&name, channel).await {
+        let base_url = public_base_url_for_request(&headers, service.public_urls());
+        return match service
+            .manifest_for_request_with_base(&name, channel, &base_url)
+            .await
+        {
             Ok(snapshot) if checksum => {
                 format!("{}  channel-rust-{channel}.toml\n", snapshot.checksum).into_response()
             }

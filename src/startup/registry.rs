@@ -183,7 +183,9 @@ mod tests {
             server: ServerConfig {
                 address: "127.0.0.1".parse::<IpAddr>().expect("address"),
                 port: 18761,
-                public_url: Url::parse("http://127.0.0.1:18761").expect("public URL"),
+                public_url: Url::parse("http://127.0.0.1:18761")
+                    .expect("public URL")
+                    .into(),
             },
             storage: StorageConfig {
                 data_dir: tempfile::tempdir().expect("data directory").keep(),

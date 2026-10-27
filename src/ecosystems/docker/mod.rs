@@ -28,7 +28,7 @@ use thiserror::Error;
 use url::Url;
 
 use crate::{
-    DockerConfig, SourcePool,
+    DockerConfig, PublicUrls, SourcePool,
     audit::{AuditDetails, AuditSink},
     storage::locks::ShardedLocks,
     upstream::registry::{Adapter, AdapterFuture, AdapterRegistry, AdapterRequest, RegistryError},
@@ -53,7 +53,7 @@ pub struct DockerAdapter {
 
 #[derive(Debug)]
 pub struct DockerService {
-    _root_url: Url,
+    public_urls: PublicUrls,
     data_dir: PathBuf,
     audit: AuditSink,
     blob_locks: ShardedLocks,
@@ -158,9 +158,9 @@ struct QueryResult {
 }
 
 impl DockerAdapter {
-    pub fn new(root_url: Url, data_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(public_urls: impl Into<PublicUrls>, data_dir: impl Into<PathBuf>) -> Self {
         Self {
-            service: Arc::new(DockerService::new(root_url, data_dir)),
+            service: Arc::new(DockerService::new(public_urls, data_dir)),
         }
     }
 
@@ -172,14 +172,14 @@ impl DockerAdapter {
 pub fn register_adapter(
     registry: &mut AdapterRegistry,
     config: DockerConfig,
-    root_url: Url,
+    public_urls: impl Into<PublicUrls>,
     data_dir: impl Into<PathBuf>,
 ) -> Result<(), DockerRegistrationError> {
     let artifact_budget = ArtifactBudget::default();
     register_adapter_with_options(
         registry,
         config,
-        root_url,
+        public_urls,
         data_dir,
         DockerRegistrationOptions {
             proxy_url: None,
@@ -193,7 +193,7 @@ pub fn register_adapter(
 pub fn register_adapter_with_proxy(
     registry: &mut AdapterRegistry,
     config: DockerConfig,
-    root_url: Url,
+    public_urls: impl Into<PublicUrls>,
     data_dir: impl Into<PathBuf>,
     proxy_url: Option<&Url>,
     proxy_no_proxy: Option<&str>,
@@ -202,7 +202,7 @@ pub fn register_adapter_with_proxy(
     register_adapter_with_options(
         registry,
         config,
-        root_url,
+        public_urls,
         data_dir,
         DockerRegistrationOptions {
             proxy_url,
@@ -224,7 +224,7 @@ pub struct DockerRegistrationOptions<'a> {
 pub fn register_adapter_with_options(
     registry: &mut AdapterRegistry,
     config: DockerConfig,
-    root_url: Url,
+    public_urls: impl Into<PublicUrls>,
     data_dir: impl Into<PathBuf>,
     options: DockerRegistrationOptions<'_>,
 ) -> Result<(), DockerRegistrationError> {
@@ -241,13 +241,13 @@ pub fn register_adapter_with_options(
                 .with_artifact_budget(artifact_budget.clone())
                 .with_fetch_timeouts(fetch_timeouts),
         ),
-        Arc::new(DockerAdapter::new(root_url, data_dir)),
+        Arc::new(DockerAdapter::new(public_urls, data_dir)),
     )?;
     Ok(())
 }
 
 impl DockerService {
-    pub fn new(root_url: Url, data_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(public_urls: impl Into<PublicUrls>, data_dir: impl Into<PathBuf>) -> Self {
         let data_dir = data_dir.into();
         let temporary_root = data_dir.join("tmp");
         let _ = fs::create_dir_all(&temporary_root);
@@ -259,11 +259,15 @@ impl DockerService {
             }
         }
         Self {
-            _root_url: root_url,
+            public_urls: public_urls.into(),
             audit: AuditSink::new(data_dir.clone()),
             data_dir,
             blob_locks: ShardedLocks::default(),
         }
+    }
+
+    pub fn public_urls(&self) -> &PublicUrls {
+        &self.public_urls
     }
 
     async fn handle_request(
@@ -382,6 +386,10 @@ impl ManifestReference {
 impl Adapter for DockerAdapter {
     fn ecosystem(&self) -> &str {
         "docker"
+    }
+
+    fn public_urls(&self) -> &PublicUrls {
+        self.service.public_urls()
     }
 
     fn handle(

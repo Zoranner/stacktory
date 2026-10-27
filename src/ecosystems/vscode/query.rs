@@ -20,6 +20,7 @@ impl VscodeService {
         entry_name: &str,
         request_body: &[u8],
         pool: &SourcePool,
+        base_url: &Url,
     ) -> Result<Vec<u8>, VscodeError> {
         serde_json::from_slice::<Value>(request_body)?;
         let mut run = GroupRun::new(pool, entry_name, None)?;
@@ -42,7 +43,7 @@ impl VscodeService {
             };
             let rewritten = match rewrite_gallery_query(
                 &response.body,
-                &self.root_url,
+                base_url,
                 entry_name,
                 &response.source_name,
             ) {

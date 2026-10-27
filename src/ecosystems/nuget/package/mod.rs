@@ -59,14 +59,15 @@ pub(crate) async fn serve(
     entry_name: &str,
     path: &str,
     pool: &SourcePool,
+    base_url: &Url,
 ) -> Response {
     if path.ends_with("/index.json") {
-        return match serve_package_index(service, entry_name, path, pool).await {
+        return match serve_package_index(service, entry_name, path, pool, base_url).await {
             Ok(body) => response(StatusCode::OK, "application/json", body),
             Err(error) => package_error_response(&error),
         };
     }
-    match serve_package(service, entry_name, path, pool).await {
+    match serve_package(service, entry_name, path, pool, base_url).await {
         Ok(file) => package_file_response(file).await,
         Err(error) => package_error_response(&error),
     }
@@ -77,9 +78,10 @@ async fn serve_package_index(
     entry_name: &str,
     path: &str,
     pool: &SourcePool,
+    base_url: &Url,
 ) -> Result<Vec<u8>, NugetError> {
     let package_id = parse_package_index_path(path)?;
-    let initial_snapshot = service.service_index(entry_name, pool).await?;
+    let initial_snapshot = service.service_index(entry_name, pool, base_url).await?;
     let cache_path = package_index_path(&service.data_dir, entry_name, &package_id);
     let descriptor_path = package_index_descriptor_path(&service.data_dir, entry_name, &package_id);
     let cached = match (
@@ -117,6 +119,7 @@ async fn serve_package_index(
             &initial_snapshot,
             pool,
             true,
+            base_url,
         )
         .await
         {
@@ -161,6 +164,7 @@ async fn serve_package_index(
         &initial_snapshot,
         pool,
         false,
+        base_url,
     )
     .await
 }
@@ -172,6 +176,7 @@ async fn fetch_package_index(
     initial_snapshot: &ServiceIndexSnapshot,
     pool: &SourcePool,
     revalidating: bool,
+    base_url: &Url,
 ) -> Result<Vec<u8>, NugetError> {
     let preferred = initial_snapshot.selected_proxy.clone();
     let mut run = GroupRun::new(pool, entry_name, Some(&preferred))?;
@@ -184,7 +189,7 @@ async fn fetch_package_index(
             initial_snapshot.clone()
         } else {
             match service
-                .service_index_from_source(entry_name, &member.name, pool)
+                .service_index_from_source(entry_name, &member.name, pool, base_url)
                 .await
             {
                 Ok(snapshot) => snapshot,
@@ -237,7 +242,7 @@ async fn fetch_package_index(
             })?,
         )?;
         if snapshot.selected_proxy != preferred {
-            service.publish_service_index(entry_name, &snapshot)?;
+            service.publish_service_index(entry_name, &snapshot, base_url)?;
             service.record_object(
                 "nuget_package_index_fallback",
                 NugetAuditDetails {
@@ -297,10 +302,11 @@ async fn serve_package(
     entry_name: &str,
     path: &str,
     pool: &SourcePool,
+    base_url: &Url,
 ) -> Result<PackageFile, NugetError> {
     let (package_id, version) = parse_package_path(path)?;
     let binding_path = binding_path(&service.data_dir, entry_name, &package_id, &version);
-    let initial_snapshot = service.service_index(entry_name, pool).await?;
+    let initial_snapshot = service.service_index(entry_name, pool, base_url).await?;
     let stored_binding: Option<PackageBinding> = read_json(&binding_path)?;
     if let Some(binding) = &stored_binding
         && (!binding.package_id.eq_ignore_ascii_case(&package_id)
@@ -336,7 +342,7 @@ async fn serve_package(
                 initial_snapshot.clone()
             } else {
                 match service
-                    .service_index_from_source(entry_name, &member.name, pool)
+                    .service_index_from_source(entry_name, &member.name, pool, base_url)
                     .await
                 {
                     Ok(snapshot) => snapshot,
@@ -353,12 +359,12 @@ async fn serve_package(
             };
             let binding = if stored_binding.is_some() {
                 match binding_for_source(
-                    service,
                     entry_name,
                     &package_id,
                     &version,
                     &snapshot,
                     pool,
+                    base_url,
                 )
                 .await
                 {
@@ -504,7 +510,7 @@ async fn serve_package(
         if binding.selected_proxy != preferred {
             persist_binding(&service.data_dir, entry_name, &binding)?;
             if let Some(snapshot) = fallback_snapshot {
-                service.publish_service_index(entry_name, &snapshot)?;
+                service.publish_service_index(entry_name, &snapshot, base_url)?;
             }
         }
         service.record_package(

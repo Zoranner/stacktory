@@ -10,7 +10,7 @@ use thiserror::Error;
 use url::Url;
 
 use crate::{
-    SourcePool,
+    PublicUrls, SourcePool,
     audit::{AuditDetails, AuditSink},
     upstream::{
         SourcePoolError,
@@ -35,7 +35,7 @@ pub struct CargoAdapter {
 
 #[derive(Debug)]
 pub struct CargoService {
-    root_url: Url,
+    public_urls: PublicUrls,
     data_dir: PathBuf,
     audit: AuditSink,
 }
@@ -76,9 +76,9 @@ pub enum CargoError {
 }
 
 impl CargoAdapter {
-    pub fn new(root_url: Url, data_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(public_urls: impl Into<PublicUrls>, data_dir: impl Into<PathBuf>) -> Self {
         Self {
-            service: Arc::new(CargoService::new(root_url, data_dir)),
+            service: Arc::new(CargoService::new(public_urls, data_dir)),
         }
     }
 
@@ -88,14 +88,18 @@ impl CargoAdapter {
 }
 
 impl CargoService {
-    pub fn new(root_url: Url, data_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(public_urls: impl Into<PublicUrls>, data_dir: impl Into<PathBuf>) -> Self {
         let data_dir = data_dir.into();
         cleanup_temporary_artifacts(&data_dir);
         Self {
-            root_url,
+            public_urls: public_urls.into(),
             audit: AuditSink::new(data_dir.clone()),
             data_dir,
         }
+    }
+
+    pub fn public_urls(&self) -> &PublicUrls {
+        &self.public_urls
     }
 
     pub async fn handle_request(
@@ -103,8 +107,9 @@ impl CargoService {
         entry_name: &str,
         path: &str,
         pool: &SourcePool,
+        base_url: &Url,
     ) -> Response {
-        match self.serve(entry_name, path, pool).await {
+        match self.serve(entry_name, path, pool, base_url).await {
             Ok(CargoPayload::Bytes(content_type, body)) => {
                 response(StatusCode::OK, content_type, body)
             }
@@ -118,6 +123,7 @@ impl CargoService {
         entry_name: &str,
         path: &str,
         pool: &SourcePool,
+        base_url: &Url,
     ) -> Result<CargoPayload, CargoError> {
         if pool.proxy_members(entry_name).is_none() {
             return Err(SourcePoolError::UnknownEntry(entry_name.to_owned()).into());
@@ -125,26 +131,28 @@ impl CargoService {
         if path == "config.json" {
             return Ok(CargoPayload::Bytes(
                 "application/json",
-                self.config(entry_name)?,
+                self.config(entry_name, base_url)?,
             ));
         }
         if let Ok((crate_name, _)) = sparse_path_for_request(path) {
-            let body = self.index(entry_name, path, &crate_name, pool).await?;
+            let body = self
+                .index(entry_name, path, &crate_name, pool, base_url)
+                .await?;
             return Ok(CargoPayload::Bytes("application/json", body.body));
         }
         if let Some(crate_path) = path.strip_prefix("crates/") {
             let (crate_name, version) = parse_crate_request(crate_path)?;
             let file = self
-                .crate_file(entry_name, &crate_name, &version, pool)
+                .crate_file(entry_name, &crate_name, &version, pool, base_url)
                 .await?;
             return Ok(CargoPayload::File(file));
         }
         Err(CargoPathError::Invalid(path.to_owned()).into())
     }
 
-    fn config(&self, entry_name: &str) -> Result<Vec<u8>, CargoError> {
+    fn config(&self, entry_name: &str, base_url: &Url) -> Result<Vec<u8>, CargoError> {
         let body = json!({
-            "dl": download_template(&self.root_url, entry_name),
+            "dl": download_template(base_url, entry_name),
         });
         Ok(serde_json::to_vec(&body).expect("static cargo config is serializable"))
     }
@@ -208,6 +216,10 @@ impl Adapter for CargoAdapter {
         "cargo"
     }
 
+    fn public_urls(&self) -> &PublicUrls {
+        self.service.public_urls()
+    }
+
     fn handle(
         &self,
         source_name: String,
@@ -220,7 +232,7 @@ impl Adapter for CargoAdapter {
                 return axum::http::StatusCode::METHOD_NOT_ALLOWED.into_response();
             }
             service
-                .handle_request(&source_name, &request.path, &pool)
+                .handle_request(&source_name, &request.path, &pool, &request.base_url)
                 .await
         })
     }

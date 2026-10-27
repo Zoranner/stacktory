@@ -19,7 +19,7 @@ use tokio_util::io::ReaderStream;
 use url::Url;
 
 use crate::{
-    SourcePool,
+    PublicUrls, SourcePool,
     audit::{AuditDetails, AuditSink},
     upstream::{
         FetchOperation, GroupRun, SourcePoolError,
@@ -92,7 +92,7 @@ pub struct NpmAdapter {
 #[derive(Debug)]
 pub struct NpmService {
     flavor: RegistryFlavor,
-    root_url: Url,
+    public_urls: PublicUrls,
     storage: NpmStorage,
     audit: AuditSink,
 }
@@ -118,17 +118,17 @@ pub enum NpmError {
 }
 
 impl NpmAdapter {
-    pub fn new(root_url: Url, data_dir: impl Into<PathBuf>) -> Self {
-        Self::new_with_flavor(root_url, data_dir, RegistryFlavor::npm())
+    pub fn new(public_urls: impl Into<PublicUrls>, data_dir: impl Into<PathBuf>) -> Self {
+        Self::new_with_flavor(public_urls, data_dir, RegistryFlavor::npm())
     }
 
     pub(crate) fn new_with_flavor(
-        root_url: Url,
+        public_urls: impl Into<PublicUrls>,
         data_dir: impl Into<PathBuf>,
         flavor: RegistryFlavor,
     ) -> Self {
         Self {
-            service: Arc::new(NpmService::new_with_flavor(root_url, data_dir, flavor)),
+            service: Arc::new(NpmService::new_with_flavor(public_urls, data_dir, flavor)),
         }
     }
 
@@ -138,12 +138,12 @@ impl NpmAdapter {
 }
 
 impl NpmService {
-    pub fn new(root_url: Url, data_dir: impl Into<PathBuf>) -> Self {
-        Self::new_with_flavor(root_url, data_dir, RegistryFlavor::npm())
+    pub fn new(public_urls: impl Into<PublicUrls>, data_dir: impl Into<PathBuf>) -> Self {
+        Self::new_with_flavor(public_urls, data_dir, RegistryFlavor::npm())
     }
 
     pub(crate) fn new_with_flavor(
-        root_url: Url,
+        public_urls: impl Into<PublicUrls>,
         data_dir: impl Into<PathBuf>,
         flavor: RegistryFlavor,
     ) -> Self {
@@ -152,10 +152,14 @@ impl NpmService {
         storage.cleanup_temporary_artifacts();
         Self {
             flavor,
-            root_url,
+            public_urls: public_urls.into(),
             storage,
             audit: AuditSink::new(data_dir),
         }
+    }
+
+    pub fn public_urls(&self) -> &PublicUrls {
+        &self.public_urls
     }
 
     pub(crate) async fn handle_request(
@@ -187,19 +191,28 @@ impl NpmService {
             };
         }
         if let Ok(tarball) = parse_tarball_path(path) {
-            return match self.standard_tarball(entry_name, &tarball, pool).await {
+            return match self
+                .standard_tarball(entry_name, &tarball, pool, &request.base_url)
+                .await
+            {
                 Ok(file) => artifact_response(file).await,
                 Err(error) => npm_error_response(&error),
             };
         }
         if let Ok(package) = parse_dist_tags_path_for_flavor(self.flavor, path) {
-            return match self.dist_tags(entry_name, &package, pool).await {
+            return match self
+                .dist_tags(entry_name, &package, pool, &request.base_url)
+                .await
+            {
                 Ok(body) => response(StatusCode::OK, "application/json", body),
                 Err(error) => npm_error_response(&error),
             };
         }
         if let Ok((package, version)) = parse_version_path_for_flavor(self.flavor, path) {
-            return match self.version(entry_name, &package, &version, pool).await {
+            return match self
+                .version(entry_name, &package, &version, pool, &request.base_url)
+                .await
+            {
                 Ok(body) => response(StatusCode::OK, "application/json", body),
                 Err(error) => npm_error_response(&error),
             };
@@ -208,7 +221,10 @@ impl NpmService {
             Ok(package) => package,
             Err(_) => return StatusCode::NOT_FOUND.into_response(),
         };
-        match self.metadata(entry_name, &package, pool).await {
+        match self
+            .metadata(entry_name, &package, pool, &request.base_url)
+            .await
+        {
             Ok(body) => response(StatusCode::OK, "application/json", body),
             Err(error) => npm_error_response(&error),
         }
@@ -220,8 +236,9 @@ impl NpmService {
         package: &str,
         version: &str,
         pool: &SourcePool,
+        base_url: &Url,
     ) -> Result<Vec<u8>, NpmError> {
-        let metadata = self.metadata(entry_name, package, pool).await?;
+        let metadata = self.metadata(entry_name, package, pool, base_url).await?;
         let body: Value = serde_json::from_slice(&metadata)
             .map_err(|error| NpmError::Metadata(NpmMetadataError::InvalidJson(error)))?;
         let version_body = body
@@ -242,8 +259,9 @@ impl NpmService {
         entry_name: &str,
         package: &str,
         pool: &SourcePool,
+        base_url: &Url,
     ) -> Result<Vec<u8>, NpmError> {
-        let metadata = self.metadata(entry_name, package, pool).await?;
+        let metadata = self.metadata(entry_name, package, pool, base_url).await?;
         let body: Value = serde_json::from_slice(&metadata)
             .map_err(|error| NpmError::Metadata(NpmMetadataError::InvalidJson(error)))?;
         let tags = body
@@ -368,6 +386,10 @@ impl NpmService {
 impl Adapter for NpmAdapter {
     fn ecosystem(&self) -> &str {
         "npm"
+    }
+
+    fn public_urls(&self) -> &PublicUrls {
+        self.service.public_urls()
     }
 
     fn handle(
