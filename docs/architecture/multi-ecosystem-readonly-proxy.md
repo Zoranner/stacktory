@@ -61,8 +61,12 @@ restore、Docker Registry V2 和 Unity UPM 只读代理；PyPI 和 Winget
 | 生态来源 | `[rustup]`、`[cargo]`、`[docker]`、`[npm]`、`[nuget]`、`[upm]`、`[vscode]` | 各生态的 `sources` source graph |
 
 `server.address`、`server.port` 只负责进程监听，`server.public_url` 负责生成
-客户端可见地址，两者可以因反向代理而不同。`public_url` 可包含路径前缀，
-但不能包含凭据、query 或 fragment；非 localhost 地址必须使用 HTTPS。
+客户端可见地址，两者可以因反向代理而不同。`public_url` 可写单个字符串或数组；
+数组第一项是默认地址，请求按 `Host` 与 `X-Forwarded-Proto` 精确匹配数组项，
+匹配不到时使用第一项，不会反射任意请求 Host。反向代理需要转发 `Host` 和
+`X-Forwarded-Proto`，否则同一域名的 HTTP 与 HTTPS 入口无法区分。`public_url`
+可包含路径前缀，但不能包含凭据、query 或 fragment；显式配置的 HTTP 地址允许
+在非 localhost 上使用。
 所有配置节都拒绝未知字段，旧的扁平键、旧字段名和未实现的生态配置不会被
 静默接受。
 
@@ -383,6 +387,8 @@ Docker 客户端返回上游 Registry host。
 公开地址必须唯一，端口不能占用 `server.port`。公开地址不能包含路径、查询参数
 或片段，域名和 TLS 终止由外部 DNS、端口映射或反向代理完成。未配置这对字段的
 source 不增加根 Registry 入口。
+Docker 入口的 `public_url` 保持单值，它是 Registry 客户端地址，不参与主站
+`server.public_url` 的多地址匹配。
 Docker listener 与主监听共享关闭信号；主监听退出后，服务会等待 Docker listener
 完成在途请求再结束进程。
 

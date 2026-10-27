@@ -144,9 +144,10 @@ package ID/version 在不同命名入口或不同 selected proxy 下不能共享
 service index、registration、package binding 和漏洞索引/数据的 sidecar 记录
 来源指纹，由 proxy 名称、`base_url` 和 `allow_http` 组成。同名 proxy 修改上游
 目标后，旧 metadata 按未命中重新获取；内容寻址且摘要仍匹配的 package content
-可以继续复用。`public_url` 不进入来源指纹，公开地址变化时 adapter 只重写 JSON 中的
-客户端可见 URL 并更新 sidecar，不访问上游，也不删除 package content。缺少来源
-指纹或公开基地址标记的旧缓存按未命中重新获取。
+可以继续复用。`public_url` 不进入来源指纹。缓存主体保留生成时使用的公开基地址；
+请求匹配到另一个公开地址时，adapter 只在响应中重写客户端可见 URL，不访问上游，
+不删除 package content，也不改写 sidecar。缺少来源指纹或公开基地址标记的旧缓存
+按未命中重新获取。
 
 service index、registration、package version index 和 package binding 命中超过
 15 分钟后会先从当前绑定来源重新验证；来源失败时按 group 顺序尝试其他成员。

@@ -135,8 +135,9 @@ npm metadata 和 UPM metadata 是 metadata 缓存；tarball 是 artifact 缓存�
 和 selected proxy，避免 npm 与 UPM 或不同命名入口互相命中。
 
 npm/UPM metadata 缓存保存上游原始响应，不保存已经写入公开地址的最终响应。
-读取时按当前 `public_url` 重新解析并改写 tarball URL，因此修改公开地址只会影响
-渲染结果，不会让已有的 npm/UPM metadata 变成不可用。缓存同时记录来源指纹
+读取时按当前请求匹配的 `public_url` 重新解析并改写 tarball URL，因此同一进程
+可以同时为 HTTP 与 HTTPS 入口生成各自的地址，修改公开地址也只会影响渲染结果，
+不会让已有的 npm/UPM metadata 变成不可用。缓存同时记录来源指纹
 （proxy 名称、`base_url`、`allow_http`）；来源目标变化时 canonical metadata
 和 tarball 描述符都会被重新验证。metadata 命中超过 15 分钟后会重新请求上游；
 上游 404 时删除该 entry 的 metadata 和 tarball 描述符，上游内容变化时发布新的
