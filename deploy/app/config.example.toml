@@ -28,6 +28,9 @@ address = "0.0.0.0"
 # 进程监听端口；不是客户端访问端口。
 port = 18000
 # 客户端实际访问的地址；经反向代理时端口可以与监听端口不同。
+# 可写字符串或数组。数组第一项是默认地址；请求按 Host 与 X-Forwarded-Proto 匹配，
+# 匹配不到时使用第一项。需要同时提供 HTTP 与 HTTPS 时，把两个地址都写进数组：
+# public_url = ["https://stacktory.example.internal", "http://stacktory.example.internal"]
 public_url = "https://stacktory.example.internal"
 
 [storage]

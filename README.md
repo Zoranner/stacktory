@@ -44,7 +44,18 @@ cargo run
 `config.toml` 只从当前工作目录读取；容器部署请使用 `deploy/app/config.example.toml`。
 
 `server.address` 和 `server.port` 是进程监听地址，`server.public_url` 是客户端实际访问的
-地址。反向代理只改变外部域名或路径时，修改 `server.public_url` 即可；缓存不需要重建。
+地址。`public_url` 可写单个字符串或数组；数组第一项是默认地址，请求按 `Host` 与
+`X-Forwarded-Proto` 匹配数组项，匹配不到时使用第一项，不会反射任意请求 Host。
+反向代理需要转发 `Host` 和 `X-Forwarded-Proto`。需要同时提供 HTTP 与 HTTPS 时，把两个
+地址都写进数组；修改 `server.public_url` 后缓存不需要重建。
+
+```nginx
+proxy_set_header Host $host;
+proxy_set_header X-Forwarded-Proto $scheme;
+```
+
+服务端口只应对反向代理开放；不要把 `server.port` 直接暴露给不受信任的客户端。
+
 配置 schema 不保留旧键兼容，旧配置会因未知字段在启动时被拒绝。
 
 ## 出站代理
@@ -81,7 +92,7 @@ docker compose -f deploy/docker-compose.yml up -d
 compose 默认发布主服务端口 `18000` 和 Docker `group` 入口的 `19000`。如果需要为其他
 Docker source 开放标准 Registry 入口，在 `deploy/app/config.toml` 中同时设置
 `listen_port` 和 `public_url`，并在 `deploy/docker-compose.yml` 中增加相同的端口映射。
-`public_url` 必须是客户端实际访问的完整地址。
+Docker source 的 `public_url` 是单值，必须是客户端实际访问的完整 Registry 地址。
 compose 会通过容器内 `127.0.0.1:18000` 的 TCP 连接检查服务是否在监听。
 需要区分存活和就绪时，`/healthz` 只报告进程可响应，`/readyz` 会检查数据目录和
 日志目录可写；就绪检查失败返回 `503`。
@@ -90,7 +101,8 @@ compose 会通过容器内 `127.0.0.1:18000` 的 TCP 连接检查服务是否在
 
 修改 `server.public_url` 后，服务只更新本地标记，不删除 metadata、快照或制品缓存。
 npm/UPM metadata、Rustup manifest 和 NuGet JSON metadata 会在读取时按当前
-地址重新渲染或重写；缺少公开地址标记的旧缓存按未命中重建。
+地址重新渲染或重写；NuGet 缓存主体保留生成时的公开基地址，请求匹配到其他地址时
+只在响应中重写。缺少公开地址标记的旧缓存按未命中重建。
 
 修改同名 proxy 的 `base_url` 或 `allow_http` 后，NuGet 和 Docker 中保存上游
 绝对地址或可变引用的 metadata 与来源绑定会按未命中重建；按 digest 或摘要校验的
