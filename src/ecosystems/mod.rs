@@ -7,6 +7,7 @@ pub mod cargo;
 pub mod docker;
 pub mod npm;
 pub mod nuget;
+pub mod pypi;
 pub mod rustup;
 pub mod upm;
 pub mod vscode;
