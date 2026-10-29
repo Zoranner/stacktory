@@ -4,8 +4,8 @@
 
 Stacktory 为内网开发机提供统一的研发制品访问入口。当前实现包含 Rustup
 动态镜像、Cargo Sparse Index/crate、VS Code Marketplace 扩展、npm、NuGet V3
-restore、Docker Registry V2、Unity UPM 和 PyPI Simple API 只读代理；
-Winget 只在本文件及后续 MVP 文档中定义适配边界，未注册的生态不暴露路由。
+restore、Docker Registry V2、Unity UPM、PyPI Simple API 和 Winget REST source
+只读代理；未注册的生态不暴露路由。
 
 本设计约束公共来源访问、显式组合、缓存、完整性和审计职责，使新增生态只
 实现协议适配器，不复制公共行为。本设计不引入数据库，不提供写入型包管理
@@ -23,6 +23,7 @@ Winget 只在本文件及后续 MVP 文档中定义适配边界，未注册的�
 - NuGet V3 只读 restore、只读查询和漏洞数据。
 - Docker Registry V2 只读拉取、只读查询和 CLI 根入口。
 - PyPI Simple API 只读项目索引、HTML/JSON 表示和项目文件下载。
+- Winget REST source 的 information、搜索、manifest 和安装包下载。
 - 公共 `sources` 配置、`proxy`/`group` source graph、来源回退、文件缓存、
   原子写入、完整性校验和 JSONL 审计。
 - 统一路由模型：
@@ -30,12 +31,6 @@ Winget 只在本文件及后续 MVP 文档中定义适配边界，未注册的�
   ```text
   /mirror/{ecosystem}/{name}/...
   ```
-
-### 未实现的适配边界
-
-以下生态只有适配边界文档，没有注册路由，本文不描述其运行时行为：
-
-- Winget：source/index、package manifest 和安装包下载。
 
 ### 明确不在范围内
 
@@ -162,6 +157,7 @@ proxy 的 `base_url` 是服务端配置事实，不是客户端可覆盖的转�
 /mirror/upm/group/<package>
 /mirror/pypi/group/simple/<project>/
 /mirror/nuget/group/v3/index.json
+/mirror/winget/group/information
 ```
 
 未知生态、未知入口或未注册的生态路由返回 404。路由层只解析生态和入口，不
@@ -417,10 +413,11 @@ Marketplace Gallery，负责扩展 metadata、版本选择和 `.vsix` 文件下�
 
 ### Winget
 
-Winget 尚未注册路由。目标契约使用 `/mirror/winget/{name}/...`，适配器负责
-source/index、package manifest 和安装包下载，重写 manifest 中的下载地址，并
-校验 `InstallerSha256`。安装包来源必须经过配置来源或协议适配器的安全校验；
-发布、manifest 写入、账号和签名管理不在范围内。
+Winget 已注册 `/mirror/winget/{name}/information`、`manifestSearch`、
+`packageManifests/{id}` 和 `installers/{token}`。适配器负责 REST 1.0 握手、
+manifest 字段保真、安装包 URL 重写、显式 installer host allowlist、
+`InstallerSha256` 校验和 group 来源绑定；发布、manifest 写入、账号和签名管理
+不在范围内。详细契约见 `winget-mvp.md`。
 
 ## 验证边界
 
@@ -429,10 +426,10 @@ metadata 解析、URL 重写、来源回退、缓存隔离和完整性失败。�
 source graph、单一 `base_url`、禁止任意 URL、重定向、原子写入和审计字段。
 
 真实客户端联调、外部 registry 行为和生产部署验证仍必须在对应适配器完成后单独执行；
-本地协议测试通过不等于外部 `dotnet restore` 已验证。
+本地协议测试通过不等于外部 `dotnet restore` 或真实 Winget `source add/install` 已验证。
 
-Cargo、npm、UPM、NuGet 和 PyPI 的来源绑定、回退和摘要校验仍分别受各自实现与测试约束；
-不能仅凭公共接口存在或单独的缓存测试声称已完成。
+Cargo、npm、UPM、NuGet、PyPI 和 Winget 的来源绑定、回退和摘要校验仍分别受各自实现与
+测试约束；不能仅凭公共接口存在或单独的缓存测试声称已完成。
 
 ## 官方协议依据
 
@@ -445,3 +442,7 @@ Cargo、npm、UPM、NuGet 和 PyPI 的来源绑定、回退和摘要校验仍分
 - [NuGet API overview](https://learn.microsoft.com/en-us/nuget/api/overview) 与
   [service index](https://learn.microsoft.com/en-us/nuget/api/service-index)：
   V3 资源发现、registration 和 package content。
+- [Winget REST source 实现](https://github.com/microsoft/winget-cli/tree/master/src/AppInstallerRepositoryCore/Rest)
+  与 [source 命令文档](https://github.com/microsoft/winget-cli/blob/master/doc/windows/package-manager/winget/source.md)：
+  `Microsoft.Rest`、`information`、`manifestSearch`、`packageManifests`、契约版本和
+  source agreement/trust 语义。详细核对路径见 `winget-mvp.md`。

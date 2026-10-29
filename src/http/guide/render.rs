@@ -644,6 +644,7 @@ fn endpoint_for(ecosystem: &str, entry: &str, base_url: &str) -> Option<String> 
         "upm" => format!("/mirror/upm/{entry}"),
         "vscode" => format!("/mirror/vscode/{entry}"),
         "docker" => format!("/mirror/docker/{entry}/v2/"),
+        "winget" => format!("/mirror/winget/{entry}/"),
         _ => return None,
     };
     Some(format!("{base}{path}"))

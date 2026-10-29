@@ -14,8 +14,9 @@ Stacktory 为公司内网开发机提供统一的工具链和软件包下载入�
 | Unity UPM 包 | 可用 | 在 Unity 项目中配置 Stacktory scoped registry |
 | PyPI 包 | Simple API 只读可用 | 配置 pip 的 `index-url` 指向 `/mirror/pypi/{name}/simple/` |
 | NuGet 包 | 只读 restore、查询和漏洞数据可用 | 配置 NuGet source 指向 `/mirror/nuget/{name}/v3/index.json` |
+| Winget 软件 | 只读协议可用，真实客户端待验收 | 使用 `winget source add --type Microsoft.Rest` 指向 `/mirror/winget/{name}/` |
 
-示例配置默认启用 Rustup、Docker、npm 和 PyPI；Cargo、NuGet、UPM、VS Code 需要按同样的
+示例配置默认启用 Rustup、Docker、npm、PyPI 和 Winget；Cargo、NuGet、UPM、VS Code 需要按同样的
 来源结构增加对应生态段，未配置的生态不会注册路由。
 
 ## pip 配置
@@ -47,7 +48,8 @@ python -m pip install --index-url https://pkg.example.internal/mirror/pypi/group
 - 是否允许使用某个直接来源入口，例如 `official`。
 - 公司提供的专用 VS Code 产品版本。
 
-用户不要自行猜测入口名称或修改上游地址；NuGet 仅支持 restore 所需的只读接口。
+用户不要自行猜测入口名称或修改上游地址；NuGet 仅支持 restore 所需的只读接口，
+Winget 仅支持 `Microsoft.Rest` 只读源和显式安装包主机允许列表。
 
 ## 本地运行
 
@@ -85,7 +87,7 @@ url = "http://proxy.example.internal:8080"
 no_proxy = "localhost,127.0.0.1,.internal"
 ```
 
-`proxy.url` 会应用于 Rustup、Cargo、npm、NuGet、PyPI、UPM、VS Code 和 Docker 的所有上游请求。
+`proxy.url` 会应用于 Rustup、Cargo、npm、NuGet、PyPI、UPM、VS Code、Docker 和 Winget 的所有上游请求。
 只支持 HTTP/HTTPS 代理地址；`proxy.no_proxy` 可选，用于指定不经过代理的主机或域名。
 配置了 `proxy.no_proxy` 时以配置为准；未配置时才读取 `NO_PROXY` 环境变量。
 容器内配置时，`proxy.url` 必须是容器可访问的地址；宿主机的 `127.0.0.1` 在容器内通常无效。

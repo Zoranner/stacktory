@@ -12,6 +12,7 @@ const CONTENT_FILES: &[&str] = &[
     include_str!("../../../web/guide/content/upm.md"),
     include_str!("../../../web/guide/content/vscode.md"),
     include_str!("../../../web/guide/content/docker.md"),
+    include_str!("../../../web/guide/content/winget.md"),
 ];
 
 static SECTIONS: OnceLock<Vec<GuideSection>> = OnceLock::new();
@@ -119,7 +120,7 @@ mod tests {
     #[test]
     fn every_content_file_parses_and_keeps_its_identity() {
         let sections = sections();
-        assert_eq!(sections.len(), 9);
+        assert_eq!(sections.len(), 10);
         for section in sections {
             assert!(!section.id.is_empty());
             assert!(!section.title.is_empty());

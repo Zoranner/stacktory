@@ -42,7 +42,7 @@ mod tests {
         let catalog = SourceCatalog::sample();
         let markdown = render_index_markdown("https://pkg.example.test", &catalog);
         for title in [
-            "Rustup", "Cargo", "npm", "Bun", "NuGet", "PyPI", "UPM", "VS Code", "Docker",
+            "Rustup", "Cargo", "npm", "Bun", "NuGet", "PyPI", "UPM", "VS Code", "Docker", "Winget",
         ] {
             assert!(markdown.contains(&format!("[{title}]")), "missing {title}");
         }
@@ -52,7 +52,28 @@ mod tests {
         assert!(!markdown.contains("使用说明"));
         assert!(!markdown.contains("{base_url}"));
         assert!(!markdown.contains("api.nuget.org"));
-        assert_eq!(sections().len(), 9);
+        assert_eq!(sections().len(), 10);
+    }
+
+    #[test]
+    fn winget_guide_uses_microsoft_rest_and_names_failure_cases() {
+        let section = section_by_id("winget").expect("Winget section");
+        assert!(section.manual_steps.contains("winget source add"));
+        assert!(section.manual_steps.contains("Microsoft.Rest"));
+        assert!(section.notes.iter().any(|note| note.contains("HTTPS")));
+        assert!(section.prompt.contains("管理员终端"));
+        assert!(
+            section
+                .notes
+                .iter()
+                .any(|note| note.contains("以下情况会失败"))
+        );
+        assert!(
+            section
+                .notes
+                .iter()
+                .any(|note| note.contains("installer_hosts"))
+        );
     }
 
     #[test]
