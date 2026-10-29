@@ -11,3 +11,4 @@ pub mod pypi;
 pub mod rustup;
 pub mod upm;
 pub mod vscode;
+pub mod winget;
