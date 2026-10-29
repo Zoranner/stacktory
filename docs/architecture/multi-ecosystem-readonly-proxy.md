@@ -4,8 +4,8 @@
 
 Stacktory 为内网开发机提供统一的研发制品访问入口。当前实现包含 Rustup
 动态镜像、Cargo Sparse Index/crate、VS Code Marketplace 扩展、npm、NuGet V3
-restore、Docker Registry V2 和 Unity UPM 只读代理；PyPI 和 Winget
-只在本文件及各自 MVP 文档中定义适配边界，未注册的生态不暴露路由。
+restore、Docker Registry V2、Unity UPM 和 PyPI Simple API 只读代理；
+Winget 只在本文件及后续 MVP 文档中定义适配边界，未注册的生态不暴露路由。
 
 本设计约束公共来源访问、显式组合、缓存、完整性和审计职责，使新增生态只
 实现协议适配器，不复制公共行为。本设计不引入数据库，不提供写入型包管理
@@ -22,6 +22,7 @@ restore、Docker Registry V2 和 Unity UPM 只读代理；PyPI 和 Winget
   生态入口和 scope 选择规则。
 - NuGet V3 只读 restore、只读查询和漏洞数据。
 - Docker Registry V2 只读拉取、只读查询和 CLI 根入口。
+- PyPI Simple API 只读项目索引、HTML/JSON 表示和项目文件下载。
 - 公共 `sources` 配置、`proxy`/`group` source graph、来源回退、文件缓存、
   原子写入、完整性校验和 JSONL 审计。
 - 统一路由模型：
@@ -34,7 +35,6 @@ restore、Docker Registry V2 和 Unity UPM 只读代理；PyPI 和 Winget
 
 以下生态只有适配边界文档，没有注册路由，本文不描述其运行时行为：
 
-- PyPI：Simple API 的 HTML/JSON 表示和项目文件下载。
 - Winget：source/index、package manifest 和安装包下载。
 
 ### 明确不在范围内
@@ -58,7 +58,7 @@ restore、Docker Registry V2 和 Unity UPM 只读代理；PyPI 和 Winget
 | 进程端点 | `[server]` | 绑定地址、绑定端口和客户端可见的 `public_url` |
 | 存储路径 | `[storage]` | 数据目录和运行日志目录 |
 | 横切策略 | `[proxy]`、`[retention]` | 出站代理和保留清理 |
-| 生态来源 | `[rustup]`、`[cargo]`、`[docker]`、`[npm]`、`[nuget]`、`[upm]`、`[vscode]` | 各生态的 `sources` source graph |
+| 生态来源 | `[rustup]`、`[cargo]`、`[docker]`、`[npm]`、`[nuget]`、`[pypi]`、`[upm]`、`[vscode]` | 各生态的 `sources` source graph |
 
 `server.address`、`server.port` 只负责进程监听，`server.public_url` 负责生成
 客户端可见地址，两者可以因反向代理而不同。`public_url` 可写单个字符串或数组；
@@ -350,9 +350,10 @@ UPM 另行处理 scoped registry 和 Unity package scope；不能通过 npm 入�
 
 ### PyPI
 
-PyPI 尚未注册路由。目标契约使用 `/mirror/pypi/{name}/simple/...`，适配器负责
-项目名规范化、HTML/JSON 表示协商、文件链接重写和 hash 校验。详细契约见
-`pypi-mvp.md`。
+PyPI 使用 `/mirror/pypi/{name}/simple/...` 和 `/mirror/pypi/{name}/files/...`。
+适配器负责项目名规范化、HTML/JSON 表示协商、文件链接重写、来源绑定和 hash
+校验；`/simple/` 根索引按块流式处理，避免把数十 MiB 的仓库根索引整体放入
+内存。详细契约和资源边界见 `pypi-mvp.md`。
 
 ### NuGet
 
@@ -430,7 +431,7 @@ source graph、单一 `base_url`、禁止任意 URL、重定向、原子写入�
 真实客户端联调、外部 registry 行为和生产部署验证仍必须在对应适配器完成后单独执行；
 本地协议测试通过不等于外部 `dotnet restore` 已验证。
 
-Cargo、npm、UPM 和 NuGet 的来源绑定、回退和摘要校验仍分别受各自实现与测试约束；
+Cargo、npm、UPM、NuGet 和 PyPI 的来源绑定、回退和摘要校验仍分别受各自实现与测试约束；
 不能仅凭公共接口存在或单独的缓存测试声称已完成。
 
 ## 官方协议依据

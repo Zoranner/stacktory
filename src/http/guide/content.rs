@@ -8,6 +8,7 @@ const CONTENT_FILES: &[&str] = &[
     include_str!("../../../web/guide/content/npm.md"),
     include_str!("../../../web/guide/content/bun.md"),
     include_str!("../../../web/guide/content/nuget.md"),
+    include_str!("../../../web/guide/content/pypi.md"),
     include_str!("../../../web/guide/content/upm.md"),
     include_str!("../../../web/guide/content/vscode.md"),
     include_str!("../../../web/guide/content/docker.md"),
@@ -118,7 +119,7 @@ mod tests {
     #[test]
     fn every_content_file_parses_and_keeps_its_identity() {
         let sections = sections();
-        assert_eq!(sections.len(), 8);
+        assert_eq!(sections.len(), 9);
         for section in sections {
             assert!(!section.id.is_empty());
             assert!(!section.title.is_empty());

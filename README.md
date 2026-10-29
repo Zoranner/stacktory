@@ -12,11 +12,28 @@ Stacktory 为公司内网开发机提供统一的工具链和软件包下载入�
 | Docker 镜像 | 公开无认证 Registry V2 只读可用 | 使用 source 的独立 Registry 入口或 `/mirror/docker/{name}/v2/...` |
 | npm 包 | 可用 | 配置 npm registry 后使用 `npm install` 或 `npm ci` |
 | Unity UPM 包 | 可用 | 在 Unity 项目中配置 Stacktory scoped registry |
-| PyPI 包 | 暂不可用 | 请勿配置 pip |
+| PyPI 包 | Simple API 只读可用 | 配置 pip 的 `index-url` 指向 `/mirror/pypi/{name}/simple/` |
 | NuGet 包 | 只读 restore、查询和漏洞数据可用 | 配置 NuGet source 指向 `/mirror/nuget/{name}/v3/index.json` |
 
-示例配置默认启用 Rustup、Docker 和 npm；Cargo、NuGet、UPM、VS Code 需要按同样的
+示例配置默认启用 Rustup、Docker、npm 和 PyPI；Cargo、NuGet、UPM、VS Code 需要按同样的
 来源结构增加对应生态段，未配置的生态不会注册路由。
+
+## pip 配置
+
+PyPI 入口地址固定包含生态、入口名和 `/simple/`：
+
+```text
+python -m pip config set global.index-url https://pkg.example.internal/mirror/pypi/group/simple/
+```
+
+也可以只在单次安装中指定：
+
+```text
+python -m pip install --index-url https://pkg.example.internal/mirror/pypi/group/simple/ <package>
+```
+
+入口使用 HTTP 时需要给 pip 增加 `--trusted-host <host>`。配置文件中的
+`base_url` 只填写 PyPI 兼容仓库的根地址，不要填写 `/simple/` 路径。
 
 ## 开始使用
 
@@ -68,7 +85,7 @@ url = "http://proxy.example.internal:8080"
 no_proxy = "localhost,127.0.0.1,.internal"
 ```
 
-`proxy.url` 会应用于 Rustup、Cargo、npm、NuGet、UPM、VS Code 和 Docker 的所有上游请求。
+`proxy.url` 会应用于 Rustup、Cargo、npm、NuGet、PyPI、UPM、VS Code 和 Docker 的所有上游请求。
 只支持 HTTP/HTTPS 代理地址；`proxy.no_proxy` 可选，用于指定不经过代理的主机或域名。
 配置了 `proxy.no_proxy` 时以配置为准；未配置时才读取 `NO_PROXY` 环境变量。
 容器内配置时，`proxy.url` 必须是容器可访问的地址；宿主机的 `127.0.0.1` 在容器内通常无效。

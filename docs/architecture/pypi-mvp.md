@@ -2,8 +2,8 @@
 
 ## 状态与目标
 
-本文档定义 PyPI 的后续只读适配边界。当前 Stacktory 尚未实现或注册 PyPI
-路由；本文档中的路径和响应协商是目标契约。
+本文档定义 PyPI 的只读适配边界。配置 `[pypi]` 后，Stacktory 注册
+`/mirror/pypi/{name}/...` 路由；未配置时该生态仍返回 `404`。
 
 首期只覆盖 Python 包安装所需的 Simple API 项目索引和项目文件下载。上传、
 删除、账号、token、搜索和任意 URL 代理不在范围内。
@@ -26,9 +26,6 @@ name = "group"
 type = "group"
 members = ["internal", "official"]
 ```
-
-PyPI 适配器尚未注册，当前运行时配置不接受 `[pypi]`；上面的来源结构是后续实现
-时需要接入的统一 source graph 契约。
 
 没有 group 时，多个 proxy 彼此独立；group 只按 `members` 顺序回退。group
 不配置 `base_url`，不合并不同 proxy 的项目版本集合，也不引用其他 group。
@@ -66,8 +63,8 @@ Simple API 项目请求必须按 PyPA Simple Repository API 的规范化规则�
 
 ## HTML 与 JSON 表示
 
-Simple API 项目索引至少支持 HTML 表示，并为后续 JSON 表示保留同一适配器
-边界。客户端通过 `Accept` 协商表示：
+Simple API 项目索引同时支持 HTML 和 JSON 表示，两者共用同一适配器边界。
+客户端通过 `Accept` 协商表示：
 
 - 支持 HTML 时返回 `text/html`，索引链接使用 `<a href="...">`。
 - 只有 `Accept` 明确列出 `application/vnd.pypi.simple.v1+json` 且该 media type
@@ -82,6 +79,11 @@ selected proxy 生成，只在表示层编码不同。缓存键必须包含固�
 `representation`（`html` 或 `json`）以及必要的 media type，防止 HTML 和
 JSON 响应互相命中。
 
+本 MVP 不代理 PEP 658 的 `.metadata` sidecar。生成项目索引时会省略
+`core-metadata`（HTML 的 `data-core-metadata`）和 `dist-info-metadata`
+（HTML 的 `data-dist-info-metadata`），避免向 pip 声明无法通过 `/files/`
+获取的对象；pip 会回退下载完整 wheel 或 sdist。
+
 ## 文件链接与完整性
 
 项目索引中的每个文件链接必须：
@@ -89,7 +91,8 @@ JSON 响应互相命中。
 - 使用当前 `/mirror/pypi/{name}/...` 入口，或通过严格的内部对象引用绑定到
   当前入口。
 - 指向当前项目的受限文件对象。
-- 保留上游提供的 hash 信息；支持的 hash 算法和格式由适配器明确校验。
+- 保留上游提供的 hash 信息；当前实现保留并校验 `sha256`、`sha384` 和
+  `sha512`，其他哈希算法不会成为完整性通过的依据。
 - 不包含客户端可控的外部 host、凭据、query 注入或路径穿越。
 
 下载文件先写临时文件，再按索引声明的 hash 校验，最后原子发布 artifact
@@ -126,6 +129,21 @@ selected_proxy
 本 MVP 不实现 `/search`、upload、delete、用户认证、API key、依赖解析或
 Python 包元数据之外的业务数据库。文件系统缓存是唯一缓存事实源。
 
+## 大索引与资源边界
+
+项目索引属于需要完整解析的 metadata，单个项目索引设置 16 MiB 的显式读取
+上限。超过上限时按来源失败处理，继续执行 group 回退；全部失败返回 `502`，
+不会继续无界增长内存。
+
+`/simple/` 根索引可能包含全仓库项目，不能使用无界整包读取。2026-10-29 对
+官方 PyPI 做 Range 探测，HTML 根索引为 47,799,635 字节，JSON 根索引为
+45,450,082 字节。当前实现按块读取上游响应：HTML 在流中重写项目链接，只为
+不完整的单个 HTML 标签保留最多 64 KiB 的跨块缓冲；JSON 只校验媒体类型后
+流式转发，不把完整根索引读入内存。
+
+项目索引命中后 15 分钟内直接复用本地 metadata；超过该窗口必须重新验证。
+验证失败不提供无限期 stale 内容，直接按 group 规则回退或返回 `502`。
+
 ## 验证边界
 
 实现阶段使用本地 HTTP 上游覆盖：
@@ -137,7 +155,10 @@ Python 包元数据之外的业务数据库。文件系统缓存是唯一缓存�
 - 规范化别名不产生重复对象，路径穿越和外链均被拒绝。
 - 未注册 `/mirror/pypi/{name}/...` 之外的假路由不暴露。
 
-真实 pip、外部 PyPI 兼容仓库和生产部署行为必须在适配器实现后单独联调。
+本次实现已用 pip 25.1.1 分别通过 direct proxy 和 group 入口安装
+`six==1.17.0`，上游为同源提供 Simple API 和文件下载的 PyPI 兼容仓库。
+生产部署、其他上游实现和更复杂的依赖解析仍需单独联调；本地协议测试通过
+不等同于生产验收。
 
 ## 官方协议依据
 

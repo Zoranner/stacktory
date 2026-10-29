@@ -640,6 +640,7 @@ fn endpoint_for(ecosystem: &str, entry: &str, base_url: &str) -> Option<String> 
         "cargo" => format!("/mirror/cargo/{entry}/"),
         "npm" => format!("/mirror/npm/{entry}/"),
         "nuget" => format!("/mirror/nuget/{entry}/v3/index.json"),
+        "pypi" => format!("/mirror/pypi/{entry}/simple/"),
         "upm" => format!("/mirror/upm/{entry}"),
         "vscode" => format!("/mirror/vscode/{entry}"),
         "docker" => format!("/mirror/docker/{entry}/v2/"),

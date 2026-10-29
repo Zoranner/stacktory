@@ -42,7 +42,7 @@ mod tests {
         let catalog = SourceCatalog::sample();
         let markdown = render_index_markdown("https://pkg.example.test", &catalog);
         for title in [
-            "Rustup", "Cargo", "npm", "Bun", "NuGet", "UPM", "VS Code", "Docker",
+            "Rustup", "Cargo", "npm", "Bun", "NuGet", "PyPI", "UPM", "VS Code", "Docker",
         ] {
             assert!(markdown.contains(&format!("[{title}]")), "missing {title}");
         }
@@ -52,7 +52,7 @@ mod tests {
         assert!(!markdown.contains("使用说明"));
         assert!(!markdown.contains("{base_url}"));
         assert!(!markdown.contains("api.nuget.org"));
-        assert_eq!(sections().len(), 8);
+        assert_eq!(sections().len(), 9);
     }
 
     #[test]
