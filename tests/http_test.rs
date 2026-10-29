@@ -567,6 +567,7 @@ async fn rustup_direct_source_not_found_preserves_the_upstream_status() {
         nuget: None,
         pypi: None,
         upm: None,
+        winget: None,
     })
     .expect("service");
 
@@ -665,6 +666,7 @@ async fn public_rustup_artifact_route_serves_only_a_verified_published_artifact(
         nuget: None,
         pypi: None,
         upm: None,
+        winget: None,
     })
     .expect("service");
     service.refresh("test", "stable").await.expect("refresh");
@@ -777,6 +779,7 @@ async fn rustup_group_route_serves_manifest() {
         nuget: None,
         pypi: None,
         upm: None,
+        winget: None,
     })
     .expect("service");
 
@@ -902,6 +905,7 @@ async fn rustup_group_artifact_stays_with_the_manifest_source() {
         nuget: None,
         pypi: None,
         upm: None,
+        winget: None,
     })
     .expect("service");
     let router = router_with_rustup(Arc::new(service));
@@ -982,6 +986,7 @@ async fn rustup_proxy_route_serves_only_its_proxy() {
         nuget: None,
         pypi: None,
         upm: None,
+        winget: None,
     })
     .expect("service");
 
@@ -1029,6 +1034,7 @@ async fn unknown_rustup_artifact_source_returns_not_found_before_snapshot_lookup
         nuget: None,
         pypi: None,
         upm: None,
+        winget: None,
     })
     .expect("service");
     let router = router_with_rustup(Arc::new(service));
@@ -1127,6 +1133,7 @@ async fn legacy_rustup_route_returns_not_found() {
         nuget: None,
         pypi: None,
         upm: None,
+        winget: None,
     })
     .expect("service");
 
@@ -1237,6 +1244,7 @@ fn rustup_service_with_public_url(
             ])
             .expect("upm sources"),
         }),
+        winget: None,
     })
     .expect("service")
 }

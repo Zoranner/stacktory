@@ -87,6 +87,7 @@ async fn refresh_publishes_a_rewritten_manifest_snapshot() {
         nuget: None,
         pypi: None,
         upm: None,
+        winget: None,
     })
     .expect("service");
 
@@ -286,6 +287,7 @@ async fn artifact_cache_is_shared_by_group_and_its_proxy() {
         nuget: None,
         pypi: None,
         upm: None,
+        winget: None,
     })
     .expect("service");
 
@@ -407,6 +409,7 @@ async fn proxy_manifest_can_reference_another_configured_proxy() {
         nuget: None,
         pypi: None,
         upm: None,
+        winget: None,
     })
     .expect("service");
     let path = DistPath::parse("2026-09-03/rustc.tar.xz").expect("artifact path");
@@ -520,6 +523,7 @@ async fn artifact_request_uses_the_source_matched_by_manifest_url() {
         nuget: None,
         pypi: None,
         upm: None,
+        winget: None,
     })
     .expect("service");
     let path = DistPath::parse("2026-09-03/rustc.tar.xz").expect("artifact path");
@@ -741,6 +745,7 @@ async fn artifacts_follow_each_channel_snapshot_source_and_keep_separate_caches(
         nuget: None,
         pypi: None,
         upm: None,
+        winget: None,
     })
     .expect("service");
 
@@ -1072,6 +1077,7 @@ fn service_with_sources_and_root(
         nuget: None,
         pypi: None,
         upm: None,
+        winget: None,
     })
     .expect("service")
 }

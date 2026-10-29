@@ -15,7 +15,7 @@ pub use config::{
     CargoConfig, Config, ConfigError, DockerConfig, DockerRegistryEndpoint, EcosystemConfig,
     NpmConfig, NugetConfig, ProxyConfig, PublicUrls, PyPiConfig, RetentionConfig, RustupConfig,
     ServerConfig, SourceConfig, SourceGraph, SourceType, StorageConfig, UpmConfig, UpstreamConfig,
-    VscodeConfig,
+    VscodeConfig, WingetConfig,
 };
 pub use http::{router_with_docker_entry, router_with_rustup_and_registry};
 pub use upstream::SourcePool;

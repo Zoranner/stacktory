@@ -12,6 +12,7 @@ use crate::{
         pypi::PyPiAdapter,
         upm::UpmAdapter,
         vscode::VscodeAdapter,
+        winget::WingetAdapter,
     },
     upstream::{ArtifactBudget, FetchTimeouts, SourcePool, registry::AdapterRegistry},
 };
@@ -149,6 +150,19 @@ pub(super) fn configured_registry_with_budget(
             },
         )?;
     }
+    if let Some(winget) = config.winget.clone() {
+        register_ecosystem(
+            &mut registry,
+            "winget",
+            winget.sources,
+            WingetAdapter::new(
+                config.server.public_url.clone(),
+                config.storage.data_dir.clone(),
+                winget.installer_hosts,
+            ),
+            &registration,
+        )?;
+    }
     Ok(registry)
 }
 
@@ -178,7 +192,11 @@ fn register_ecosystem<A: crate::upstream::registry::Adapter>(
 
 #[cfg(test)]
 mod tests {
-    use std::{net::IpAddr, path::PathBuf};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        net::IpAddr,
+        path::PathBuf,
+    };
 
     use axum::{body::Body, http::Request};
     use tower::ServiceExt;
@@ -187,11 +205,11 @@ mod tests {
     use crate::{
         Config, EcosystemConfig, NugetConfig, ProxyConfig, RetentionConfig, RustupConfig,
         ServerConfig, SourceConfig, SourceGraph, SourceType, StorageConfig, UpmConfig,
-        UpstreamConfig, http::router_with_registry,
+        UpstreamConfig, WingetConfig, http::router_with_registry,
     };
 
     #[tokio::test]
-    async fn configured_npm_upm_and_pypi_are_registered_separately() {
+    async fn configured_ecosystems_are_registered_separately() {
         let config = Config {
             server: ServerConfig {
                 address: "127.0.0.1".parse::<IpAddr>().expect("address"),
@@ -235,6 +253,14 @@ mod tests {
                 sources: SourceGraph::new(vec![proxy("unity", "http://127.0.0.1:9")])
                     .expect("upm sources"),
             }),
+            winget: Some(WingetConfig {
+                sources: SourceGraph::new(vec![proxy("official", "http://127.0.0.1:9")])
+                    .expect("Winget sources"),
+                installer_hosts: BTreeMap::from([(
+                    "official".to_owned(),
+                    BTreeSet::from(["github.com".to_owned()]),
+                )]),
+            }),
         };
 
         let mut docker_listeners = Vec::new();
@@ -269,6 +295,7 @@ mod tests {
             .await
             .expect("NuGet response");
         let pypi_response = router
+            .clone()
             .oneshot(
                 Request::get("/mirror/pypi/official/simple/left-pad/")
                     .body(Body::empty())
@@ -276,11 +303,20 @@ mod tests {
             )
             .await
             .expect("PyPI response");
+        let winget_response = router
+            .oneshot(
+                Request::get("/mirror/winget/official/information")
+                    .body(Body::empty())
+                    .expect("Winget request"),
+            )
+            .await
+            .expect("Winget response");
 
         assert_ne!(npm_response.status(), axum::http::StatusCode::NOT_FOUND);
         assert_ne!(upm_response.status(), axum::http::StatusCode::NOT_FOUND);
         assert_ne!(nuget_response.status(), axum::http::StatusCode::NOT_FOUND);
         assert_ne!(pypi_response.status(), axum::http::StatusCode::NOT_FOUND);
+        assert_ne!(winget_response.status(), axum::http::StatusCode::NOT_FOUND);
     }
 
     fn proxy(name: &str, base_url: &str) -> SourceConfig {

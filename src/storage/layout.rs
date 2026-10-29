@@ -51,6 +51,7 @@ pub fn is_binding_dir(ecosystem: &str, relative: &Path) -> bool {
         "pypi" => name == "files",
         "docker" => name == "blobs",
         "vscode" => matches!(name, "assets" | "resources" | "extensions" | "asset-bases"),
+        "winget" => name == "installers",
         _ => false,
     }
 }

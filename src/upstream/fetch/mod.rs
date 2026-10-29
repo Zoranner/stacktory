@@ -1,4 +1,4 @@
-use std::{io, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::BTreeSet, io, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::redirect::Policy;
@@ -102,6 +102,10 @@ pub(crate) enum FetchError {
     UnsafeRegistryRedirect(Url),
     #[error("upstream Registry redirect chain from `{0}` is too long")]
     RegistryRedirectLimit(Url),
+    #[error("upstream artifact redirect from `{0}` is unsafe")]
+    UnsafeArtifactRedirect(Url),
+    #[error("upstream artifact redirect chain from `{0}` is too long")]
+    ArtifactRedirectLimit(Url),
     #[error("outbound proxy cannot be configured: {0}")]
     InvalidProxy(reqwest::Error),
 }
@@ -301,6 +305,67 @@ impl HttpFetcher {
         result
     }
 
+    pub(crate) async fn fetch_allowlisted_hosts_safe_redirects_to_file(
+        &self,
+        url: Url,
+        allowed_hosts: &BTreeSet<String>,
+        require_https: bool,
+        timeout: Duration,
+        path: PathBuf,
+    ) -> Result<FetchedFile, FetchError> {
+        let (url, response) = self
+            .allowlisted_redirect_response(url, allowed_hosts, require_https, timeout)
+            .await?;
+        let cleanup_path = path.clone();
+        let result = self.response_file(url, response, path).await;
+        if result.is_err() {
+            let _ = tokio::fs::remove_file(&cleanup_path).await;
+        }
+        result
+    }
+
+    async fn allowlisted_redirect_response(
+        &self,
+        url: Url,
+        allowed_hosts: &BTreeSet<String>,
+        require_https: bool,
+        timeout: Duration,
+    ) -> Result<(Url, reqwest::Response), FetchError> {
+        let mut current_url = url;
+        for _ in 0..=3 {
+            if !is_allowed_installer_url(&current_url, allowed_hosts, require_https) {
+                return Err(FetchError::UnsafeArtifactRedirect(current_url));
+            }
+            let allow_private = current_url
+                .host_str()
+                .is_some_and(|host| !is_public_host(host));
+            let response = self
+                .client_for(allow_private)
+                .get(current_url.clone())
+                .timeout(timeout)
+                .send()
+                .await
+                .map_err(|error| FetchError::Request(current_url.clone(), error))?;
+            if response.status().is_redirection() {
+                let location = response
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|value| value.to_str().ok())
+                    .ok_or_else(|| FetchError::UnsafeArtifactRedirect(current_url.clone()))?;
+                let next_url = current_url
+                    .join(location)
+                    .map_err(|_| FetchError::UnsafeArtifactRedirect(current_url.clone()))?;
+                if !is_allowed_installer_url(&next_url, allowed_hosts, require_https) {
+                    return Err(FetchError::UnsafeArtifactRedirect(next_url));
+                }
+                current_url = next_url;
+                continue;
+            }
+            return Ok((current_url, response));
+        }
+        Err(FetchError::ArtifactRedirectLimit(current_url))
+    }
+
     async fn safe_redirect_response(
         &self,
         url: Url,
@@ -457,6 +522,24 @@ impl HttpFetcher {
             .header(reqwest::header::ACCEPT, MARKETPLACE_ACCEPT)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .header("X-Market-Client-Id", "VSCode")
+            .body(body.to_vec())
+            .send()
+            .await;
+        self.response_bytes(url, response).await
+    }
+
+    pub(crate) async fn post_json(
+        &self,
+        url: Url,
+        body: &[u8],
+        headers: HeaderMap,
+        timeout: Duration,
+    ) -> Result<FetchResponse, FetchError> {
+        let response = self
+            .client
+            .post(url.clone())
+            .headers(headers)
+            .timeout(timeout)
             .body(body.to_vec())
             .send()
             .await;
@@ -685,6 +768,42 @@ fn is_safe_http_redirect(source_url: &Url, redirect_url: &Url, require_https: bo
             || is_public_host(redirect_url.host_str().unwrap_or_default()))
 }
 
+pub(crate) fn is_allowed_installer_url(
+    url: &Url,
+    allowed_hosts: &BTreeSet<String>,
+    require_https: bool,
+) -> bool {
+    if !matches!(url.scheme(), "http" | "https")
+        || (require_https && url.scheme() != "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || url.path().contains('\\')
+        || url.path().chars().any(char::is_control)
+        || url
+            .path()
+            .split('/')
+            .any(|segment| matches!(segment, "." | ".."))
+    {
+        return false;
+    }
+    let lowered_path = url.path().to_ascii_lowercase();
+    if lowered_path.contains("%2e") || lowered_path.contains("%2f") || lowered_path.contains("%5c")
+    {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let default_port = if url.scheme() == "https" { 443 } else { 80 };
+    if allowed_hosts.contains(&host) && (url.port().is_none() || url.port() == Some(default_port)) {
+        return true;
+    }
+    url.port_or_known_default()
+        .is_some_and(|port| allowed_hosts.contains(&format!("{host}:{port}")))
+}
+
 impl FetchError {
     pub(crate) fn status_code(&self) -> Option<u16> {
         match self {
@@ -702,7 +821,9 @@ impl FetchError {
             | Self::InvalidRegistryChallenge(_)
             | Self::InvalidRegistryToken(_)
             | Self::UnsafeRegistryRedirect(_)
-            | Self::RegistryRedirectLimit(_) => true,
+            | Self::RegistryRedirectLimit(_)
+            | Self::UnsafeArtifactRedirect(_)
+            | Self::ArtifactRedirectLimit(_) => true,
             Self::HttpStatus(_, status) => status.is_redirection() || status.is_server_error(),
             Self::TempFile(_) | Self::InvalidProxy(_) => false,
         }

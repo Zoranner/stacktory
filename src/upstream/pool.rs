@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::BTreeSet, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use axum::http::{HeaderMap, Method};
 use thiserror::Error;
@@ -276,6 +276,53 @@ impl SourcePool {
         }
     }
 
+    pub async fn fetch_proxy_path_with_query_and_headers(
+        &self,
+        source_name: &str,
+        request_key: &str,
+        query: Option<&str>,
+        headers: HeaderMap,
+        operation: FetchOperation,
+    ) -> Result<SourceResponse, SourcePoolError> {
+        let _artifact_permit = self.artifact_permit(operation).await;
+        let source = self
+            .graph
+            .get(source_name)
+            .ok_or_else(|| SourcePoolError::UnknownEntry(source_name.to_owned()))?;
+        if source.source_type != crate::SourceType::Proxy {
+            return Err(SourcePoolError::UnknownEntry(source_name.to_owned()));
+        }
+        let request_key = normalize_proxy_path(request_key)?;
+        let mut url = source_url_raw(source, &request_key)?;
+        if let Some(query) = query {
+            validate_query(query)?;
+            url.set_query(Some(query));
+        }
+        match self
+            .fetcher
+            .fetch_with_headers(url, headers, self.timeout(operation))
+            .await
+        {
+            Ok(response) => Ok(SourceResponse {
+                source_name: source_name.to_owned(),
+                body: response.body,
+                content_type: response.content_type,
+                headers: response.headers,
+            }),
+            Err(error) if error.is_retryable() => Err(SourcePoolError::AllSourcesFailed {
+                entry_name: source_name.to_owned(),
+                request_key,
+                failures: error.to_string(),
+                status: None,
+            }),
+            Err(error) => Err(SourcePoolError::TerminalSourceError {
+                source_name: source_name.to_owned(),
+                status: error.status_code().unwrap_or_default(),
+                error: error.to_string(),
+            }),
+        }
+    }
+
     pub async fn fetch_proxy_path_with_headers_limited(
         &self,
         source_name: &str,
@@ -359,6 +406,7 @@ impl SourcePool {
             }),
         }
     }
+
     pub(crate) async fn fetch_proxy_path_to_file(
         &self,
         source_name: &str,
@@ -510,6 +558,47 @@ impl SourcePool {
         match self
             .fetcher
             .post_marketplace_query(url, body, self.timeout(FetchOperation::Metadata))
+            .await
+        {
+            Ok(response) => Ok(SourceResponse {
+                source_name: source_name.to_owned(),
+                body: response.body,
+                content_type: response.content_type,
+                headers: response.headers,
+            }),
+            Err(error) if error.is_retryable() => Err(SourcePoolError::AllSourcesFailed {
+                entry_name: source_name.to_owned(),
+                request_key,
+                failures: error.to_string(),
+                status: error.status_code(),
+            }),
+            Err(error) => Err(SourcePoolError::TerminalSourceError {
+                source_name: source_name.to_owned(),
+                status: error.status_code().unwrap_or_default(),
+                error: error.to_string(),
+            }),
+        }
+    }
+
+    pub(crate) async fn post_json_to_source_with_headers(
+        &self,
+        source_name: &str,
+        request_key: &str,
+        body: &[u8],
+        headers: HeaderMap,
+    ) -> Result<SourceResponse, SourcePoolError> {
+        let source = self
+            .graph
+            .get(source_name)
+            .ok_or_else(|| SourcePoolError::UnknownEntry(source_name.to_owned()))?;
+        if source.source_type != crate::SourceType::Proxy {
+            return Err(SourcePoolError::UnknownEntry(source_name.to_owned()));
+        }
+        let request_key = normalize_proxy_path(request_key)?;
+        let url = source_url_raw(source, &request_key)?;
+        match self
+            .fetcher
+            .post_json(url, body, headers, self.timeout(FetchOperation::Metadata))
             .await
         {
             Ok(response) => Ok(SourceResponse {
@@ -875,6 +964,48 @@ impl SourcePool {
         }
     }
 
+    pub(crate) async fn fetch_allowlisted_url_to_file(
+        &self,
+        source_name: &str,
+        url: Url,
+        allowed_hosts: &BTreeSet<String>,
+        operation: FetchOperation,
+        path: PathBuf,
+    ) -> Result<FetchedFile, SourcePoolError> {
+        let _artifact_permit = self.artifact_permit(operation).await;
+        let source = self
+            .graph
+            .get(source_name)
+            .ok_or_else(|| SourcePoolError::UnknownEntry(source_name.to_owned()))?;
+        if source.source_type != crate::SourceType::Proxy {
+            return Err(SourcePoolError::UnknownEntry(source_name.to_owned()));
+        }
+        match self
+            .fetcher
+            .fetch_allowlisted_hosts_safe_redirects_to_file(
+                url.clone(),
+                allowed_hosts,
+                source.require_https,
+                self.timeout(operation),
+                path,
+            )
+            .await
+        {
+            Ok(file) => Ok(file),
+            Err(error) if error.is_retryable() => Err(SourcePoolError::AllSourcesFailed {
+                entry_name: source_name.to_owned(),
+                request_key: url.path().to_owned(),
+                failures: error.to_string(),
+                status: error.status_code(),
+            }),
+            Err(error) => Err(SourcePoolError::TerminalSourceError {
+                source_name: source_name.to_owned(),
+                status: error.status_code().unwrap_or_default(),
+                error: error.to_string(),
+            }),
+        }
+    }
+
     pub async fn fetch_discovered_url_with_query_following_safe_redirects(
         &self,
         source_name: &str,
@@ -1013,6 +1144,13 @@ fn normalize_proxy_path(request_key: &str) -> Result<String, SourcePoolError> {
         }
     }
     Ok(request_key.to_owned())
+}
+
+fn validate_query(query: &str) -> Result<(), SourcePoolError> {
+    if query.len() > 16 * 1024 || query.contains('#') || query.chars().any(char::is_control) {
+        return Err(SourcePoolError::InvalidRequestKey(query.to_owned()));
+    }
+    Ok(())
 }
 
 fn normalize_proxy_path_allow_trailing_slash(request_key: &str) -> Result<String, SourcePoolError> {

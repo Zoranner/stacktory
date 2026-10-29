@@ -6,7 +6,7 @@ use url::Url;
 use super::{
     model::{
         Config, ConfigError, DockerConfig, DockerRegistryEndpoint, EcosystemConfig, RustupConfig,
-        SourceConfig, SourceGraph, SourceType,
+        SourceConfig, SourceGraph, SourceType, WingetConfig,
     },
     validate::{is_valid_channel, is_valid_docker_registry_public_url, validate_public_urls},
 };
@@ -30,6 +30,7 @@ struct RawConfig {
     nuget: Option<RawEcosystemConfig>,
     pypi: Option<RawEcosystemConfig>,
     upm: Option<RawEcosystemConfig>,
+    winget: Option<RawWingetConfig>,
 }
 
 #[derive(Deserialize)]
@@ -50,6 +51,30 @@ struct RawEcosystemConfig {
 #[serde(deny_unknown_fields)]
 struct RawDockerConfig {
     sources: Vec<RawDockerSourceConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawWingetConfig {
+    sources: Vec<RawWingetSourceConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawWingetSourceConfig {
+    name: String,
+    #[serde(rename = "type")]
+    source_type: SourceType,
+    #[serde(default = "default_visible")]
+    visible: bool,
+    #[serde(default)]
+    base_url: Option<Url>,
+    #[serde(default)]
+    allow_http: Option<bool>,
+    #[serde(default)]
+    members: Vec<String>,
+    #[serde(default)]
+    installer_hosts: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -171,6 +196,51 @@ impl SourceGraph {
         let graph = Self::from_raw(normalized)?;
         Ok((graph, registry_endpoints))
     }
+
+    fn from_raw_winget(
+        sources: Vec<RawWingetSourceConfig>,
+    ) -> Result<(Self, BTreeMap<String, BTreeSet<String>>), ConfigError> {
+        let mut installer_hosts = BTreeMap::new();
+        let mut hidden_from_docs = BTreeSet::new();
+        let mut normalized = Vec::with_capacity(sources.len());
+        for source in sources {
+            let name = source.name.clone();
+            if !source.visible {
+                hidden_from_docs.insert(name.clone());
+            }
+            match source.source_type {
+                SourceType::Group => {
+                    if !source.installer_hosts.is_empty() {
+                        return Err(ConfigError::WingetGroupWithInstallerHosts(name));
+                    }
+                }
+                SourceType::Proxy => {
+                    if source.installer_hosts.is_empty() {
+                        return Err(ConfigError::WingetInstallerHostsMissing(name));
+                    }
+                    let mut hosts = BTreeSet::new();
+                    for entry in &source.installer_hosts {
+                        let host = normalize_winget_installer_host(entry).ok_or_else(|| {
+                            ConfigError::InvalidWingetInstallerHost(name.clone(), entry.clone())
+                        })?;
+                        hosts.insert(host);
+                    }
+                    installer_hosts.insert(name, hosts);
+                }
+            }
+            normalized.push(RawSourceConfig {
+                name: source.name,
+                source_type: source.source_type,
+                visible: source.visible,
+                base_url: source.base_url,
+                allow_http: source.allow_http,
+                members: source.members,
+            });
+        }
+        let mut graph = Self::from_raw(normalized)?;
+        graph.hidden_from_docs = hidden_from_docs;
+        Ok((graph, installer_hosts))
+    }
 }
 
 impl Config {
@@ -242,6 +312,7 @@ impl Config {
             nuget: nuget_config(raw.nuget)?,
             pypi: ecosystem_config(raw.pypi)?,
             upm: ecosystem_config(raw.upm)?,
+            winget: winget_config(raw.winget)?,
         })
     }
 }
@@ -323,6 +394,49 @@ fn nuget_config(raw: Option<RawEcosystemConfig>) -> Result<Option<EcosystemConfi
         }
     }
     Ok(Some(EcosystemConfig { sources }))
+}
+
+fn winget_config(raw: Option<RawWingetConfig>) -> Result<Option<WingetConfig>, ConfigError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let (sources, installer_hosts) = SourceGraph::from_raw_winget(raw.sources)?;
+    Ok(Some(WingetConfig {
+        sources,
+        installer_hosts,
+    }))
+}
+
+fn normalize_winget_installer_host(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty()
+        || value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+        || value
+            .chars()
+            .any(|character| matches!(character, '/' | '\\' | '@' | '#' | '?' | '*'))
+    {
+        return None;
+    }
+    let url = Url::parse(&format!("http://{value}/")).ok()?;
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.port() == Some(0)
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    let host = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() {
+        return None;
+    }
+    Some(match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    })
 }
 
 #[cfg(test)]

@@ -29,6 +29,7 @@ pub struct Config {
     pub nuget: Option<NugetConfig>,
     pub pypi: Option<PyPiConfig>,
     pub upm: Option<UpmConfig>,
+    pub winget: Option<WingetConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -158,6 +159,12 @@ pub type NpmConfig = EcosystemConfig;
 pub type NugetConfig = EcosystemConfig;
 pub type PyPiConfig = EcosystemConfig;
 pub type UpmConfig = EcosystemConfig;
+
+#[derive(Clone, Debug)]
+pub struct WingetConfig {
+    pub sources: SourceGraph,
+    pub installer_hosts: BTreeMap<String, BTreeSet<String>>,
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -356,6 +363,12 @@ pub enum ConfigError {
     InvalidSourceUrl(String),
     #[error("source `{0}` uses http; set allow_http = true to opt in")]
     InsecureHttpSource(String),
+    #[error("Winget proxy source `{0}` requires at least one installer_hosts entry")]
+    WingetInstallerHostsMissing(String),
+    #[error("Winget group source `{0}` must not define installer_hosts")]
+    WingetGroupWithInstallerHosts(String),
+    #[error("Winget source `{0}` has invalid installer_hosts entry `{1}`")]
+    InvalidWingetInstallerHost(String, String),
     #[error("NuGet source `{0}` base_url must be an actual `/v3/index.json` service index")]
     InvalidNugetServiceIndexUrl(String),
     #[error("Docker source `{0}` has an invalid listen_port")]

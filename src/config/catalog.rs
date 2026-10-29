@@ -41,6 +41,9 @@ impl SourceCatalog {
         if let Some(docker) = config.docker.as_ref() {
             catalog.add("docker", &docker.sources, Some(&docker.registry_endpoints));
         }
+        if let Some(winget) = config.winget.as_ref() {
+            catalog.add("winget", &winget.sources, None);
+        }
         catalog
     }
 
@@ -187,6 +190,13 @@ impl SourceCatalog {
                     &["official"],
                     Some("http://docker.example.test:19000"),
                 ),
+            ],
+        );
+        catalog.ecosystems.insert(
+            "winget",
+            vec![
+                entry("official", SourceType::Proxy, &[], None),
+                entry("group", SourceType::Group, &["official"], None),
             ],
         );
         catalog

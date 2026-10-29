@@ -2,7 +2,7 @@
 #
 # 必填：[server]、[storage]、[rustup]。
 # 可选：[proxy]、[upstream]、[retention]；省略 [upstream]/[retention] 时使用默认值。
-# 生态 section（[cargo]、[docker]、[npm]、[nuget]、[pypi]、[upm]、[vscode]）按需添加；
+# 生态 section（[cargo]、[docker]、[npm]、[nuget]、[pypi]、[upm]、[vscode]、[winget]）按需添加；
 # 未配置的生态不会注册路由。
 #
 # 生态来源的统一结构：
@@ -155,3 +155,19 @@ base_url = "https://pypi.org"
 name = "group"
 type = "group"
 members = ["official"]
+
+# Winget 只读 REST source 示例。
+# 每个 proxy 必须声明 InstallerUrl 允许访问的安装包主机；未命中的 manifest 会被拒绝，
+# 不能把基础协议地址或任意 manifest URL 当成安装包下载来源。
+[winget]
+
+[[winget.sources]]
+name = "winget-api"
+type = "proxy"
+base_url = "https://winget.example/api"
+installer_hosts = ["github.com", "objects.githubusercontent.com"]
+
+[[winget.sources]]
+name = "group"
+type = "group"
+members = ["winget-api"]
