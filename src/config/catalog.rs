@@ -29,6 +29,9 @@ impl SourceCatalog {
         if let Some(nuget) = config.nuget.as_ref() {
             catalog.add("nuget", &nuget.sources, None);
         }
+        if let Some(pypi) = config.pypi.as_ref() {
+            catalog.add("pypi", &pypi.sources, None);
+        }
         if let Some(upm) = config.upm.as_ref() {
             catalog.add("upm", &upm.sources, None);
         }
@@ -147,6 +150,13 @@ impl SourceCatalog {
         );
         catalog.ecosystems.insert(
             "nuget",
+            vec![
+                entry("official", SourceType::Proxy, &[], None),
+                entry("group", SourceType::Group, &["official"], None),
+            ],
+        );
+        catalog.ecosystems.insert(
+            "pypi",
             vec![
                 entry("official", SourceType::Proxy, &[], None),
                 entry("group", SourceType::Group, &["official"], None),

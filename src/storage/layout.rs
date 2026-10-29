@@ -48,6 +48,7 @@ pub fn is_binding_dir(ecosystem: &str, relative: &Path) -> bool {
     match ecosystem {
         "npm" | "upm" => name == "descriptors",
         "nuget" => name == "bindings",
+        "pypi" => name == "files",
         "docker" => name == "blobs",
         "vscode" => matches!(name, "assets" | "resources" | "extensions" | "asset-bases"),
         _ => false,

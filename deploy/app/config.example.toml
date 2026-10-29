@@ -2,7 +2,7 @@
 #
 # 必填：[server]、[storage]、[rustup]。
 # 可选：[proxy]、[upstream]、[retention]；省略 [upstream]/[retention] 时使用默认值。
-# 生态 section（[cargo]、[docker]、[npm]、[nuget]、[upm]、[vscode]）按需添加；
+# 生态 section（[cargo]、[docker]、[npm]、[nuget]、[pypi]、[upm]、[vscode]）按需添加；
 # 未配置的生态不会注册路由。
 #
 # 生态来源的统一结构：
@@ -141,3 +141,17 @@ base_url = "https://registry.npmmirror.com"
 name = "group"
 type = "group"
 members = ["official", "npmmirror"]
+
+# PyPI Simple API 只读安装。
+# PyPI source 的 base_url 是仓库根地址，不要追加 /simple/。
+[pypi]
+
+[[pypi.sources]]
+name = "official"
+type = "proxy"
+base_url = "https://pypi.org"
+
+[[pypi.sources]]
+name = "group"
+type = "group"
+members = ["official"]

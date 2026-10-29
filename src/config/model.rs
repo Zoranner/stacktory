@@ -27,6 +27,7 @@ pub struct Config {
     pub docker: Option<DockerConfig>,
     pub npm: Option<NpmConfig>,
     pub nuget: Option<NugetConfig>,
+    pub pypi: Option<PyPiConfig>,
     pub upm: Option<UpmConfig>,
 }
 
@@ -155,6 +156,7 @@ pub struct DockerRegistryEndpoint {
 
 pub type NpmConfig = EcosystemConfig;
 pub type NugetConfig = EcosystemConfig;
+pub type PyPiConfig = EcosystemConfig;
 pub type UpmConfig = EcosystemConfig;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]

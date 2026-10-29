@@ -1070,6 +1070,7 @@ version = "0.3.3"
 dependencies = [
  "axum",
  "base64",
+ "futures-util",
  "reqwest",
  "semver",
  "serde",

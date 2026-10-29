@@ -354,7 +354,7 @@ fn rejects_invalid_public_url_inside_a_list() {
 }
 
 #[test]
-fn rejects_unimplemented_pypi_configuration() {
+fn accepts_pypi_configuration() {
     let configuration = format!(
         "{LOCAL_DEVELOPMENT}\n\
          [pypi]\n\
@@ -365,9 +365,16 @@ fn rejects_unimplemented_pypi_configuration() {
          base_url = \"https://pypi.example\"\n"
     );
 
-    let error = Config::from_toml(&configuration).expect_err("PyPI is not implemented");
+    let config = Config::from_toml(&configuration).expect("PyPI configuration is supported");
+    let pypi = config.pypi.expect("PyPI ecosystem configuration");
+    let proxies = pypi.sources.proxies();
 
-    assert!(matches!(error, ConfigError::Parse(_)));
+    assert_eq!(proxies.len(), 1);
+    assert_eq!(proxies[0].name, "official");
+    assert_eq!(
+        proxies[0].base_url.as_ref().map(url::Url::as_str),
+        Some("https://pypi.example/")
+    );
 }
 
 #[test]
@@ -414,6 +421,10 @@ fn deployment_config_retains_all_configured_ecosystem_source_graphs() {
     assert_source_names(
         &config.npm.expect("npm configuration").sources,
         &["group", "npmmirror", "official"],
+    );
+    assert_source_names(
+        &config.pypi.expect("PyPI configuration").sources,
+        &["group", "official"],
     );
     assert!(config.cargo.is_none());
     assert!(config.nuget.is_none());

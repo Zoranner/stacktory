@@ -11,7 +11,7 @@ use crate::{
         GroupRun,
         budget::{ArtifactBudget, FetchTimeouts},
         fetch::policy::{is_public_host, same_origin},
-        fetch::{FetchedFile, HttpFetcher},
+        fetch::{FetchResponseStream, FetchedFile, HttpFetcher},
         fetch_error_is_group_fallback,
     },
 };
@@ -38,6 +38,40 @@ pub struct SourceResponse {
     pub body: Vec<u8>,
     pub content_type: Option<String>,
     pub headers: HeaderMap,
+}
+
+/// 已建立的上游响应流；调用方按块读取，避免把大响应整体放进内存。
+#[derive(Debug)]
+pub struct SourceStream {
+    pub source_name: String,
+    pub content_type: Option<String>,
+    response: reqwest::Response,
+}
+
+#[derive(Debug, Error)]
+pub enum SourceStreamError {
+    #[error("upstream response stream failed: {0}")]
+    Transport(String),
+}
+
+impl SourceStream {
+    pub async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, SourceStreamError> {
+        match self.response.chunk().await {
+            Ok(Some(chunk)) => Ok(Some(chunk.to_vec())),
+            Ok(None) => Ok(None),
+            Err(error) => Err(SourceStreamError::Transport(error.to_string())),
+        }
+    }
+}
+
+impl From<FetchResponseStream> for SourceStream {
+    fn from(stream: FetchResponseStream) -> Self {
+        Self {
+            source_name: String::new(),
+            content_type: stream.content_type,
+            response: stream.response,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -242,6 +276,89 @@ impl SourcePool {
         }
     }
 
+    pub async fn fetch_proxy_path_with_headers_limited(
+        &self,
+        source_name: &str,
+        request_key: &str,
+        headers: HeaderMap,
+        operation: FetchOperation,
+        limit: usize,
+    ) -> Result<SourceResponse, SourcePoolError> {
+        let _artifact_permit = self.artifact_permit(operation).await;
+        let source = self
+            .graph
+            .get(source_name)
+            .ok_or_else(|| SourcePoolError::UnknownEntry(source_name.to_owned()))?;
+        if source.source_type != crate::SourceType::Proxy {
+            return Err(SourcePoolError::UnknownEntry(source_name.to_owned()));
+        }
+        let request_key = normalize_proxy_path_allow_trailing_slash(request_key)?;
+        let url = source_url_raw(source, &request_key)?;
+        match self
+            .fetcher
+            .fetch_with_headers_limited(url, headers, self.timeout(operation), limit)
+            .await
+        {
+            Ok(response) => Ok(SourceResponse {
+                source_name: source_name.to_owned(),
+                body: response.body,
+                content_type: response.content_type,
+                headers: response.headers,
+            }),
+            Err(error) if error.is_retryable() => Err(SourcePoolError::AllSourcesFailed {
+                entry_name: source_name.to_owned(),
+                request_key,
+                failures: error.to_string(),
+                status: None,
+            }),
+            Err(error) => Err(SourcePoolError::TerminalSourceError {
+                source_name: source_name.to_owned(),
+                status: error.status_code().unwrap_or_default(),
+                error: error.to_string(),
+            }),
+        }
+    }
+
+    pub async fn fetch_proxy_path_stream(
+        &self,
+        source_name: &str,
+        request_key: &str,
+        headers: HeaderMap,
+        operation: FetchOperation,
+    ) -> Result<SourceStream, SourcePoolError> {
+        let _artifact_permit = self.artifact_permit(operation).await;
+        let source = self
+            .graph
+            .get(source_name)
+            .ok_or_else(|| SourcePoolError::UnknownEntry(source_name.to_owned()))?;
+        if source.source_type != crate::SourceType::Proxy {
+            return Err(SourcePoolError::UnknownEntry(source_name.to_owned()));
+        }
+        let request_key = normalize_proxy_path_allow_trailing_slash(request_key)?;
+        let url = source_url_raw(source, &request_key)?;
+        match self
+            .fetcher
+            .fetch_stream(url, headers, self.timeout(operation))
+            .await
+        {
+            Ok(response) => {
+                let mut stream = SourceStream::from(response);
+                stream.source_name = source_name.to_owned();
+                Ok(stream)
+            }
+            Err(error) if error.is_retryable() => Err(SourcePoolError::AllSourcesFailed {
+                entry_name: source_name.to_owned(),
+                request_key,
+                failures: error.to_string(),
+                status: error.status_code(),
+            }),
+            Err(error) => Err(SourcePoolError::TerminalSourceError {
+                source_name: source_name.to_owned(),
+                status: error.status_code().unwrap_or_default(),
+                error: error.to_string(),
+            }),
+        }
+    }
     pub(crate) async fn fetch_proxy_path_to_file(
         &self,
         source_name: &str,
@@ -896,6 +1013,16 @@ fn normalize_proxy_path(request_key: &str) -> Result<String, SourcePoolError> {
         }
     }
     Ok(request_key.to_owned())
+}
+
+fn normalize_proxy_path_allow_trailing_slash(request_key: &str) -> Result<String, SourcePoolError> {
+    let without_slash = request_key.strip_suffix('/').unwrap_or(request_key);
+    let normalized = normalize_proxy_path(without_slash)?;
+    if request_key.ends_with('/') {
+        Ok(format!("{normalized}/"))
+    } else {
+        Ok(normalized)
+    }
 }
 
 fn valid_configured_url(source: &SourceConfig, url: &Url) -> bool {

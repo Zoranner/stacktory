@@ -27,6 +27,12 @@ pub(crate) struct FetchResponse {
 }
 
 #[derive(Debug)]
+pub(crate) struct FetchResponseStream {
+    pub(crate) response: reqwest::Response,
+    pub(crate) content_type: Option<String>,
+}
+
+#[derive(Debug)]
 pub(crate) struct FetchedFile {
     pub(crate) path: PathBuf,
     pub(crate) length: u64,
@@ -84,6 +90,8 @@ pub(crate) enum FetchError {
     HttpStatus(Url, reqwest::StatusCode),
     #[error("response from `{0}` could not be read: {1}")]
     ResponseBody(Url, reqwest::Error),
+    #[error("response from `{0}` exceeds the {1} byte limit")]
+    ResponseTooLarge(Url, usize),
     #[error("temporary file write failed: {0}")]
     TempFile(io::Error),
     #[error("upstream Registry authentication challenge from `{0}` is invalid")]
@@ -197,6 +205,51 @@ impl HttpFetcher {
         timeout: Duration,
     ) -> Result<FetchResponse, FetchError> {
         self.fetch_with_policy(url, headers, true, timeout).await
+    }
+
+    pub(crate) async fn fetch_with_headers_limited(
+        &self,
+        url: Url,
+        headers: HeaderMap,
+        timeout: Duration,
+        limit: usize,
+    ) -> Result<FetchResponse, FetchError> {
+        let response = self
+            .client_for(true)
+            .get(url.clone())
+            .headers(headers)
+            .timeout(timeout)
+            .send()
+            .await;
+        self.response_bytes_limited(url, response, limit).await
+    }
+
+    pub(crate) async fn fetch_stream(
+        &self,
+        url: Url,
+        headers: HeaderMap,
+        timeout: Duration,
+    ) -> Result<FetchResponseStream, FetchError> {
+        let response = self
+            .client_for(true)
+            .get(url.clone())
+            .headers(headers)
+            .timeout(timeout)
+            .send()
+            .await
+            .map_err(|error| FetchError::Request(url.clone(), error))?;
+        if !response.status().is_success() {
+            return Err(FetchError::HttpStatus(url, response.status()));
+        }
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        Ok(FetchResponseStream {
+            response,
+            content_type,
+        })
     }
 
     async fn fetch_with_policy(
@@ -410,6 +463,41 @@ impl HttpFetcher {
         self.response_bytes(url, response).await
     }
 
+    async fn response_bytes_limited(
+        &self,
+        url: Url,
+        response: Result<reqwest::Response, reqwest::Error>,
+        limit: usize,
+    ) -> Result<FetchResponse, FetchError> {
+        let response = response.map_err(|error| FetchError::Request(url.clone(), error))?;
+        if !response.status().is_success() {
+            return Err(FetchError::HttpStatus(url, response.status()));
+        }
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let headers = response.headers().clone();
+        let mut response = response;
+        let mut body = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|error| FetchError::ResponseBody(url.clone(), error))?
+        {
+            if body.len().saturating_add(chunk.len()) > limit {
+                return Err(FetchError::ResponseTooLarge(url, limit));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(FetchResponse {
+            body,
+            content_type,
+            headers,
+        })
+    }
+
     async fn response_bytes(
         &self,
         url: Url,
@@ -610,6 +698,7 @@ impl FetchError {
             Self::ClientBuild(_)
             | Self::Request(_, _)
             | Self::ResponseBody(..)
+            | Self::ResponseTooLarge(..)
             | Self::InvalidRegistryChallenge(_)
             | Self::InvalidRegistryToken(_)
             | Self::UnsafeRegistryRedirect(_)

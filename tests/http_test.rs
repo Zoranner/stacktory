@@ -565,6 +565,7 @@ async fn rustup_direct_source_not_found_preserves_the_upstream_status() {
         docker: None,
         npm: None,
         nuget: None,
+        pypi: None,
         upm: None,
     })
     .expect("service");
@@ -662,6 +663,7 @@ async fn public_rustup_artifact_route_serves_only_a_verified_published_artifact(
         docker: None,
         npm: None,
         nuget: None,
+        pypi: None,
         upm: None,
     })
     .expect("service");
@@ -773,6 +775,7 @@ async fn rustup_group_route_serves_manifest() {
         docker: None,
         npm: None,
         nuget: None,
+        pypi: None,
         upm: None,
     })
     .expect("service");
@@ -897,6 +900,7 @@ async fn rustup_group_artifact_stays_with_the_manifest_source() {
         docker: None,
         npm: None,
         nuget: None,
+        pypi: None,
         upm: None,
     })
     .expect("service");
@@ -976,6 +980,7 @@ async fn rustup_proxy_route_serves_only_its_proxy() {
         docker: None,
         npm: None,
         nuget: None,
+        pypi: None,
         upm: None,
     })
     .expect("service");
@@ -1022,6 +1027,7 @@ async fn unknown_rustup_artifact_source_returns_not_found_before_snapshot_lookup
         docker: None,
         npm: None,
         nuget: None,
+        pypi: None,
         upm: None,
     })
     .expect("service");
@@ -1119,6 +1125,7 @@ async fn legacy_rustup_route_returns_not_found() {
         docker: None,
         npm: None,
         nuget: None,
+        pypi: None,
         upm: None,
     })
     .expect("service");
@@ -1221,6 +1228,7 @@ fn rustup_service_with_public_url(
             ])
             .expect("nuget sources"),
         }),
+        pypi: None,
         upm: Some(UpmConfig {
             sources: SourceGraph::new(vec![
                 source("unity", "https://packages.unity.com"),

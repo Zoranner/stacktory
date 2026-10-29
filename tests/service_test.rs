@@ -85,6 +85,7 @@ async fn refresh_publishes_a_rewritten_manifest_snapshot() {
         docker: None,
         npm: None,
         nuget: None,
+        pypi: None,
         upm: None,
     })
     .expect("service");
@@ -283,6 +284,7 @@ async fn artifact_cache_is_shared_by_group_and_its_proxy() {
         docker: None,
         npm: None,
         nuget: None,
+        pypi: None,
         upm: None,
     })
     .expect("service");
@@ -403,6 +405,7 @@ async fn proxy_manifest_can_reference_another_configured_proxy() {
         docker: None,
         npm: None,
         nuget: None,
+        pypi: None,
         upm: None,
     })
     .expect("service");
@@ -515,6 +518,7 @@ async fn artifact_request_uses_the_source_matched_by_manifest_url() {
         docker: None,
         npm: None,
         nuget: None,
+        pypi: None,
         upm: None,
     })
     .expect("service");
@@ -735,6 +739,7 @@ async fn artifacts_follow_each_channel_snapshot_source_and_keep_separate_caches(
         docker: None,
         npm: None,
         nuget: None,
+        pypi: None,
         upm: None,
     })
     .expect("service");
@@ -1065,6 +1070,7 @@ fn service_with_sources_and_root(
         docker: None,
         npm: None,
         nuget: None,
+        pypi: None,
         upm: None,
     })
     .expect("service")

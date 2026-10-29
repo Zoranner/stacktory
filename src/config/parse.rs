@@ -28,6 +28,7 @@ struct RawConfig {
     docker: Option<RawDockerConfig>,
     npm: Option<RawEcosystemConfig>,
     nuget: Option<RawEcosystemConfig>,
+    pypi: Option<RawEcosystemConfig>,
     upm: Option<RawEcosystemConfig>,
 }
 
@@ -239,6 +240,7 @@ impl Config {
             docker: docker_config(raw.docker, server_port)?,
             npm: ecosystem_config(raw.npm)?,
             nuget: nuget_config(raw.nuget)?,
+            pypi: ecosystem_config(raw.pypi)?,
             upm: ecosystem_config(raw.upm)?,
         })
     }
