@@ -26,6 +26,7 @@ fn retention_config() -> RetentionConfig {
         cleanup_interval_secs: 3_600,
         rustup_snapshot_revisions: 2,
         artifact_idle_secs: 30 * DAY,
+        binding_idle_secs: 30 * DAY,
         log_retention_days: 30,
     }
 }
@@ -117,6 +118,89 @@ fn keeps_artifact_bindings_when_metadata_expires() {
     assert!(nuget_binding.exists());
     assert!(vscode_asset.exists());
     assert!(docker_blob.exists());
+}
+
+#[test]
+fn evicts_idle_bindings_and_keeps_fresh_ones() {
+    let directory = tempdir().expect("temporary directory");
+    let data_dir = directory.path();
+    let now = SystemTime::now();
+    let old = now - Duration::from_secs(31 * DAY);
+    let fresh = now - Duration::from_secs(60);
+    let idle_bindings = [
+        data_dir.join("stores/npm/metadata/group/descriptors/idle.json"),
+        data_dir.join("stores/nuget/metadata/group/bindings/left-pad/1.0.0.json"),
+        data_dir.join("stores/pypi/metadata/group/friendly-bard/files/friendly.whl.json"),
+        data_dir.join("stores/docker/metadata/group/library/alpine/blobs/sha256-abc.json"),
+        data_dir.join("stores/vscode/metadata/group/marketplace/assets/asset.toml"),
+        data_dir.join("stores/winget/metadata/group/installers/token.json"),
+    ];
+    let fresh_binding = data_dir.join("stores/npm/metadata/group/descriptors/fresh.json");
+    for path in &idle_bindings {
+        write_file_with_mtime(path, "binding", old);
+    }
+    write_file_with_mtime(&fresh_binding, "binding", fresh);
+
+    let report = sweep(
+        data_dir,
+        &log_file(data_dir),
+        &retention_config(),
+        now,
+        &AuditSink::new(data_dir),
+    );
+
+    assert_eq!(report.removed_binding_files, idle_bindings.len() as u64);
+    assert_eq!(report.failed_binding_files, 0);
+    for path in &idle_bindings {
+        assert!(!path.exists(), "{} should be evicted", path.display());
+    }
+    assert!(fresh_binding.exists());
+    let events = fs::read_to_string(data_dir.join("audit/events.jsonl")).expect("audit events");
+    assert!(events.contains("\"binding_cleanup\""));
+    assert!(events.contains("\"count\":6"));
+}
+
+#[test]
+fn keeps_an_idle_binding_that_was_accessed() {
+    let directory = tempdir().expect("temporary directory");
+    let data_dir = directory.path();
+    let now = SystemTime::now();
+    let binding = data_dir.join("stores/winget/metadata/group/installers/token.json");
+    write_file_with_mtime(&binding, "binding", now - Duration::from_secs(31 * DAY));
+
+    note_access(&binding).expect("binding access time update");
+    let report = sweep(
+        data_dir,
+        &log_file(data_dir),
+        &retention_config(),
+        now,
+        &AuditSink::new(data_dir),
+    );
+
+    assert_eq!(report.removed_binding_files, 0);
+    assert!(binding.exists());
+}
+
+#[test]
+fn binding_cleanup_can_be_disabled() {
+    let directory = tempdir().expect("temporary directory");
+    let data_dir = directory.path();
+    let now = SystemTime::now();
+    let binding = data_dir.join("stores/winget/metadata/group/installers/token.json");
+    write_file_with_mtime(&binding, "binding", now - Duration::from_secs(31 * DAY));
+    let mut config = retention_config();
+    config.binding_idle_secs = 0;
+
+    let report = sweep(
+        data_dir,
+        &log_file(data_dir),
+        &config,
+        now,
+        &AuditSink::new(data_dir),
+    );
+
+    assert_eq!(report.removed_binding_files, 0);
+    assert!(binding.exists());
 }
 
 #[test]

@@ -255,6 +255,7 @@ impl PyPiStorage {
             let _ = fs::remove_file(self.binding_path(entry, project, filename));
             return Ok(None);
         }
+        let _ = crate::storage::access::note_access(&path);
         Ok(Some(binding))
     }
 }

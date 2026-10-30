@@ -17,7 +17,7 @@ use url::Url;
 use crate::{
     ecosystems::nuget::{
         path::{flatcontainer_icon_url, is_safe_segment},
-        registration::{PackageBinding, binding_for_source, binding_path, persist_binding},
+        registration::{PackageBinding, binding_for_source, persist_binding, read_binding},
         service_index::{
             NugetAuditDetails, NugetError, NugetService, ServiceIndexSnapshot, nuget_error_response,
         },
@@ -157,12 +157,8 @@ async fn resolve_icon(
     pool: &SourcePool,
     base_url: &Url,
 ) -> Result<IconLocation, NugetError> {
-    let stored: Option<PackageBinding> = read_json(&binding_path(
-        &service.data_dir,
-        entry_name,
-        package_id,
-        version,
-    ))?;
+    let stored: Option<PackageBinding> =
+        read_binding(&service.data_dir, entry_name, package_id, version)?;
     if let Some(binding) = stored
         && binding.package_id.eq_ignore_ascii_case(package_id)
         && binding.version.eq_ignore_ascii_case(version)

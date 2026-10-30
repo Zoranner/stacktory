@@ -27,12 +27,7 @@ pub(super) fn registration_descriptor_path(
     ))
 }
 
-pub(crate) fn binding_path(
-    data_dir: &Path,
-    entry_name: &str,
-    package_id: &str,
-    version: &str,
-) -> PathBuf {
+fn binding_path(data_dir: &Path, entry_name: &str, package_id: &str, version: &str) -> PathBuf {
     crate::storage::layout::metadata_root(data_dir, "nuget")
         .join(entry_name)
         .join("bindings")
@@ -50,6 +45,21 @@ pub(crate) fn persist_binding(
         &serde_json::to_vec(binding)?,
     )?;
     Ok(())
+}
+
+pub(crate) fn read_binding(
+    data_dir: &Path,
+    entry_name: &str,
+    package_id: &str,
+    version: &str,
+) -> Result<Option<PackageBinding>, NugetError> {
+    let path = binding_path(data_dir, entry_name, package_id, version);
+    let Some(contents) = read_if_present(&path)? else {
+        return Ok(None);
+    };
+    let binding = serde_json::from_slice(&contents).map_err(NugetError::Serialization)?;
+    let _ = crate::storage::access::note_access(&path);
+    Ok(Some(binding))
 }
 
 pub(super) fn binding_key(package_id: &str, version: &str) -> String {

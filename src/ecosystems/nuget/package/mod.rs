@@ -11,7 +11,7 @@ use crate::{
     ecosystems::nuget::{
         group_fallback_error, group_fallback_source,
         path::flatcontainer_icon_url,
-        registration::{PackageBinding, binding_for_source, binding_path, persist_binding},
+        registration::{PackageBinding, binding_for_source, persist_binding, read_binding},
         service_index::{NugetAuditDetails, NugetError, NugetService, ServiceIndexSnapshot},
         {metadata_is_stale, now_unix_secs},
     },
@@ -25,7 +25,7 @@ mod protocol;
 use cache::{
     cache_is_valid, package_cache_metadata_path, package_cache_path, package_file,
     package_index_descriptor_path, package_index_path, publish_verified_file, read_if_present,
-    read_json, read_package_index_descriptor, temporary_package_path, verify_package_file,
+    read_package_index_descriptor, temporary_package_path, verify_package_file,
 };
 use protocol::{
     append_path, package_file_response, parse_package_index_path, parse_package_path, response,
@@ -305,9 +305,9 @@ async fn serve_package(
     base_url: &Url,
 ) -> Result<PackageFile, NugetError> {
     let (package_id, version) = parse_package_path(path)?;
-    let binding_path = binding_path(&service.data_dir, entry_name, &package_id, &version);
     let initial_snapshot = service.service_index(entry_name, pool, base_url).await?;
-    let stored_binding: Option<PackageBinding> = read_json(&binding_path)?;
+    let stored_binding: Option<PackageBinding> =
+        read_binding(&service.data_dir, entry_name, &package_id, &version)?;
     if let Some(binding) = &stored_binding
         && (!binding.package_id.eq_ignore_ascii_case(&package_id)
             || !binding.version.eq_ignore_ascii_case(&version))

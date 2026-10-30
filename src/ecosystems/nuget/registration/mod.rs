@@ -29,7 +29,7 @@ mod protocol;
 use cache::{
     binding_key, read_descriptor, read_if_present, registration_descriptor_path, registration_path,
 };
-pub(crate) use cache::{binding_path, persist_binding};
+pub(crate) use cache::{persist_binding, read_binding};
 use protocol::{
     append_relative_path, local_package_url, local_registration_url, package_content_url,
     registration_relative_path, rewrite_registration, same_origin,

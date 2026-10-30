@@ -38,9 +38,10 @@ pub fn metadata_root(data_dir: &Path, ecosystem: &str) -> PathBuf {
 /// directory that maps client artifacts to upstream identities.
 ///
 /// Binding files are artifact state, not refreshable metadata. A metadata
-/// refresh may rebuild them, but metadata retention must not expire them on
-/// its own: doing so makes a still-valid metadata entry advertise artifacts
-/// that the artifact handler can no longer resolve.
+/// refresh may rebuild them, but metadata retention must not expire them;
+/// `[retention].binding_idle_secs` controls their independent idle window.
+/// Expiring them with metadata would make a still-valid metadata entry
+/// advertise artifacts that the artifact handler can no longer resolve.
 pub fn is_binding_dir(ecosystem: &str, relative: &Path) -> bool {
     let Some(name) = relative.file_name().and_then(|name| name.to_str()) else {
         return false;
