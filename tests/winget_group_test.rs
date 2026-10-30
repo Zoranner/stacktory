@@ -144,6 +144,9 @@ async fn manifest_falls_back_without_merging_and_records_the_selected_proxy() {
     )
     .expect("sidecar JSON");
     assert_eq!(sidecar["selected_proxy"], "second");
+    let audit =
+        std::fs::read_to_string(data_dir.path().join("audit/events.jsonl")).expect("audit log");
+    assert!(audit.contains("winget_manifest_source_failed"), "{audit}");
 }
 
 #[tokio::test]
@@ -184,6 +187,52 @@ async fn group_all_source_failures_and_all_missing_keep_distinct_statuses() {
         .await
         .expect("missing manifest response");
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn group_missing_requested_version_returns_not_found() {
+    let (port, address) = start_group_server(
+        StatusCode::OK,
+        StatusCode::OK,
+        StatusCode::OK,
+        StatusCode::OK,
+        b"unused".to_vec(),
+        Arc::new(AtomicUsize::new(0)),
+    )
+    .await;
+    let router = group_router(port, address, tempdir().expect("data directory").path());
+
+    let response = router
+        .oneshot(get_request(
+            "/mirror/winget/group/packageManifests/Test.Package?Version=9.9.9",
+        ))
+        .await
+        .expect("missing version response");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn source_failure_audit_write_failure_stops_fallback() {
+    let (port, address) = start_group_server(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        StatusCode::OK,
+        StatusCode::OK,
+        StatusCode::OK,
+        b"unused".to_vec(),
+        Arc::new(AtomicUsize::new(0)),
+    )
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    std::fs::write(data_dir.path().join("audit"), b"not a directory").expect("audit blocker");
+    let router = group_router(port, address, data_dir.path());
+
+    let response = router
+        .oneshot(get_request(
+            "/mirror/winget/group/packageManifests/Test.Package?Version=1.0.0",
+        ))
+        .await
+        .expect("audit failure response");
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 fn group_router(port: u16, address: SocketAddr, data_dir: &Path) -> Router {

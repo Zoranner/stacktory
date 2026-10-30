@@ -23,7 +23,7 @@ use super::{
         WingetAuditDetails, WingetError,
         cache::{self, InstallerBinding},
         group_fallback_source,
-        path::{installer_url_allowed, is_safe_package_id, is_safe_version, version_query},
+        path::{installer_url_allowed, version_query},
     },
     WingetService,
 };
@@ -45,7 +45,6 @@ impl WingetService {
         let Some(binding) = cache::read_binding(&self.data_dir, entry_name, token)? else {
             return Err(WingetError::InstallerNotIndexed(token.to_owned()));
         };
-        validate_binding(token, &binding)?;
         let mut run = GroupRun::new(pool, entry_name, Some(&binding.selected_proxy))?;
         while let Some(member) = run.next_member() {
             let Some(allowed_hosts) = self.installer_hosts(&member.name).cloned() else {
@@ -55,6 +54,14 @@ impl WingetService {
                 ));
                 if run.is_group() {
                     run.record_failure(&member.name, &error.to_string(), false);
+                    self.record_source_failure(
+                        "winget_installer_source_failed",
+                        &format!("installers/{token}"),
+                        entry_name,
+                        &member.name,
+                        "installer",
+                        &error,
+                    )?;
                     continue;
                 }
                 return Err(error);
@@ -96,10 +103,27 @@ impl WingetService {
                             &error.to_string(),
                             source_error_is_not_found(&error),
                         );
+                        self.record_source_failure(
+                            "winget_installer_source_failed",
+                            &format!("installers/{token}"),
+                            entry_name,
+                            &member.name,
+                            "installer",
+                            &WingetError::Source(error),
+                        )?;
                         continue;
                     }
                     Err(error) if run.is_group() => {
-                        run.record_failure(&member.name, &error.to_string(), false);
+                        let not_found = matches!(error, WingetError::VersionNotFound { .. });
+                        run.record_failure(&member.name, &error.to_string(), not_found);
+                        self.record_source_failure(
+                            "winget_installer_source_failed",
+                            &format!("installers/{token}"),
+                            entry_name,
+                            &member.name,
+                            "installer",
+                            &error,
+                        )?;
                         continue;
                     }
                     Err(error) => return Err(error),
@@ -114,6 +138,14 @@ impl WingetService {
                     );
                     if run.is_group() {
                         run.record_failure(&member.name, &error.to_string(), false);
+                        self.record_source_failure(
+                            "winget_installer_source_failed",
+                            &format!("installers/{token}"),
+                            entry_name,
+                            &member.name,
+                            "installer",
+                            &error,
+                        )?;
                         continue;
                     }
                     return Err(error);
@@ -137,6 +169,14 @@ impl WingetService {
                 );
                 if run.is_group() {
                     run.record_failure(&member.name, &error.to_string(), false);
+                    self.record_source_failure(
+                        "winget_installer_source_failed",
+                        &format!("installers/{token}"),
+                        entry_name,
+                        &member.name,
+                        "installer",
+                        &error,
+                    )?;
                     continue;
                 }
                 return Err(error);
@@ -196,6 +236,14 @@ impl WingetService {
                         &error.to_string(),
                         source_error_is_not_found(&error),
                     );
+                    self.record_source_failure(
+                        "winget_installer_source_failed",
+                        &format!("installers/{token}"),
+                        entry_name,
+                        &member.name,
+                        "installer",
+                        &WingetError::Source(error),
+                    )?;
                     continue;
                 }
                 Err(error) => return Err(error.into()),
@@ -295,28 +343,6 @@ pub(crate) async fn installer_response(file: InstallerFile) -> Response {
         response.headers_mut().insert(CONTENT_LENGTH, length);
     }
     response
-}
-
-fn validate_binding(token: &str, binding: &InstallerBinding) -> Result<(), WingetError> {
-    if binding.installer_token != token {
-        return Err(WingetError::InstallerNotIndexed(token.to_owned()));
-    }
-    if !is_safe_package_id(&binding.package_id) || !is_safe_version(&binding.version) {
-        return Err(WingetError::InvalidBinding(
-            "binding package ID or version is not path safe".to_owned(),
-        ));
-    }
-    if binding.installer_sha256.len() != 64
-        || !binding
-            .installer_sha256
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit())
-    {
-        return Err(WingetError::InvalidBinding(
-            "binding installer SHA-256 is invalid".to_owned(),
-        ));
-    }
-    Ok(())
 }
 
 fn installer_file(path: PathBuf, binding: &InstallerBinding) -> Result<InstallerFile, WingetError> {

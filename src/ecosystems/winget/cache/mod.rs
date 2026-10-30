@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::WingetError;
+use crate::ecosystems::winget::path::{is_safe_package_id, is_safe_version};
 use crate::storage::atomic::atomic_write;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -48,9 +49,33 @@ pub(crate) fn read_binding(
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(WingetError::Storage(error)),
     };
-    serde_json::from_slice(&contents)
-        .map(Some)
-        .map_err(|error| WingetError::InvalidBinding(error.to_string()))
+    let binding = match serde_json::from_slice::<InstallerBinding>(&contents) {
+        Ok(binding) => binding,
+        Err(_) => {
+            let _ = fs::remove_file(&path);
+            return Ok(None);
+        }
+    };
+    if !binding_is_valid(token, &binding) {
+        let _ = fs::remove_file(&path);
+        return Ok(None);
+    }
+    let _ = crate::storage::access::note_access(&path);
+    Ok(Some(binding))
+}
+
+fn binding_is_valid(token: &str, binding: &InstallerBinding) -> bool {
+    binding.installer_token == token
+        && is_safe_package_id(&binding.package_id)
+        && is_safe_version(&binding.version)
+        && binding.installer_sha256.len() == 64
+        && binding
+            .installer_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        && !binding.selected_proxy.is_empty()
+        && !binding.source_fingerprint.is_empty()
+        && url::Url::parse(&binding.upstream_url).is_ok()
 }
 
 pub(crate) fn write_binding(
