@@ -40,6 +40,7 @@ impl VscodeService {
             }
         })?;
         let descriptor: AssetDescriptor = toml::from_str(&descriptor_contents)?;
+        let _ = crate::storage::access::note_access(&descriptor_path);
         if !pool.proxy_members(entry_name).is_some_and(|members| {
             members
                 .iter()
@@ -73,6 +74,7 @@ impl VscodeService {
             }
         })?;
         let descriptor: ResourceDescriptor = toml::from_str(&descriptor_contents)?;
+        let _ = crate::storage::access::note_access(&descriptor_path);
         let source = pool
             .proxy_members(entry_name)
             .and_then(|members| {
@@ -129,6 +131,7 @@ impl VscodeService {
             }
         })?;
         let descriptor: ExtensionDescriptor = toml::from_str(&descriptor_contents)?;
+        let _ = crate::storage::access::note_access(&descriptor_path);
         let source = pool
             .proxy_members(entry_name)
             .and_then(|members| {
@@ -179,6 +182,7 @@ impl VscodeService {
             }
         })?;
         let descriptor: AssetBaseDescriptor = toml::from_str(&descriptor_contents)?;
+        let _ = crate::storage::access::note_access(&descriptor_path);
         if !pool.proxy_members(entry_name).is_some_and(|members| {
             members
                 .iter()

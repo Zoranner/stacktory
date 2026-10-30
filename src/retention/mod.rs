@@ -28,6 +28,8 @@ const ECOSYSTEM_TREE_MARKERS: [&str; 3] = [
 pub struct SweepReport {
     pub removed_metadata_files: u64,
     pub failed_metadata_files: u64,
+    pub removed_binding_files: u64,
+    pub failed_binding_files: u64,
     pub removed_artifact_files: u64,
     pub failed_artifact_files: u64,
     pub removed_snapshot_revisions: u64,
@@ -106,8 +108,9 @@ pub fn spawn(
 
 /// 按保留窗口清理生态存储、审计文件和运行日志。
 ///
-/// metadata 按 `metadata_retention_secs` 过期，制品按 `artifact_idle_secs` 淘汰，Rustup
-/// 快照按 `rustup_snapshot_revisions` 保留，审计事件按天轮转并保留
+/// metadata 按 `metadata_retention_secs` 过期，绑定 sidecar 按
+/// `binding_idle_secs` 淘汰，制品按 `artifact_idle_secs` 淘汰，Rustup 快照按
+/// `rustup_snapshot_revisions` 保留，审计事件按天轮转并保留
 /// `audit_retention_days` 天，运行日志按天轮转并保留 `log_retention_days` 天。
 pub fn sweep(
     data_dir: &Path,
@@ -147,6 +150,7 @@ pub fn sweep_with_maintainer(
     report.pruned_log_files = log_outcome.pruned;
     report.log_failed = log_outcome.failed;
     clean_metadata(data_dir, config, now, &mut report);
+    evict_idle_bindings(data_dir, config, now, &mut report);
     evict_idle_artifacts(data_dir, config, now, &mut report);
     match maintainer.prune(data_dir, config.rustup_snapshot_revisions) {
         Ok((removed, failed)) => {
@@ -318,9 +322,8 @@ fn clean_metadata(
         let root = entry.path().join(layout::METADATA_DIR);
         if root.is_dir() {
             // Binding files map artifacts to upstream identities. They are
-            // artifact state and must outlive the metadata that references
-            // them, so metadata retention deliberately leaves those
-            // subdirectories untouched.
+            // artifact state, so metadata retention leaves those
+            // subdirectories to the independent binding window.
             let mut cleanup = Cleanup {
                 ecosystem: &ecosystem,
                 cutoff,
@@ -330,6 +333,63 @@ fn clean_metadata(
                 failed: &mut report.failed_metadata_files,
             };
             remove_expired_files(&root, Path::new(""), &mut cleanup);
+        }
+    }
+}
+
+fn evict_idle_bindings(
+    data_dir: &Path,
+    config: &RetentionConfig,
+    now: SystemTime,
+    report: &mut SweepReport,
+) {
+    if config.binding_idle_secs == 0 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(layout::stores_root(data_dir)) else {
+        return;
+    };
+    let Some(cutoff) = now.checked_sub(Duration::from_secs(config.binding_idle_secs)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let ecosystem = entry.file_name().to_string_lossy().into_owned();
+        let root = entry.path().join(layout::METADATA_DIR);
+        if !root.is_dir() {
+            continue;
+        }
+        let mut cleanup = Cleanup {
+            ecosystem: &ecosystem,
+            cutoff,
+            label: "binding",
+            preserve_bindings: false,
+            removed: &mut report.removed_binding_files,
+            failed: &mut report.failed_binding_files,
+        };
+        remove_expired_binding_files(&root, Path::new(""), &mut cleanup);
+    }
+}
+
+fn remove_expired_binding_files(dir: &Path, relative: &Path, cleanup: &mut Cleanup<'_>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let relative = relative.join(entry.file_name());
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        if layout::is_binding_dir(cleanup.ecosystem, &relative) {
+            remove_expired_files(&path, &relative, cleanup);
+        } else {
+            remove_expired_binding_files(&path, &relative, cleanup);
         }
     }
 }
@@ -534,6 +594,22 @@ fn record(audit: &AuditSink, report: &SweepReport) {
                 cache_status: Some("expired"),
                 failure_category: failed.then_some("remove_failed"),
                 count: Some(report.removed_metadata_files),
+                ..AuditDetails::default()
+            },
+        );
+    }
+    if report.removed_binding_files > 0 || report.failed_binding_files > 0 {
+        let failed = report.failed_binding_files > 0;
+        write_event(
+            audit,
+            "binding_cleanup",
+            "binding",
+            if failed { "partial" } else { "success" },
+            AuditDetails {
+                object_type: Some("binding"),
+                cache_status: Some("idle"),
+                failure_category: failed.then_some("remove_failed"),
+                count: Some(report.removed_binding_files),
                 ..AuditDetails::default()
             },
         );

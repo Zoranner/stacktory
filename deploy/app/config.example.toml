@@ -60,6 +60,8 @@ artifact_timeout_secs = 600
 # rustup_snapshot_revisions = 3
 # # 制品对象空闲超过此时长后删除；0 表示禁用空闲淘汰。
 # artifact_idle_secs = 7776000
+# # 绑定 sidecar 空闲超过此时长后删除；0 表示禁用绑定淘汰。
+# binding_idle_secs = 7776000
 # # 轮转后的运行日志保留天数。
 # log_retention_days = 30
 

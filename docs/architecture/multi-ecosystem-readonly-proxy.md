@@ -53,7 +53,7 @@ restore、Docker Registry V2、Unity UPM、PyPI Simple API 和 Winget REST sourc
 | 进程端点 | `[server]` | 绑定地址、绑定端口和客户端可见的 `public_url` |
 | 存储路径 | `[storage]` | 数据目录和运行日志目录 |
 | 横切策略 | `[proxy]`、`[retention]` | 出站代理和保留清理 |
-| 生态来源 | `[rustup]`、`[cargo]`、`[docker]`、`[npm]`、`[nuget]`、`[pypi]`、`[upm]`、`[vscode]` | 各生态的 `sources` source graph |
+| 生态来源 | `[rustup]`、`[cargo]`、`[docker]`、`[npm]`、`[nuget]`、`[pypi]`、`[upm]`、`[vscode]`、`[winget]` | 各生态的 `sources` source graph |
 
 `server.address`、`server.port` 只负责进程监听，`server.public_url` 负责生成
 客户端可见地址，两者可以因反向代理而不同。`public_url` 可写单个字符串或数组；
@@ -268,7 +268,8 @@ Rustup manifest/artifact 和 Docker blob 的单飞（single-flight）锁按对�
 
 ### 数据生命周期
 
-metadata 和审计文件按配置的保留窗口清理，配置由 `[retention]` 承载：
+metadata、绑定 sidecar、制品和审计文件按配置的保留窗口清理，配置由
+`[retention]` 承载：
 
 ```toml
 [retention]
@@ -277,6 +278,7 @@ audit_retention_days = 30
 cleanup_interval_secs = 3600
 rustup_snapshot_revisions = 3
 artifact_idle_secs = 7776000
+binding_idle_secs = 7776000
 log_retention_days = 30
 ```
 
@@ -284,6 +286,11 @@ log_retention_days = 30
 - `<data_dir>/stores/<ecosystem>/metadata/**` 中修改时间早于 `metadata_retention_secs` 的
   文件会被删除，客户端下次请求时重新获取并重建缓存与来源绑定。该值是 metadata
   的保留上限，是否按时间复用缓存仍由各适配器的命中策略决定。
+- 绑定目录（npm/UPM `descriptors`、NuGet `bindings`、PyPI `files`、Docker
+  `blobs`、VS Code `assets`/`resources`/`extensions`/`asset-bases`、Winget
+  `installers`）不随 metadata 清理。绑定文件读取时会刷新访问时间，修改时间早于
+  `binding_idle_secs`（缺省 90 天）的文件被删除；`binding_idle_secs = 0` 关闭
+  绑定淘汰。绑定过期后客户端重新读取 metadata 或 manifest 即可重建。
 - `<data_dir>/audit/events.jsonl` 跨天后轮转为 `events.<UTC 日期>.jsonl`，超过
   `audit_retention_days` 的轮转文件被删除。
 - `<log_dir>/stacktory.log` 按同样的规则轮转为 `stacktory.<UTC 日期>.log`，超过

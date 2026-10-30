@@ -216,13 +216,16 @@ impl NpmStorage {
         artifact_key: &str,
     ) -> Result<Option<NpmArtifactDescriptor>, StorageError> {
         validate_artifact_key(artifact_key)?;
-        match fs::read(self.descriptor_path(entry, artifact_key)) {
-            Ok(contents) => serde_json::from_slice(&contents)
-                .map(Some)
-                .map_err(|error| StorageError::Io(io::Error::other(error))),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(StorageError::Io(error)),
-        }
+        let path = self.descriptor_path(entry, artifact_key);
+        let contents = match fs::read(&path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(StorageError::Io(error)),
+        };
+        let descriptor = serde_json::from_slice(&contents)
+            .map_err(|error| StorageError::Io(io::Error::other(error)))?;
+        let _ = crate::storage::access::note_access(&path);
+        Ok(Some(descriptor))
     }
 
     fn metadata_body_path(&self, key: &NpmCacheKey) -> PathBuf {

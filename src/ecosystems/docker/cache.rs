@@ -106,9 +106,9 @@ pub(super) fn read_blob_metadata(
     let Some(contents) = read_if_present(&path)? else {
         return Ok(None);
     };
-    serde_json::from_slice(&contents)
-        .map(Some)
-        .map_err(DockerError::Serialization)
+    let metadata = serde_json::from_slice(&contents).map_err(DockerError::Serialization)?;
+    let _ = crate::storage::access::note_access(&path);
+    Ok(Some(metadata))
 }
 
 pub(super) fn read_shared_blob_metadata(

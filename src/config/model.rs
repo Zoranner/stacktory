@@ -100,6 +100,7 @@ pub const DEFAULT_AUDIT_RETENTION_DAYS: u64 = 30;
 pub const DEFAULT_CLEANUP_INTERVAL_SECS: u64 = 3_600;
 pub const DEFAULT_RUSTUP_SNAPSHOT_REVISIONS: u64 = 3;
 pub const DEFAULT_ARTIFACT_IDLE_SECS: u64 = 7_776_000;
+pub const DEFAULT_BINDING_IDLE_SECS: u64 = 7_776_000;
 pub const DEFAULT_LOG_RETENTION_DAYS: u64 = 30;
 pub const DEFAULT_LOG_DIR: &str = "logs";
 
@@ -112,6 +113,7 @@ pub struct RetentionConfig {
     pub cleanup_interval_secs: u64,
     pub rustup_snapshot_revisions: u64,
     pub artifact_idle_secs: u64,
+    pub binding_idle_secs: u64,
     pub log_retention_days: u64,
 }
 
@@ -123,6 +125,7 @@ impl Default for RetentionConfig {
             cleanup_interval_secs: DEFAULT_CLEANUP_INTERVAL_SECS,
             rustup_snapshot_revisions: DEFAULT_RUSTUP_SNAPSHOT_REVISIONS,
             artifact_idle_secs: DEFAULT_ARTIFACT_IDLE_SECS,
+            binding_idle_secs: DEFAULT_BINDING_IDLE_SECS,
             log_retention_days: DEFAULT_LOG_RETENTION_DAYS,
         }
     }
