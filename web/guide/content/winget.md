@@ -24,21 +24,29 @@ ecosystem: winget
 ## 手动步骤
 在管理员终端执行：
 
+```text
 winget source add --name stacktory "{endpoint}" --type Microsoft.Rest
 winget source update --name stacktory
+```
 
 如果只使用当前用户已有的来源，不要删除 winget 或 msstore。
 
 可选的本地信任设置：
+
+```text
 winget source edit --name stacktory --trust-level trusted
+```
 
 只有管理员确认 Stacktory 入口和上游来源后才设置 trusted。它是客户端本地属性，不是服务端能够声明的状态。
 
 ## 验证
+
+```text
 winget source list --name stacktory
 winget search --source stacktory
 winget search --source stacktory --id <PackageIdentifier>
 winget install --source stacktory --id <PackageIdentifier> --exact
+```
 
 ## 注意
 - Winget 的 Microsoft.Rest 来源必须使用 HTTPS；HTTP 地址会失败，自签名证书未加入受信任根时也会失败。

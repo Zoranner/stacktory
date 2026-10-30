@@ -52,8 +52,8 @@ members = ["internal"]
 - URL 的主机（和显式端口）命中当前 proxy 的 `installer_hosts`。
 - URL 不含凭据或 fragment，路径不含反斜杠、控制字符或 `.`/`..` 段。
 - 每一跳重定向都重新执行相同的主机和 scheme 校验，最多跟随三跳。
-- 允许列表中的公网主机使用会拒绝私网解析结果的客户端；显式配置的内网主机
-  才走允许私网解析的路径。
+- 允许列表本身是运维声明的信任边界，列表内主机允许解析到私网地址；列表外
+  主机不会被请求。
 
 未命中允许列表时，manifest 转码按来源失败处理，不会把任意 URL 返回给客户端；
 安装包下载也不会发出请求。这个约束是 SSRF 边界的一部分，不能用
@@ -157,6 +157,11 @@ unsupported 字段和未知字段，替换：
 （比较不区分大小写）。响应必须包含非空的 `Data.Versions`，每个版本包含
 非空的 `PackageVersion` 和 `Installers`。
 
+请求带 `Version` 时，只校验并保留该版本：客户端不会再收到其他版本的 URI，
+因此其他旧版本的安装包主机下线或不合法不会阻断当前安装。响应中没有请求的
+版本时返回 `404`。请求不带 `Version` 时，响应中的每个版本都按下面的规则
+校验；任一版本不合法，整份 manifest 按来源失败处理。
+
 每个 installer 必须包含：
 
 - `InstallerUrl`：绝对 `http`/`https` URL，且通过当前 proxy 的主机允许列表。
@@ -237,15 +242,17 @@ artifact 路径为
 `<data_dir>/stores/winget/artifacts/{selected_proxy}/objects/{entry}/{package_id}/{version}/{token}`。
 入口级 installer sidecar 位于
 `<data_dir>/stores/winget/metadata/{entry}/installers/{token}.json`，属于来源
-绑定而不是可独立过期的 refreshable metadata。
+绑定而不是 refreshable metadata；它按 `[retention].binding_idle_secs` 独立
+淘汰，读取时刷新访问时间。sidecar 过期后客户端重新读取 manifest 即可重建，
+不会因为 metadata 的 15 分钟刷新而提前失效。
 
 ## 错误映射
 
-- 未注册入口、非法 package ID/path、未建立 binding 的 installer token、
-  所有候选来源都明确返回 `404`：`404`。
+- 未注册入口、非法 package ID/path、请求的 `Version` 不在 manifest 中、
+  未建立 binding 的 installer token、所有候选来源都明确返回 `404`：`404`。
 - 非法搜索 JSON 或请求语义错误：`400`。
-- 上游不可用、响应无法解析、支持版本不满足、声明认证、manifest URL 未命中
-  允许列表、SHA-256 不匹配或 group 全部失败：`502`。
+- 上游不可用、响应无法解析、上游 REST 契约版本不满足、声明认证、manifest
+  URL 未命中允许列表、SHA-256 不匹配或 group 全部失败：`502`。
 - 本地缓存、原子写入、sidecar 或审计写入失败：`500`。
 - 不支持的方法：`405`。
 

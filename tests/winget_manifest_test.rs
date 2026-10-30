@@ -183,6 +183,104 @@ async fn installer_download_verifies_sha_and_reuses_the_cache() {
 }
 
 #[tokio::test]
+async fn corrupt_installer_binding_is_treated_as_a_cache_miss() {
+    let installer = b"installer bytes".to_vec();
+    let (port, address) = start_manifest_server(
+        installer,
+        hash(b"installer bytes"),
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    )
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = manifest_router(port, address, data_dir.path());
+
+    let manifest = router
+        .clone()
+        .oneshot(get_request(
+            "/mirror/winget/official/packageManifests/Test.Package?Version=1.0.0",
+        ))
+        .await
+        .expect("manifest response");
+    assert_eq!(manifest.status(), StatusCode::OK);
+    let manifest: Value = serde_json::from_slice(
+        &axum::body::to_bytes(manifest.into_body(), usize::MAX)
+            .await
+            .expect("manifest body"),
+    )
+    .expect("manifest JSON");
+    let path = Url::parse(
+        manifest["Data"]["Versions"][0]["Installers"][0]["InstallerUrl"]
+            .as_str()
+            .expect("installer URL"),
+    )
+    .expect("installer URL parse")
+    .path()
+    .to_owned();
+    let token = path
+        .rsplit('/')
+        .next()
+        .expect("token")
+        .split('.')
+        .next()
+        .expect("token");
+    let binding_path = data_dir.path().join(format!(
+        "stores/winget/metadata/official/installers/{token}.json"
+    ));
+    assert!(binding_path.is_file());
+    std::fs::write(&binding_path, b"{not json").expect("corrupt binding");
+
+    let response = router
+        .oneshot(get_request(&path))
+        .await
+        .expect("installer response");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert!(!binding_path.exists());
+}
+
+#[tokio::test]
+async fn version_query_only_validates_the_requested_version() {
+    let (port, address) = start_two_version_manifest_server().await;
+    let data_dir = tempdir().expect("data directory");
+    let router = manifest_router(port, address, data_dir.path());
+
+    let response = router
+        .clone()
+        .oneshot(get_request(
+            "/mirror/winget/official/packageManifests/Test.Package?Version=1.0.0",
+        ))
+        .await
+        .expect("manifest response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("manifest body"),
+    )
+    .expect("manifest JSON");
+    let versions = body["Data"]["Versions"].as_array().expect("versions");
+    assert_eq!(versions.len(), 1);
+    assert_eq!(versions[0]["PackageVersion"], "1.0.0");
+
+    let unknown = router
+        .clone()
+        .oneshot(get_request(
+            "/mirror/winget/official/packageManifests/Test.Package?Version=9.9.9",
+        ))
+        .await
+        .expect("unknown version response");
+    assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+
+    let all_versions = router
+        .oneshot(get_request(
+            "/mirror/winget/official/packageManifests/Test.Package",
+        ))
+        .await
+        .expect("all versions response");
+    assert_eq!(all_versions.status(), StatusCode::BAD_GATEWAY);
+}
+
+#[tokio::test]
 async fn installer_hash_mismatch_does_not_publish_or_return_bad_bytes() {
     let expected = b"expected".to_vec();
     let actual = b"tampered".to_vec();
@@ -445,6 +543,56 @@ async fn start_manifest_server(
                 }
             }),
         );
+    tokio::spawn(async move {
+        axum::serve(listener, router)
+            .await
+            .expect("manifest server");
+    });
+    (port, address)
+}
+
+async fn start_two_version_manifest_server() -> (u16, SocketAddr) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("manifest listener");
+    let address = listener.local_addr().expect("manifest address");
+    let port = address.port();
+    let manifest = format!(
+        r#"{{
+            "Data": {{
+                "PackageIdentifier": "Test.Package",
+                "Versions": [
+                    {{
+                        "PackageVersion": "1.0.0",
+                        "Installers": [{{
+                            "InstallerUrl": "http://127.0.0.1:{port}/download/Test.Package.bin",
+                            "InstallerSha256": "{}",
+                            "InstallerType": "exe",
+                            "Architecture": "x64"
+                        }}]
+                    }},
+                    {{
+                        "PackageVersion": "0.9.0",
+                        "Installers": [{{
+                            "InstallerUrl": "http://blocked.invalid/Test.Package.bin",
+                            "InstallerSha256": "{}",
+                            "InstallerType": "exe",
+                            "Architecture": "x64"
+                        }}]
+                    }}
+                ]
+            }}
+        }}"#,
+        hash(b"current installer"),
+        hash(b"old installer")
+    );
+    let router = Router::new().route(
+        "/api/packageManifests/Test.Package",
+        get(move || {
+            let manifest = manifest.clone();
+            async move { (StatusCode::OK, manifest) }
+        }),
+    );
     tokio::spawn(async move {
         axum::serve(listener, router)
             .await

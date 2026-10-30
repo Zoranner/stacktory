@@ -21,7 +21,7 @@ use crate::{
     upstream::{
         SourcePoolError,
         registry::{Adapter, AdapterFuture, AdapterRequest},
-        source_error_is_group_fallback,
+        source_error_is_group_fallback, source_failure_category,
     },
 };
 
@@ -46,6 +46,8 @@ pub enum WingetError {
     InvalidSearch(String),
     #[error("Winget manifest is invalid: {0}")]
     InvalidManifest(String),
+    #[error("Winget package `{package_id}` version `{version}` was not found")]
+    VersionNotFound { package_id: String, version: String },
     #[error("Winget installer host is not allowed: {0}")]
     InstallerPolicy(String),
     #[error("Winget installer is not indexed: {0}")]
@@ -140,6 +142,47 @@ impl WingetService {
         )?;
         Ok(())
     }
+
+    pub(crate) fn record_source_failure(
+        &self,
+        event: &str,
+        object_key: &str,
+        entry_name: &str,
+        source_name: &str,
+        object_type: &str,
+        error: &WingetError,
+    ) -> Result<(), WingetError> {
+        self.record_object(
+            event,
+            WingetAuditDetails {
+                object_key,
+                entry_name,
+                selected_proxy: source_name,
+                object_type,
+                cache_status: "failed",
+                failure_category: Some(failure_category(error)),
+            },
+        )
+    }
+}
+
+pub(crate) fn failure_category(error: &WingetError) -> &'static str {
+    match error {
+        WingetError::Source(error) => source_failure_category(error),
+        WingetError::InvalidPath(_) | WingetError::InstallerNotIndexed(_) => "not_found",
+        WingetError::VersionNotFound { .. } => "not_found",
+        WingetError::InvalidRequest(_) => "invalid_request",
+        WingetError::InvalidInformation(_) => "invalid_information",
+        WingetError::InvalidSearch(_) => "invalid_search",
+        WingetError::InvalidManifest(_) => "invalid_manifest",
+        WingetError::InstallerPolicy(_) => "installer_policy",
+        WingetError::InstallerIntegrityFailure(_) => "integrity_mismatch",
+        WingetError::UnsupportedAuthentication(_) => "authentication_required",
+        WingetError::InvalidBinding(_) => "invalid_binding",
+        WingetError::Storage(_) => "storage_failed",
+        WingetError::Serialization(_) => "serialization_failed",
+        WingetError::Audit(_) => "audit_failed",
+    }
 }
 
 impl Adapter for WingetAdapter {
@@ -172,7 +215,9 @@ pub(crate) fn group_fallback_source(
 
 pub(crate) fn winget_error_response(error: &WingetError) -> axum::response::Response {
     let status = match error {
-        WingetError::InvalidPath(_) | WingetError::InstallerNotIndexed(_) => StatusCode::NOT_FOUND,
+        WingetError::InvalidPath(_)
+        | WingetError::InstallerNotIndexed(_)
+        | WingetError::VersionNotFound { .. } => StatusCode::NOT_FOUND,
         WingetError::Source(SourcePoolError::UnknownEntry(_)) => StatusCode::NOT_FOUND,
         WingetError::Source(SourcePoolError::TerminalSourceError { status: 404, .. })
         | WingetError::Source(SourcePoolError::AllSourcesFailed {

@@ -43,6 +43,14 @@ impl WingetService {
                         &error.to_string(),
                         source_error_is_not_found(&error),
                     );
+                    self.record_source_failure(
+                        "winget_information_source_failed",
+                        "information",
+                        entry_name,
+                        &member.name,
+                        "information",
+                        &error.into(),
+                    )?;
                     continue;
                 }
                 Err(error) => return Err(error.into()),
@@ -64,6 +72,14 @@ impl WingetService {
                 }
                 Err(error) if run.is_group() => {
                     run.record_failure(&member.name, &error.to_string(), false);
+                    self.record_source_failure(
+                        "winget_information_source_failed",
+                        "information",
+                        entry_name,
+                        &member.name,
+                        "information",
+                        &error,
+                    )?;
                 }
                 Err(error) => {
                     self.record_object(
@@ -126,6 +142,14 @@ impl WingetService {
                         &error.to_string(),
                         source_error_is_not_found(&error),
                     );
+                    self.record_source_failure(
+                        "winget_search_source_failed",
+                        "manifestSearch",
+                        entry_name,
+                        &member.name,
+                        "search",
+                        &error.into(),
+                    )?;
                     continue;
                 }
                 Err(error) => return Err(error.into()),
@@ -133,6 +157,14 @@ impl WingetService {
             if let Err(error) = validate_search_response(&response.body) {
                 if run.is_group() {
                     run.record_failure(&member.name, &error.to_string(), false);
+                    self.record_source_failure(
+                        "winget_search_source_failed",
+                        "manifestSearch",
+                        entry_name,
+                        &member.name,
+                        "search",
+                        &error,
+                    )?;
                     continue;
                 }
                 return Err(error);
@@ -194,10 +226,27 @@ impl WingetService {
                         &error.to_string(),
                         source_error_is_not_found(&error),
                     );
+                    self.record_source_failure(
+                        "winget_manifest_source_failed",
+                        &request_key,
+                        entry_name,
+                        &member.name,
+                        "manifest",
+                        &WingetError::Source(error),
+                    )?;
                     continue;
                 }
                 Err(error) if run.is_group() => {
-                    run.record_failure(&member.name, &error.to_string(), false);
+                    let not_found = matches!(error, WingetError::VersionNotFound { .. });
+                    run.record_failure(&member.name, &error.to_string(), not_found);
+                    self.record_source_failure(
+                        "winget_manifest_source_failed",
+                        &request_key,
+                        entry_name,
+                        &member.name,
+                        "manifest",
+                        &error,
+                    )?;
                     continue;
                 }
                 Err(error) => return Err(error),

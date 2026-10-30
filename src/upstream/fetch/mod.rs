@@ -336,9 +336,9 @@ impl HttpFetcher {
             if !is_allowed_installer_url(&current_url, allowed_hosts, require_https) {
                 return Err(FetchError::UnsafeArtifactRedirect(current_url));
             }
-            let allow_private = current_url
-                .host_str()
-                .is_some_and(|host| !is_public_host(host));
+            // 安装包主机已被显式允许列表约束，是运维声明的信任边界；
+            // 这里允许私网解析，避免企业域名指向内网地址时被公网客户端拒绝。
+            let allow_private = true;
             let response = self
                 .client_for(allow_private)
                 .get(current_url.clone())
