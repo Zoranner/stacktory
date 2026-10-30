@@ -16,8 +16,8 @@ use url::Url;
 use crate::{
     SourceConfig,
     upstream::{
-        FetchOperation, GroupRun, SourcePoolError, pool::SourceStream,
-        source_error_is_group_fallback, source_error_is_not_found,
+        FetchOperation, GroupRun, pool::SourceStream, source_error_is_group_fallback,
+        source_error_is_not_found, source_failure_category,
     },
 };
 
@@ -45,14 +45,16 @@ impl super::PyPiService {
             Ok(source) => source,
             Err(error) => return self.error_response(&error),
         };
-        self.record(
+        if let Err(error) = self.record(
             "pypi_root_index_read",
             entry_name,
             "simple/",
             Some(&member.name),
             "miss",
             None,
-        );
+        ) {
+            return self.error_response(&error);
+        }
 
         let rewriter = match representation {
             PyPiRepresentation::Html => member.base_url.as_ref().map(|source_base_url| {
@@ -103,7 +105,7 @@ impl super::PyPiService {
                         Some(&member.name),
                         "failed",
                         Some(source_failure_category(&error)),
-                    );
+                    )?;
                     continue;
                 }
                 Err(error) => return Err(error.into()),
@@ -121,7 +123,7 @@ impl super::PyPiService {
                     Some(&member.name),
                     "failed",
                     Some("protocol_invalid"),
-                );
+                )?;
                 continue;
             }
             return Ok((source, member));
@@ -135,16 +137,8 @@ impl super::PyPiService {
             None,
             "failed",
             Some(source_failure_category(&error)),
-        );
+        )?;
         Err(PyPiError::Source(error))
-    }
-}
-
-fn source_failure_category(error: &SourcePoolError) -> &'static str {
-    if source_error_is_not_found(error) {
-        "not_found"
-    } else {
-        "source_failed"
     }
 }
 

@@ -25,7 +25,7 @@ use crate::{
         FetchOperation, GroupRun, SourcePoolError,
         pool::is_safe_configured_url_for_source,
         registry::{Adapter, AdapterFuture, AdapterRequest},
-        source_error_is_group_fallback, source_error_is_not_found,
+        source_error_is_group_fallback, source_error_is_not_found, source_failure_category,
     },
 };
 
@@ -400,14 +400,6 @@ impl Adapter for NpmAdapter {
     ) -> AdapterFuture {
         let service = self.service.clone();
         Box::pin(async move { service.handle_request(&source_name, request, &pool).await })
-    }
-}
-
-fn source_failure_category(error: &SourcePoolError) -> &'static str {
-    if source_error_is_not_found(error) {
-        "not_found"
-    } else {
-        "source_failed"
     }
 }
 

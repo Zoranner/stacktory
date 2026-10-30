@@ -2,7 +2,7 @@ use super::super::{RewrittenManifest, ServiceError};
 use super::RustupService;
 use crate::upstream::{
     FetchOperation, GroupRun, SourcePoolError, source_error_is_group_fallback,
-    source_error_is_not_found,
+    source_error_is_not_found, source_failure_category,
 };
 
 impl RustupService {
@@ -145,14 +145,4 @@ fn sha256(contents: &[u8]) -> String {
     use sha2::{Digest, Sha256};
 
     format!("{:x}", Sha256::digest(contents))
-}
-
-fn source_failure_category(error: &SourcePoolError) -> &'static str {
-    match error {
-        SourcePoolError::TerminalSourceError { status: 404, .. }
-        | SourcePoolError::AllSourcesFailed {
-            status: Some(404), ..
-        } => "not_found",
-        _ => "source_failed",
-    }
 }

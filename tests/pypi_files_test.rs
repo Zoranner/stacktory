@@ -171,6 +171,56 @@ async fn artifact_cache_hit_avoids_a_second_upstream_download() {
     assert_eq!(upstream.request_count(&format!("/packages/{FILENAME}")), 1);
 }
 
+#[tokio::test]
+async fn artifact_without_upstream_digest_records_audit_state() {
+    let contents = b"unverified wheel bytes";
+    let upstream = start_upstream(|base| {
+        let href = base
+            .join(&format!("packages/{FILENAME}"))
+            .expect("file URL");
+        vec![
+            (
+                "/simple/friendly-bard/",
+                TestResponse::html(project_html(
+                    "friendly-bard",
+                    &[anchor(FILENAME, href.as_str())],
+                )),
+            ),
+            (
+                Box::leak(format!("/packages/{FILENAME}").into_boxed_str()) as &'static str,
+                TestResponse::bytes("application/octet-stream", contents.to_vec()),
+            ),
+        ]
+    })
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = pypi_router(&[("official", &upstream.base_url)], None, data_dir.path());
+
+    assert_eq!(
+        send(
+            router.clone(),
+            get("/mirror/pypi/official/simple/friendly-bard/")
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let response = send(
+        router,
+        get(&format!(
+            "/mirror/pypi/official/files/friendly-bard/{FILENAME}"
+        )),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_bytes(response).await, contents);
+    let audit = fs::read_to_string(data_dir.path().join("audit/events.jsonl")).expect("audit log");
+    assert!(
+        audit.contains("pypi_artifact_published_without_digest"),
+        "{audit}"
+    );
+}
+
 async fn upstream_with_file(declared: &[u8], served: &[u8]) -> pypi_support::Upstream {
     let declared = declared.to_vec();
     let served = served.to_vec();

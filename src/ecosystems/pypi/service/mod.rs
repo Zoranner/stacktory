@@ -27,7 +27,7 @@ use url::Url;
 
 use crate::{
     PublicUrls, SourceConfig, SourcePool,
-    audit::{AuditDetails, AuditSink},
+    audit::{AuditDetails, AuditError, AuditSink},
     upstream::{
         SourcePoolError,
         registry::{Adapter, AdapterFuture, AdapterRequest},
@@ -70,6 +70,8 @@ pub enum PyPiError {
     Index(#[from] PyPiIndexError),
     #[error(transparent)]
     Storage(#[from] StorageError),
+    #[error(transparent)]
+    Audit(#[from] AuditError),
     #[error("PyPI project `{0}` was not found")]
     MissingProject(String),
     #[error("PyPI file `{0}` is not bound to an indexed project")]
@@ -151,7 +153,7 @@ impl PyPiService {
                 status: Some(404), ..
             }) => StatusCode::NOT_FOUND,
             PyPiError::Storage(StorageError::IntegrityMismatch(_)) => StatusCode::BAD_GATEWAY,
-            PyPiError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PyPiError::Storage(_) | PyPiError::Audit(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PyPiError::Index(_) | PyPiError::Source(_) | PyPiError::AllSourcesFailed { .. } => {
                 StatusCode::BAD_GATEWAY
             }
@@ -188,13 +190,13 @@ impl PyPiService {
         selected_proxy: Option<&str>,
         cache_status: &str,
         failure_category: Option<&str>,
-    ) {
+    ) -> Result<(), PyPiError> {
         let object_type = if event.contains("artifact") {
             "artifact"
         } else {
             "metadata"
         };
-        if let Err(error) = self.audit.record_detailed(
+        self.audit.record_detailed(
             event,
             object_key,
             if failure_category.is_some() {
@@ -212,9 +214,8 @@ impl PyPiService {
                 failure_category,
                 count: None,
             },
-        ) {
-            crate::logging::error(format!("audit write failed: {error}"));
-        }
+        )?;
+        Ok(())
     }
 
     pub(super) fn record_metadata_source_failure(
@@ -223,7 +224,7 @@ impl PyPiService {
         project: &str,
         source_name: &str,
         failure_category: &str,
-    ) {
+    ) -> Result<(), PyPiError> {
         self.record(
             "pypi_metadata_source_failed",
             entry_name,
@@ -231,7 +232,7 @@ impl PyPiService {
             Some(source_name),
             "failed",
             Some(failure_category),
-        );
+        )
     }
 
     fn event(&self, suffix: &str) -> String {

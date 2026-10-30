@@ -6,7 +6,7 @@ use axum::http::{StatusCode, header::CONTENT_TYPE};
 use pypi_support::{
     TestResponse, anchor, anchor_with_attrs, body_json, body_text, collect_files,
     file_url_with_hash, get, get_accept, metadata_dir, project_html, pypi_router, root_html, send,
-    sha256_hex, start_upstream,
+    set_metadata_validated_at, sha256_hex, start_upstream,
 };
 use tempfile::tempdir;
 
@@ -451,4 +451,114 @@ async fn project_path_requires_a_trailing_slash() {
     let with_slash = send(router, get("/mirror/pypi/official/simple/friendly-bard/")).await;
     assert_eq!(with_slash.status(), StatusCode::OK);
     assert_eq!(upstream.request_count("/simple/friendly-bard/"), 1);
+}
+
+#[tokio::test]
+async fn stale_metadata_is_served_when_revalidation_fails() {
+    let contents = b"friendly wheel";
+    let filename = "friendly_bard-1.0.0-py3-none-any.whl";
+    let upstream = start_upstream(|base| {
+        vec![(
+            "/simple/friendly-bard/",
+            TestResponse::html(project_html(
+                "friendly-bard",
+                &[anchor(
+                    filename,
+                    &file_url_with_hash(base, filename, contents),
+                )],
+            )),
+        )]
+    })
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = pypi_router(&[("official", &upstream.base_url)], None, data_dir.path());
+
+    let first = send(
+        router.clone(),
+        get("/mirror/pypi/official/simple/friendly-bard/"),
+    )
+    .await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let first_body = body_text(first).await;
+
+    set_metadata_validated_at(data_dir.path(), "official", "friendly-bard", 0);
+    upstream.set_route(
+        "/simple/friendly-bard/",
+        TestResponse::status(StatusCode::SERVICE_UNAVAILABLE),
+    );
+    let stale = send(router, get("/mirror/pypi/official/simple/friendly-bard/")).await;
+    assert_eq!(stale.status(), StatusCode::OK);
+    assert_eq!(body_text(stale).await, first_body);
+    let audit = fs::read_to_string(data_dir.path().join("audit/events.jsonl")).expect("audit log");
+    assert!(audit.contains("pypi_metadata_stale"), "{audit}");
+}
+
+#[tokio::test]
+async fn revalidation_not_found_removes_cached_metadata() {
+    let filename = "friendly_bard-1.0.0-py3-none-any.whl";
+    let upstream = start_upstream(|base| {
+        vec![(
+            "/simple/friendly-bard/",
+            TestResponse::html(project_html(
+                "friendly-bard",
+                &[anchor(
+                    filename,
+                    &file_url_with_hash(base, filename, b"friendly wheel"),
+                )],
+            )),
+        )]
+    })
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    let router = pypi_router(&[("official", &upstream.base_url)], None, data_dir.path());
+
+    assert_eq!(
+        send(
+            router.clone(),
+            get("/mirror/pypi/official/simple/friendly-bard/")
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    set_metadata_validated_at(data_dir.path(), "official", "friendly-bard", 0);
+    upstream.set_route(
+        "/simple/friendly-bard/",
+        TestResponse::status(StatusCode::NOT_FOUND),
+    );
+    assert_eq!(
+        send(router, get("/mirror/pypi/official/simple/friendly-bard/"))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert!(
+        !metadata_dir(data_dir.path())
+            .join("official/friendly-bard")
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn index_returns_500_when_audit_storage_fails() {
+    let filename = "friendly_bard-1.0.0-py3-none-any.whl";
+    let upstream = start_upstream(|base| {
+        vec![(
+            "/simple/friendly-bard/",
+            TestResponse::html(project_html(
+                "friendly-bard",
+                &[anchor(
+                    filename,
+                    &file_url_with_hash(base, filename, b"friendly wheel"),
+                )],
+            )),
+        )]
+    })
+    .await;
+    let data_dir = tempdir().expect("data directory");
+    fs::write(data_dir.path().join("audit"), b"not a directory").expect("audit blocker");
+    let router = pypi_router(&[("official", &upstream.base_url)], None, data_dir.path());
+
+    let response = send(router, get("/mirror/pypi/official/simple/friendly-bard/")).await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }

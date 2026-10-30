@@ -35,6 +35,14 @@ pub(crate) fn source_error_is_not_found(error: &SourcePoolError) -> bool {
     )
 }
 
+pub(crate) fn source_failure_category(error: &SourcePoolError) -> &'static str {
+    if source_error_is_not_found(error) {
+        "not_found"
+    } else {
+        "source_failed"
+    }
+}
+
 pub(crate) fn fetch_error_is_group_fallback(error: &FetchError) -> bool {
     error.is_retryable() || error.status_code().is_some_and(status_is_group_fallback)
 }
