@@ -72,7 +72,7 @@ impl TestResponse {
 }
 
 struct UpstreamState {
-    routes: BTreeMap<String, TestResponse>,
+    routes: Mutex<BTreeMap<String, TestResponse>>,
     requests: Mutex<Vec<(String, Option<String>)>>,
 }
 
@@ -110,6 +110,14 @@ impl Upstream {
             .find(|(request_path, _)| request_path == path)
             .and_then(|(_, accept)| accept.clone())
     }
+
+    pub fn set_route(&self, path: &str, response: TestResponse) {
+        self.state
+            .routes
+            .lock()
+            .expect("route lock")
+            .insert(path.to_owned(), response);
+    }
 }
 
 pub async fn start_upstream(
@@ -125,7 +133,7 @@ pub async fn start_upstream(
         .map(|(path, response)| (path.to_owned(), response))
         .collect();
     let state = Arc::new(UpstreamState {
-        routes,
+        routes: Mutex::new(routes),
         requests: Mutex::new(Vec::new()),
     });
     let router = Router::new()
@@ -156,6 +164,8 @@ async fn upstream_handler(
         .push((path.clone(), accept));
     let response = state
         .routes
+        .lock()
+        .expect("route lock")
         .get(&path)
         .cloned()
         .unwrap_or_else(TestResponse::not_found);
@@ -295,6 +305,31 @@ pub fn read_current(data_dir: &Path, entry: &str, project: &str) -> String {
             .join("current.toml"),
     )
     .expect("current PyPI metadata pointer")
+}
+
+pub fn set_metadata_validated_at(
+    data_dir: &Path,
+    entry: &str,
+    project: &str,
+    validated_at_unix_secs: u64,
+) {
+    let path = metadata_dir(data_dir)
+        .join(entry)
+        .join(project)
+        .join("current.toml");
+    let contents = fs::read_to_string(&path).expect("current metadata pointer");
+    let mut updated = String::new();
+    for line in contents.lines() {
+        if line.starts_with("validated_at_unix_secs =") {
+            updated.push_str(&format!(
+                "validated_at_unix_secs = {validated_at_unix_secs}\n"
+            ));
+        } else {
+            updated.push_str(line);
+            updated.push('\n');
+        }
+    }
+    fs::write(path, updated).expect("updated metadata pointer");
 }
 
 pub fn read_binding(data_dir: &Path, entry: &str, project: &str, filename: &str) -> Value {

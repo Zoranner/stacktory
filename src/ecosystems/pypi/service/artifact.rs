@@ -124,7 +124,7 @@ impl super::PyPiService {
                         Some(&member.name),
                         "hit",
                         Some("integrity_mismatch"),
-                    );
+                    )?;
                 }
                 self.record(
                     "pypi_artifact_read",
@@ -133,7 +133,7 @@ impl super::PyPiService {
                     Some(&member.name),
                     "hit",
                     None,
-                );
+                )?;
                 return Ok(file);
             }
 
@@ -186,7 +186,7 @@ impl super::PyPiService {
                             Some(&member.name),
                             "published",
                             None,
-                        );
+                        )?;
                     } else {
                         let updated = rebound_binding(
                             &candidate,
@@ -203,7 +203,17 @@ impl super::PyPiService {
                             Some(&member.name),
                             "published",
                             Some("integrity_mismatch"),
-                        );
+                        )?;
+                    }
+                    if expected_hashes.is_empty() {
+                        self.record(
+                            "pypi_artifact_published_without_digest",
+                            entry_name,
+                            filename,
+                            Some(&member.name),
+                            "published",
+                            None,
+                        )?;
                     }
                     return Ok(file);
                 }
@@ -217,7 +227,7 @@ impl super::PyPiService {
                         Some(&member.name),
                         "failed",
                         Some("integrity_mismatch"),
-                    );
+                    )?;
                     continue;
                 }
                 Err(error) => return Err(error.into()),
@@ -235,7 +245,7 @@ impl super::PyPiService {
             } else {
                 "source_failed"
             }),
-        );
+        )?;
         if run.all_not_found() {
             return Err(PyPiError::MissingFile(filename.to_owned()));
         }

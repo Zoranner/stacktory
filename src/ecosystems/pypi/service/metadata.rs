@@ -5,7 +5,7 @@ use url::Url;
 
 use crate::upstream::{
     FetchOperation, GroupRun, SourcePoolError, source_error_is_group_fallback,
-    source_error_is_not_found,
+    source_error_is_not_found, source_failure_category,
 };
 
 use super::{
@@ -64,14 +64,16 @@ impl super::PyPiService {
         };
         match self.storage.read_representation(&key) {
             Ok(Some(body)) => {
-                self.record(
+                if let Err(error) = self.record(
                     &self.event("metadata_read"),
                     entry_name,
                     project,
                     Some(&key.selected_proxy),
                     "hit",
                     None,
-                );
+                ) {
+                    return self.error_response(&error);
+                }
                 return representation_response(representation, body);
             }
             Ok(None) => {}
@@ -84,14 +86,16 @@ impl super::PyPiService {
         if let Err(error) = self.storage.publish_representation(&key, &body) {
             return self.error_response(&PyPiError::Storage(error));
         }
-        self.record(
+        if let Err(error) = self.record(
             "pypi_metadata_published_representation",
             entry_name,
             project,
             Some(&key.selected_proxy),
             "published",
             None,
-        );
+        ) {
+            return self.error_response(&error);
+        }
         representation_response(representation, body)
     }
 }
@@ -118,7 +122,7 @@ impl super::PyPiService {
                     Some(&snapshot.key.selected_proxy),
                     "hit",
                     None,
-                );
+                )?;
                 return Ok(snapshot);
             }
             match self
@@ -149,32 +153,47 @@ impl super::PyPiService {
                             Some(&touched.key.selected_proxy),
                             "hit",
                             None,
-                        );
+                        )?;
                         return Ok(touched);
                     }
                     self.publish_fetched_project(entry_name, project, fetched)
                 }
-                Err(PyPiError::MissingProject(_)) => {
-                    self.storage.remove_metadata(entry_name, project)?;
-                    self.record(
-                        "pypi_metadata_revalidate_failed",
-                        entry_name,
-                        project,
-                        Some(&snapshot.key.selected_proxy),
-                        "failed",
-                        Some("not_found"),
-                    );
-                    Err(PyPiError::MissingProject(project.to_owned()))
-                }
                 Err(error) => {
+                    if matches!(&error, PyPiError::Audit(_)) {
+                        return Err(error);
+                    }
+                    let not_found = matches!(&error, PyPiError::MissingProject(_))
+                        || matches!(
+                            &error,
+                            PyPiError::Source(source) if source_error_is_not_found(source)
+                        );
                     self.record(
                         "pypi_metadata_revalidate_failed",
                         entry_name,
                         project,
                         Some(&snapshot.key.selected_proxy),
                         "failed",
-                        Some("source_failed"),
-                    );
+                        Some(if not_found {
+                            "not_found"
+                        } else {
+                            "source_failed"
+                        }),
+                    )?;
+                    if not_found {
+                        self.storage.remove_metadata(entry_name, project)?;
+                        return Err(error);
+                    }
+                    if source_valid {
+                        self.record(
+                            "pypi_metadata_stale",
+                            entry_name,
+                            project,
+                            Some(&snapshot.key.selected_proxy),
+                            "stale",
+                            Some("source_failed"),
+                        )?;
+                        return Ok(snapshot);
+                    }
                     Err(error)
                 }
             }
@@ -203,7 +222,7 @@ impl super::PyPiService {
             Some(&fetched.key.selected_proxy),
             "published",
             None,
-        );
+        )?;
         Ok(fetched.into_stored())
     }
 }
@@ -243,7 +262,7 @@ impl super::PyPiService {
                         project,
                         &member.name,
                         source_failure_category(&error),
-                    );
+                    )?;
                     continue;
                 }
                 Err(error) => {
@@ -252,7 +271,7 @@ impl super::PyPiService {
                         project,
                         &member.name,
                         source_failure_category(&error),
-                    );
+                    )?;
                     return Err(error.into());
                 }
             };
@@ -263,7 +282,7 @@ impl super::PyPiService {
                     project,
                     &member.name,
                     "protocol_invalid",
-                );
+                )?;
                 continue;
             }
             let project_url = upstream_project_url(base_url, project);
@@ -282,7 +301,7 @@ impl super::PyPiService {
                         project,
                         &member.name,
                         "protocol_invalid",
-                    );
+                    )?;
                     continue;
                 }
             };
@@ -311,7 +330,7 @@ impl super::PyPiService {
             } else {
                 "source_failed"
             }),
-        );
+        )?;
         if run.all_not_found() {
             return Err(PyPiError::MissingProject(project.to_owned()));
         }
@@ -393,13 +412,5 @@ fn render_representation(
             internal_file_url(base_url, entry_name, &project, &file.filename, None)
         })
         .map_err(|error| PyPiError::Index(PyPiIndexError::Serialization(error.to_string()))),
-    }
-}
-
-fn source_failure_category(error: &SourcePoolError) -> &'static str {
-    if source_error_is_not_found(error) {
-        "not_found"
-    } else {
-        "source_failed"
     }
 }
